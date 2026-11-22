@@ -12,6 +12,8 @@ use super::{CONTROL, DESCRIPTION, SECTION, keybinding_catalog as catalog};
 mod command_picker;
 mod when_editor;
 
+pub(super) use when_editor::overlays as when_overlays;
+
 const SEARCH: &str = "search-keybindings";
 const ADD: &str = "add-keybinding";
 const CAPTURE: &str = "record-keybinding";
@@ -469,9 +471,6 @@ pub(super) fn page(state: &State, palette: Palette, width: f32) -> El {
     let mut content = col().w_full().min_h(0.0).grow(1.0).child(scroll);
     if let Some([dismiss, popup]) = command_picker::overlay(state, palette, width) {
         content = content.child(dismiss).child(popup);
-    }
-    for overlay in when_editor::overlays(state, palette, width) {
-        content = content.child(overlay);
     }
     content
 }

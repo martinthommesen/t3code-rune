@@ -1,4 +1,4 @@
-use rune::{Color, El, Icon, Key, ScrollSpec, TextStyle, Tx, col, el, icon, row, text};
+use rune::{Color, Cx, El, Icon, Key, ScrollSpec, TextStyle, Tx, col, el, icon, row, text};
 
 use super::{Palette, State, error_text, sidebar_header};
 
@@ -239,7 +239,13 @@ pub(super) fn opener(palette: Palette) -> El {
     })
 }
 
-pub(super) fn overlay(state: &State, palette: Palette, width: f32, height: f32) -> Option<El> {
+pub(super) fn overlay(
+    state: &State,
+    palette: Palette,
+    width: f32,
+    height: f32,
+    cx: &Cx<State>,
+) -> Option<El> {
     if !state.settings.open {
         return None;
     }
@@ -333,6 +339,15 @@ pub(super) fn overlay(state: &State, palette: Palette, width: f32, height: f32) 
         workspace::overlay(state, palette).or_else(|| worktrees::overlay(state, palette))
     {
         overlay = overlay.children(items);
+    }
+    if page == Page::Keybindings {
+        overlay = overlay.children(keybindings::when_overlays(
+            state,
+            palette,
+            content_width,
+            height,
+            cx,
+        ));
     }
     Some(overlay)
 }

@@ -1,6 +1,6 @@
 use rune::{
-    Align, Color, El, Icon, Key, ScrollSpec, Shadow, Side, TextEdit, Tx, col, el, icon, row, text,
-    text_input,
+    Align, Color, Cx, El, Icon, Key, ScrollSpec, Shadow, Side, TextEdit, Tx, col, el, icon, row,
+    text, text_input,
 };
 
 use crate::connection::{KeybindingCondition as Condition, KeybindingRule};
@@ -10,6 +10,12 @@ use super::{CAPTION, Draft, LABEL, MONO, PLUS, Palette, State, action, input_fil
 mod tree;
 
 const EXPRESSION: &str = "keybinding-when-expression";
+const ANCHOR_GAP: f32 = 6.0;
+const WINDOW_MARGIN: f32 = 8.0;
+const POPUP_PADDING: f32 = 16.0;
+const POPUP_VERTICAL_INSET: f32 = 2.0 * (POPUP_PADDING + 1.0);
+// Leave room for both header controls and the expression input.
+const MIN_EDITOR_HEIGHT: f32 = 28.0 + 12.0 + 28.0 + POPUP_VERTICAL_INSET;
 const ADD_CONDITION: &str = "keybinding-when-add-condition";
 const ADD_GROUP: &str = "keybinding-when-add-group";
 const INVALID: &str = "Use variables with !, &&, ||, and parentheses.";
@@ -145,19 +151,13 @@ pub(super) fn control(
     enabled: bool,
     palette: Palette,
 ) -> El {
-    let mut content = row()
-        .h(20.0)
-        .items_center()
-        .gap(4.0)
-        .min_w(0.0)
-        .px(6.0)
-        .child(
-            text(value.unwrap_or("Always"))
-                .font(MONO)
-                .color(palette.muted)
-                .min_w(0.0)
-                .truncate(),
-        );
+    let mut content = row().h(20.0).items_center().gap(4.0).px(6.0).child(
+        text(value.unwrap_or("Always"))
+            .font(MONO)
+            .color(palette.muted)
+            .min_w(0.0)
+            .truncate(),
+    );
     if enabled {
         let original = rule.cloned();
         content = action(
@@ -171,11 +171,12 @@ pub(super) fn control(
         .expanded(expanded);
     }
     row()
+        .w_full()
         .min_w(0.0)
         .items_center()
         .gap(6.0)
         .child(text("When").font(CAPTION).color(palette.muted))
-        .child(content)
+        .child(content.shrink())
 }
 
 fn field(when: &Editor, palette: Palette) -> El {
@@ -225,12 +226,29 @@ fn field(when: &Editor, palette: Palette) -> El {
         })
 }
 
-pub(super) fn overlays(state: &State, palette: Palette, width: f32) -> Vec<El> {
+pub(in crate::ui::settings) fn overlays(
+    state: &State,
+    palette: Palette,
+    width: f32,
+    window_height: f32,
+    cx: &Cx<State>,
+) -> Vec<El> {
     let Some(draft) = state.settings.keybindings.draft.as_ref() else {
         return Vec::new();
     };
     let Some(when) = draft.when.as_ref().filter(|when| when.open) else {
         return Vec::new();
+    };
+    let anchor = trigger(draft.original.as_ref());
+    let [top, bottom] = cx
+        .window_layout_with(&anchor, |[_, top, _, height]| [top, top + height])
+        .unwrap_or([window_height * 0.5; 2]);
+    let below = (window_height - bottom - ANCHOR_GAP - WINDOW_MARGIN).max(0.0);
+    let above = (top - ANCHOR_GAP - WINDOW_MARGIN).max(0.0);
+    let (side, available) = if below >= MIN_EDITOR_HEIGHT || below >= above {
+        (Side::Bottom, below)
+    } else {
+        (Side::Top, above)
     };
     let header = row()
         .w_full()
@@ -257,7 +275,9 @@ pub(super) fn overlays(state: &State, palette: Palette, width: f32) -> Vec<El> {
             |state, _| tree::add_root(state, true),
         ));
     let mut form = col()
+        .key("keybinding-when-scroll")
         .w_full()
+        .max_h((available - POPUP_VERTICAL_INSET).max(0.0))
         .gap(12.0)
         .min_h(0.0)
         .scroll(ScrollSpec {
@@ -311,16 +331,12 @@ pub(super) fn overlays(state: &State, palette: Palette, width: f32) -> Vec<El> {
         .key("keybinding-when-popup")
         .role("dialog")
         .label("When")
-        .anchored_fit(
-            trigger(draft.original.as_ref()),
-            Side::Bottom,
-            Align::Start,
-            6.0,
-        )
+        .anchored_fit(anchor, side, Align::Start, ANCHOR_GAP)
         .anchored_round()
         .w((width - 16.0).clamp(0.0, 578.0))
-        .max_h(516.0)
-        .padding(16.0)
+        .max_h(available)
+        .clip_rounded(8.0)
+        .padding(POPUP_PADDING)
         .on_key(|state: &mut State, event, tx| {
             if event.key == Key::Escape {
                 close(state, tx);
