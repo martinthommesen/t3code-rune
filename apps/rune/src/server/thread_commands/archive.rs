@@ -10,6 +10,8 @@ use super::{
     ThreadCommandError, ThreadCommands, now_timestamp, trim_js,
 };
 
+mod queued;
+
 pub(super) const COMMAND: &str = "thread.archive";
 const CLEANUP: &str = "terminal.cleanup";
 
@@ -192,18 +194,19 @@ fn archive_thread(
             }
         }
     }
-    let sequence = ThreadEventStream::command_with_event_source(
+    let stream = ThreadEventStream::command_with_event_source(
         transaction,
         thread_id,
         command_id,
         effect_command,
-    )
-    .append(
+    );
+    let sequence = stream.append(
         "thread.archived",
         now,
         &json!({"providerInstanceId":projection["providerInstanceId"]}),
         &projection,
     )?;
+    let sequence = queued::cancel(transaction, &stream, thread_id, now, sequence)?;
     transaction.execute(
         INSERT_EFFECT,
         params![
@@ -273,7 +276,7 @@ const SELECT_THREAD: &str = "
         OR EXISTS (
             SELECT 1 FROM orchestration_v2_projection_runs AS run
             WHERE run.thread_id = thread.thread_id
-                AND (run.status IN ('queued', 'preparing', 'starting', 'running', 'waiting')
+                AND (run.status IN ('preparing', 'starting', 'running', 'waiting')
                    OR json_extract(run.payload_json, '$.delegatedCompletion') IS NOT NULL)
         )
         OR EXISTS (
