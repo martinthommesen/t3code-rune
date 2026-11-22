@@ -1161,9 +1161,11 @@ fn dispatch_thread(
         );
     };
     let command_type = payload["type"].as_str().unwrap_or_default();
-    if command_type == "queue.resume" {
+    if matches!(command_type, "queue.resume" | "queued-run.start") {
         let thread_id = payload["threadId"].as_str().unwrap_or_default();
-        return resume_worktree_queue(local, id, thread_id, &command_id);
+        let selected = (command_type == "queued-run.start")
+            .then(|| payload["runId"].as_str().unwrap_or_default());
+        return resume_worktree_queue(local, id, thread_id, &command_id, selected);
     }
     if matches!(command_type, "queued-run.edit" | "queued-run.cancel") {
         return queued_run::dispatch(local, id, &payload, &command_id, command_type);
@@ -1290,11 +1292,25 @@ fn resume_worktree_queue(
     id: RequestId,
     thread_id: &str,
     command_id: &str,
+    selected: Option<&str>,
 ) -> Value {
-    use super::turn_commands::queued_worktree::{ResumeOutcome, UNRESOLVED_WORKTREE};
+    use super::turn_commands::queued_worktree::{
+        INVALID_SELECTION, ResumeOutcome, UNRESOLVED_WORKTREE,
+    };
 
-    const COMMAND_TYPE: &str = "queue.resume";
-    match local.turns.resume_worktree_queue(thread_id, command_id) {
+    let (command_type, result) = match selected {
+        Some(run_id) => (
+            "queued-run.start",
+            local
+                .turns
+                .start_queued_worktree_run(thread_id, command_id, run_id),
+        ),
+        None => (
+            "queue.resume",
+            local.turns.resume_worktree_queue(thread_id, command_id),
+        ),
+    };
+    match result {
         Ok(ResumeOutcome::Accepted {
             sequence,
             committed,
@@ -1307,25 +1323,32 @@ fn resume_worktree_queue(
             local.turn_queue.wake();
             success(id, json!({"sequence":sequence}))
         }
-        Ok(ResumeOutcome::Unresolved) => failure(
-            id,
-            json!({
-                "_tag":"OrchestrationV2DispatchCommandError", "commandId": command_id,
-                "commandType": COMMAND_TYPE, "message": UNRESOLVED_WORKTREE, "detail": UNRESOLVED_WORKTREE,
-                "cause": {
-                    "name": "OrchestratorDispatchError",
-                    "message": format!("Failed to dispatch orchestration command {COMMAND_TYPE} ({command_id})."),
-                    "cause": UNRESOLVED_WORKTREE,
-                },
-            }),
-        ),
+        Ok(refusal @ (ResumeOutcome::Unresolved | ResumeOutcome::InvalidSelection)) => {
+            let detail = if matches!(refusal, ResumeOutcome::Unresolved) {
+                UNRESOLVED_WORKTREE
+            } else {
+                INVALID_SELECTION
+            };
+            failure(
+                id,
+                json!({
+                    "_tag":"OrchestrationV2DispatchCommandError", "commandId": command_id,
+                    "commandType": command_type, "message": detail, "detail": detail,
+                    "cause": {
+                        "name": "OrchestratorDispatchError",
+                        "message": format!("Failed to dispatch orchestration command {command_type} ({command_id})."),
+                        "cause": detail,
+                    },
+                }),
+            )
+        }
         Ok(ResumeOutcome::PreviouslyRejected(detail)) => {
             let message = format!("Command {command_id} was previously rejected: {detail}");
             failure(
                 id,
                 json!({
                     "_tag":"OrchestrationV2DispatchCommandError", "commandId": command_id,
-                    "commandType": COMMAND_TYPE, "message": message, "detail": message,
+                    "commandType": command_type, "message": message, "detail": message,
                     "cause": {"name": "OrchestratorCommandPreviouslyRejectedError", "message": message},
                 }),
             )
@@ -1334,7 +1357,7 @@ fn resume_worktree_queue(
             id,
             RpcError::OrchestrationV2DispatchCommandError {
                 command_id,
-                command_type: COMMAND_TYPE,
+                command_type,
                 message: &error.to_string(),
             },
         ),

@@ -195,7 +195,7 @@ const SELECT_READY_START: &str = "
                    WHERE previous.thread_id = run.thread_id AND previous.ordinal = (
                        SELECT MAX(candidate.ordinal) FROM orchestration_v2_projection_runs AS candidate
                        WHERE candidate.thread_id = run.thread_id AND candidate.ordinal < run.ordinal
-                         AND candidate.status != 'cancelled'
+                         AND candidate.status NOT IN ('queued', 'cancelled')
                    )
                      AND previous.provider_thread_id = provider_thread.provider_thread_id
                      AND previous.status = 'interrupted' AND stopped.type = 'run_interrupt_result'

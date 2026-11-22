@@ -287,6 +287,97 @@ fn stopping_preparation_holds_its_queue_and_rejects_resume_without_a_workspace()
     assert_eq!(effects, 0);
 }
 
+#[test]
+fn selecting_a_later_held_prompt_starts_only_that_prompt() {
+    let fixture = Fixture::new();
+    let commands = fixture.commands();
+    let workspace = fixture.directory.join("linked-worktree");
+    std::fs::create_dir(&workspace).unwrap();
+    let mut database = fixture.connection();
+    let setup = database.transaction().unwrap();
+    setup.execute(
+        "UPDATE orchestration_v2_projection_threads SET payload_json = json_set(payload_json, '$.worktreePath', ?2)
+         WHERE thread_id = ?1", params![THREAD, workspace.to_str().unwrap()],
+    ).unwrap();
+    append_preparing_dispatch(
+        &setup,
+        PreparingDispatch {
+            command_id: "launch",
+            thread_id: THREAD,
+            message_id: "message:first",
+            text: "First prompt",
+            model_selection: json!({"instanceId":"codex","model":"gpt-5.5"}),
+            workspace_strategy: &json!({"type":"worktree","baseRef":"main"}),
+            now: AT,
+        },
+    )
+    .unwrap();
+    setup.commit().unwrap();
+    let enqueue = |command: &str, text: &str| {
+        commands.dispatch(serde_json::from_value(json!({
+            "type":"message.dispatch", "commandId":command, "threadId":THREAD, "messageId":format!("message:{command}"),
+            "createdBy":"user", "creationSource":"web", "text":text, "attachments":[],
+            "dispatchMode":{"type":"queue_after_active"},
+        })).unwrap()).unwrap().run_id
+    };
+    let earlier = enqueue("earlier", "Wait in queue");
+    let selected = enqueue("selected", "Start this prompt");
+    assert!(matches!(
+        commands
+            .start_queued_worktree_run(THREAD, "too-early", &selected)
+            .unwrap(),
+        ResumeOutcome::InvalidSelection
+    ));
+    let stopped = commands
+        .stop_thread(
+            serde_json::from_value(json!({
+                "type":"thread.stop", "commandId":"stop", "threadId":THREAD,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    let ResumeOutcome::Accepted {
+        sequence,
+        committed: true,
+    } = commands
+        .start_queued_worktree_run(THREAD, "selected-now", &selected)
+        .unwrap()
+    else {
+        panic!("the selected run should start");
+    };
+    assert_eq!(sequence, stopped.sequence + 2);
+    assert!(matches!(
+        commands.start_queued_worktree_run(THREAD, "selected-now", &selected).unwrap(),
+        ResumeOutcome::Accepted { sequence: replay, committed: false } if replay == sequence
+    ));
+    let root_status = |id: &str| -> (String, i64, bool) {
+        database
+            .query_row(
+                "SELECT status, ordinal, json_extract(payload_json, '$.queueHeld')
+             FROM orchestration_v2_projection_runs WHERE run_id = ?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap()
+    };
+    assert_eq!(root_status(&earlier), ("queued".to_owned(), 2, false));
+    assert_eq!(root_status(&selected), ("starting".to_owned(), 3, false));
+    let effect: String = database
+        .query_row(
+            "SELECT effect_id FROM orchestration_v2_effect_outbox WHERE status = 'pending'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let claimed = commands
+        .claim_start(&effect, "selected-worker")
+        .unwrap()
+        .unwrap();
+    assert_eq!(claimed.run_id, selected);
+    assert_eq!(claimed.turn.text, "Start this prompt");
+    assert_eq!(claimed.turn.cwd, workspace);
+}
+
 fn payload(transaction: &Transaction<'_>, query: &str, id: &str) -> Value {
     let encoded: String = transaction
         .query_row(query, [id], |row| row.get(0))

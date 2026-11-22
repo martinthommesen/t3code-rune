@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::{Value, json};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -14,7 +14,7 @@ use super::{
 };
 
 mod resume;
-pub(in crate::server) use resume::{ResumeOutcome, UNRESOLVED_WORKTREE};
+pub(in crate::server) use resume::{INVALID_SELECTION, ResumeOutcome, UNRESOLVED_WORKTREE};
 
 #[cfg(test)]
 mod tests;
@@ -50,7 +50,9 @@ const INTAKE: &str = "
 const READY: &str = "
     SELECT run.payload_json, attempt.payload_json, node.payload_json, message.payload_json,
            provider.payload_json, json_extract(thread.payload_json, '$.worktreePath'),
-           run.ordinal, COALESCE(scope.run_id = run.run_id, 0)
+           run.ordinal, scope.scope_id IS NOT NULL, predecessor.ordinal,
+           (SELECT MAX(candidate.ordinal) FROM orchestration_v2_projection_runs AS candidate
+            WHERE candidate.thread_id = run.thread_id)
     FROM orchestration_v2_projection_runs AS run
     JOIN orchestration_v2_projection_threads AS thread ON thread.thread_id = run.thread_id
     JOIN projection_projects AS project ON project.project_id = thread.project_id
@@ -58,8 +60,7 @@ const READY: &str = "
     JOIN orchestration_v2_projection_runs AS predecessor ON predecessor.thread_id = run.thread_id
          AND predecessor.ordinal = (
              SELECT MAX(previous.ordinal) FROM orchestration_v2_projection_runs AS previous
-             WHERE previous.thread_id = run.thread_id AND previous.ordinal < run.ordinal
-               AND previous.status != 'cancelled'
+             WHERE previous.thread_id = run.thread_id AND previous.status NOT IN ('queued', 'cancelled')
          )
     JOIN orchestration_v2_projection_run_attempts AS attempt ON attempt.run_id = run.run_id
          AND attempt.attempt_id = json_extract(run.payload_json, '$.activeAttemptId')
@@ -69,8 +70,9 @@ const READY: &str = "
     JOIN orchestration_v2_projection_provider_threads AS provider
          ON provider.provider_thread_id = run.provider_thread_id AND provider.thread_id = thread.thread_id
     LEFT JOIN orchestration_v2_projection_checkpoint_scopes AS scope
-         ON scope.scope_id = json_extract(node.payload_json, '$.checkpointScopeId')
+         ON scope.scope_id = json_extract(node.payload_json, '$.checkpointScopeId') AND scope.thread_id = run.thread_id
     WHERE run.thread_id = ?1 AND run.status = 'queued' AND run.ordinal > 1
+      AND (?2 IS NULL OR run.run_id = ?2)
       AND first.status IN ('completed', 'interrupted')
       AND json_extract(first.payload_json, '$.workspacePreparation.type') = 'worktree'
       AND predecessor.provider_thread_id = provider.provider_thread_id
@@ -99,7 +101,7 @@ const READY: &str = "
                      AND json_extract(unhold.payload_json, '$.id') = run.run_id
                      AND json_type(unhold.payload_json, '$.queueHeld') = 'false'
                      AND receipt.aggregate_kind = 'thread' AND receipt.aggregate_id = run.thread_id
-                     AND receipt.command_type = 'queue.resume' AND receipt.status = 'accepted'
+                     AND receipt.command_type IN ('queue.resume', 'queued-run.start') AND receipt.status = 'accepted'
                ))
       )
       AND run.provider_instance_id = 'codex' AND attempt.status = 'pending' AND node.status = 'pending'
@@ -116,11 +118,20 @@ pub(super) const ROOT_SCOPE_MATCH: &str = "
     AND (
         (scope.run_id = run.run_id AND scope.node_id = node.node_id)
         OR (
-            json_extract(run.payload_json, '$.workspacePreparation.type') = 'worktree'
-            AND EXISTS (
-                SELECT 1 FROM orchestration_v2_projection_runs AS queued
-                WHERE queued.run_id = scope.run_id AND queued.thread_id = run.thread_id
-                  AND queued.provider_thread_id = run.provider_thread_id AND queued.status IN ('queued', 'cancelled')
+            (
+                (json_extract(run.payload_json, '$.workspacePreparation.type') = 'worktree'
+                  AND EXISTS (
+                    SELECT 1 FROM orchestration_v2_projection_runs AS queued
+                    WHERE queued.run_id = scope.run_id AND queued.thread_id = run.thread_id
+                      AND queued.provider_thread_id = run.provider_thread_id AND queued.status IN ('queued', 'cancelled')
+                  ))
+                OR EXISTS (
+                    SELECT 1 FROM orchestration_v2_projection_turn_items AS input
+                    WHERE input.thread_id = run.thread_id AND input.run_id = run.run_id
+                      AND input.type = 'user_message'
+                      AND json_extract(input.payload_json, '$.messageId') = json_extract(run.payload_json, '$.userMessageId')
+                      AND json_extract(input.payload_json, '$.inputIntent') = 'queued_turn'
+                )
             )
             AND EXISTS (
                 SELECT 1 FROM orchestration_events AS scope_event
@@ -129,6 +140,7 @@ pub(super) const ROOT_SCOPE_MATCH: &str = "
                   AND json_extract(scope_event.payload_json, '$.id') = scope.scope_id
                   AND json_extract(scope_event.payload_json, '$.runId') = run.run_id
                   AND json_extract(scope_event.payload_json, '$.nodeId') = node.node_id
+                  AND json_extract(scope_event.payload_json, '$.providerThreadId') = run.provider_thread_id
                   AND json_extract(scope_event.payload_json, '$.cwd') = json_extract(scope.payload_json, '$.cwd')
             )
         )
@@ -388,21 +400,43 @@ impl TurnCommands {
     ) -> Result<Option<i64>, TurnCommandError> {
         let mut connection = self.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let Some((run, attempt, node, message, provider, workspace, run_ordinal, scoped)) =
-            transaction
-                .query_row(READY, [thread_id], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
-                        PathBuf::from(row.get::<_, String>(5)?),
-                        row.get::<_, i64>(6)?,
-                        row.get::<_, bool>(7)?,
-                    ))
-                })
-                .optional()?
+        let sequence = Self::activate_queued_worktree(&transaction, thread_id, None)?;
+        transaction.commit()?;
+        Ok(sequence)
+    }
+
+    fn activate_queued_worktree(
+        transaction: &Transaction<'_>,
+        thread_id: &str,
+        selected: Option<&str>,
+    ) -> Result<Option<i64>, TurnCommandError> {
+        let Some((
+            run,
+            attempt,
+            node,
+            message,
+            provider,
+            workspace,
+            queued_ordinal,
+            scoped,
+            previous_ordinal,
+            max_ordinal,
+        )) = transaction
+            .query_row(READY, params![thread_id, selected], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    PathBuf::from(row.get::<_, String>(5)?),
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, bool>(7)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, i64>(9)?,
+                ))
+            })
+            .optional()?
         else {
             return Ok(None);
         };
@@ -420,16 +454,27 @@ impl TurnCommands {
         let Some(provider_id) = provider["id"].as_str() else {
             return Ok(None);
         };
-        let ids = TurnIds::for_run(thread_id, message_id, run_ordinal, Some(provider_id));
+        let ids = TurnIds::for_run(thread_id, message_id, queued_ordinal, Some(provider_id));
         if run["id"] != ids.run_id
             || attempt["id"] != ids.attempt_id
             || node["id"] != ids.root_node_id
         {
             return Ok(None);
         }
+        // A card sent ahead of earlier queued cards keeps its run ID. Those older cards
+        // get their transcript and checkpoint positions when they eventually start.
+        let run_ordinal = if previous_ordinal > queued_ordinal {
+            max_ordinal
+                .checked_add(1)
+                .ok_or(TurnCommandError::Unsupported(
+                    "The next run ordinal exceeds the supported range.",
+                ))?
+        } else {
+            queued_ordinal
+        };
         let now = timestamp(OffsetDateTime::now_utc());
         let run_metadata = json!({"runId":ids.run_id, "nodeId":ids.root_node_id, "providerInstanceId":CODEX_INSTANCE});
-        let stream = ThreadEventStream::server(&transaction, thread_id);
+        let stream = ThreadEventStream::server(transaction, thread_id);
         if !scoped {
             stream.append(
                 "checkpoint-scope.created",
@@ -450,12 +495,8 @@ impl TurnCommands {
             &json!({"providerInstanceId": CODEX_INSTANCE}),
             &provider,
         )?;
-        let ordinal = allocate_turn_item_in_run(
-            &transaction,
-            thread_id,
-            &ids.user_turn_item_id,
-            run_ordinal,
-        )?;
+        let ordinal =
+            allocate_turn_item_in_run(transaction, thread_id, &ids.user_turn_item_id, run_ordinal)?;
         stream.append(
             "turn-item.updated",
             &now,
@@ -463,6 +504,7 @@ impl TurnCommands {
             &user_message_item(&ids, &message, ordinal, &now, "queued_turn"),
         )?;
         run["status"] = json!("starting");
+        run["ordinal"] = json!(run_ordinal);
         run["queuePosition"] = Value::Null;
         let sequence = stream.append("run.updated", &now, &run_metadata, &run)?;
         let command_id = format!("command:system:start-queued:{}", ids.run_id);
@@ -487,8 +529,7 @@ impl TurnCommands {
                 now
             ],
         )?;
-        record_projected_sequence(&transaction, sequence, &now)?;
-        transaction.commit()?;
+        record_projected_sequence(transaction, sequence, &now)?;
         Ok(Some(sequence))
     }
 }

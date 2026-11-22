@@ -10,10 +10,13 @@ use super::{
 
 pub(in crate::server) const UNRESOLVED_WORKTREE: &str =
     "Retry worktree setup or choose a workspace before resuming the queue.";
+pub(in crate::server) const INVALID_SELECTION: &str =
+    "A queued user message can only be sent now while the thread is stopped.";
 
 pub(in crate::server) enum ResumeOutcome {
     Accepted { sequence: i64, committed: bool },
     Unresolved,
+    InvalidSelection,
     PreviouslyRejected(String),
 }
 
@@ -42,28 +45,83 @@ const STOPPED_WORKTREE: &str = "
           WHERE active.thread_id = thread.thread_id AND active.status IN ('preparing', 'starting', 'running', 'waiting')
       )";
 
+const SELECTED_QUEUED_RUN: &str = "
+    SELECT EXISTS (
+        SELECT 1 FROM orchestration_v2_projection_runs AS run
+        JOIN orchestration_v2_projection_messages AS message
+          ON message.thread_id = run.thread_id AND message.run_id = run.run_id
+          AND message.message_id = json_extract(run.payload_json, '$.userMessageId') AND message.role = 'user'
+        WHERE run.thread_id = ?1 AND run.run_id = ?2 AND run.status = 'queued'
+          AND json_type(message.payload_json, '$.delegatedCompletion') IS NULL
+          AND json_type(message.payload_json, '$.notification') IS NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM orchestration_v2_projection_runs AS active
+              WHERE active.thread_id = run.thread_id AND active.status IN ('preparing', 'starting', 'running', 'waiting')
+          )
+    )";
+
 impl TurnCommands {
     pub(in crate::server) fn resume_worktree_queue(
         &self,
         thread_id: &str,
         command_id: &str,
     ) -> Result<ResumeOutcome, TurnCommandError> {
+        self.release_worktree_queue(thread_id, command_id, None)
+    }
+
+    pub(in crate::server) fn start_queued_worktree_run(
+        &self,
+        thread_id: &str,
+        command_id: &str,
+        run_id: &str,
+    ) -> Result<ResumeOutcome, TurnCommandError> {
+        if run_id.trim().is_empty() {
+            return Err(TurnCommandError::Unsupported(
+                "A queued run ID is required.",
+            ));
+        }
+        self.release_worktree_queue(thread_id, command_id, Some(run_id))
+    }
+
+    fn release_worktree_queue(
+        &self,
+        thread_id: &str,
+        command_id: &str,
+        selected: Option<&str>,
+    ) -> Result<ResumeOutcome, TurnCommandError> {
         if thread_id.trim().is_empty() || command_id.trim().is_empty() {
             return Err(TurnCommandError::Unsupported(
                 "A thread ID and command ID are required.",
             ));
         }
+        let command_type = if selected.is_some() {
+            "queued-run.start"
+        } else {
+            "queue.resume"
+        };
         let mut connection = self.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if let Some(receipt) = previous_resume(&transaction, thread_id, command_id)? {
-            transaction.commit()?;
-            return match receipt {
-                ResumeOutcome::Accepted { sequence, .. } => Ok(ResumeOutcome::Accepted {
+        if let Some(receipt) = previous_resume(&transaction, thread_id, command_id, command_type)? {
+            let outcome = match receipt {
+                ResumeOutcome::Accepted { sequence, .. } => ResumeOutcome::Accepted {
                     sequence,
-                    committed: self.promote_queued_worktree(thread_id)?.is_some(),
-                }),
-                refusal => Ok(refusal),
+                    committed: Self::activate_queued_worktree(&transaction, thread_id, selected)?
+                        .is_some(),
+                },
+                refusal => refusal,
             };
+            transaction.commit()?;
+            return Ok(outcome);
+        }
+        let now = timestamp(OffsetDateTime::now_utc());
+        if let Some(run_id) = selected
+            && !transaction.query_row(SELECTED_QUEUED_RUN, params![thread_id, run_id], |row| {
+                row.get::<_, bool>(0)
+            })?
+        {
+            reject(&transaction, thread_id, command_id, command_type, &now)?;
+            transaction.commit()?;
+            return Ok(ResumeOutcome::InvalidSelection);
         }
         let worktree = transaction
             .query_row(STOPPED_WORKTREE, [thread_id], |row| {
@@ -75,23 +133,8 @@ impl TurnCommands {
                 "This queue requires a worktree run interrupted before provider start.",
             ));
         };
-        let now = timestamp(OffsetDateTime::now_utc());
         let Some(worktree) = worktree else {
-            let sequence: i64 = transaction.query_row(
-                "SELECT COALESCE(MAX(sequence), 0) FROM orchestration_events
-                 WHERE aggregate_kind = 'thread' AND stream_id = ?1 AND application_event_version = 2",
-                [thread_id], |row| row.get(0),
-            )?;
-            let error =
-                format!("Failed to dispatch orchestration command queue.resume ({command_id}).");
-            commit_receipt(
-                &transaction,
-                thread_id,
-                command_id,
-                sequence,
-                &now,
-                Some(&error),
-            )?;
+            reject(&transaction, thread_id, command_id, command_type, &now)?;
             transaction.commit()?;
             return Ok(ResumeOutcome::Unresolved);
         };
@@ -109,10 +152,18 @@ impl TurnCommands {
                 "There are no queued turns to resume.",
             ));
         };
-        commit_receipt(&transaction, thread_id, command_id, sequence, &now, None)?;
+        commit_receipt(
+            &transaction,
+            thread_id,
+            command_id,
+            command_type,
+            sequence,
+            &now,
+            None,
+        )?;
         record_projected_sequence(&transaction, sequence, &now)?;
+        Self::activate_queued_worktree(&transaction, thread_id, selected)?;
         transaction.commit()?;
-        self.promote_queued_worktree(thread_id)?;
         Ok(ResumeOutcome::Accepted {
             sequence,
             committed: true,
@@ -124,6 +175,7 @@ fn previous_resume(
     transaction: &Transaction<'_>,
     thread_id: &str,
     command_id: &str,
+    expected_command_type: &str,
 ) -> Result<Option<ResumeOutcome>, TurnCommandError> {
     let receipt = transaction
         .query_row(
@@ -145,7 +197,7 @@ fn previous_resume(
     let Some((kind, owner, command_type, status, sequence, error)) = receipt else {
         return Ok(None);
     };
-    if kind != "thread" || owner != thread_id || command_type != "queue.resume" {
+    if kind != "thread" || owner != thread_id || command_type != expected_command_type {
         return Err(TurnCommandError::Unsupported(
             "The command ID already has a different receipt.",
         ));
@@ -162,10 +214,36 @@ fn previous_resume(
     }))
 }
 
+fn reject(
+    transaction: &Transaction<'_>,
+    thread_id: &str,
+    command_id: &str,
+    command_type: &str,
+    now: &str,
+) -> rusqlite::Result<()> {
+    let sequence = transaction.query_row(
+        "SELECT COALESCE(MAX(sequence), 0) FROM orchestration_events
+         WHERE aggregate_kind = 'thread' AND stream_id = ?1 AND application_event_version = 2",
+        [thread_id],
+        |row| row.get(0),
+    )?;
+    let error = format!("Failed to dispatch orchestration command {command_type} ({command_id}).");
+    commit_receipt(
+        transaction,
+        thread_id,
+        command_id,
+        command_type,
+        sequence,
+        now,
+        Some(&error),
+    )
+}
+
 fn commit_receipt(
     transaction: &Transaction<'_>,
     thread_id: &str,
     command_id: &str,
+    command_type: &str,
     sequence: i64,
     now: &str,
     error: Option<&str>,
@@ -178,8 +256,8 @@ fn commit_receipt(
     transaction.execute(
         "INSERT INTO orchestration_command_receipts (
             command_id, aggregate_kind, aggregate_id, accepted_at, result_sequence, status, error, command_type
-         ) VALUES (?1, 'thread', ?2, ?3, ?4, ?5, ?6, 'queue.resume')",
-        params![command_id, thread_id, now, sequence, status, error],
+         ) VALUES (?1, 'thread', ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![command_id, thread_id, now, sequence, status, error, command_type],
     )?;
     Ok(())
 }
