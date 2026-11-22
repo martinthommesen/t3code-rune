@@ -25,7 +25,9 @@ pub(super) use remove_worktree::{
     AutomaticInspectionError, RemoveWorktreeInput, inspect_automatic, remove_automatic,
     remove_worktree,
 };
-pub(super) use restore_worktree::{restore_existing_branch, worktree_can_restore};
+pub(super) use restore_worktree::{
+    restore_existing_branch, restore_existing_branch_locked, worktree_can_restore,
+};
 
 const SERVICE: &str = "GitWorkflowService.switchRef";
 const DRIVER: &str = "GitVcsDriver.switchRef";

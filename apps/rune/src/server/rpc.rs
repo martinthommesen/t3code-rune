@@ -821,6 +821,23 @@ pub(super) async fn serve(
                     _ => Ok(defect(id, "A thread ID is required.".into())),
                 }
             }
+            ClientMessage::Request { id, tag, payload } if tag == "terminal.open" => {
+                if let Some(local) = local.as_ref().filter(|_| permissions.terminal_operate) {
+                    let local = Arc::clone(local);
+                    let store = store.clone();
+                    let runtime = tokio::runtime::Handle::current();
+                    tokio::task::spawn_blocking(move || {
+                        runtime.block_on(terminal_rpc::open(&local, &store, payload))
+                    })
+                    .await
+                    .map(|result| match result {
+                        Ok(value) => success(id, value),
+                        Err(error) => failure(id, error),
+                    })
+                } else {
+                    Ok(terminal_denied(id, "terminal:operate"))
+                }
+            }
             ClientMessage::Request { id, tag, payload }
                 if matches!(tag.as_str(), "terminal.observe" | "terminal.attach") =>
             {
@@ -832,9 +849,14 @@ pub(super) async fn serve(
                 if let Some(local) = local.as_ref().filter(|_| allowed) {
                     let local_for_task = Arc::clone(local);
                     let store = store.clone();
+                    let runtime = tokio::runtime::Handle::current();
                     tokio::task::spawn_blocking(move || {
-                        terminal_rpc::subscribe(&local_for_task.terminals, &store, &tag, payload)
-                            .expect("known terminal subscription")
+                        runtime.block_on(terminal_rpc::subscribe(
+                            &local_for_task,
+                            &store,
+                            &tag,
+                            payload,
+                        ))
                     })
                     .await
                     .map(|result| match result {
@@ -1440,8 +1462,7 @@ fn response(
                 ),
             }
         }
-        "terminal.open"
-        | "terminal.write"
+        "terminal.write"
         | "terminal.resize"
         | "terminal.clear"
         | "terminal.close"

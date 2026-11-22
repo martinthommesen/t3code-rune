@@ -1,15 +1,17 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use tokio::sync::broadcast;
 
+use super::LocalOperations;
 use super::store::Store;
 use super::terminal::{
-    OpenTerminal, TerminalError, TerminalEvent, TerminalKey, TerminalManager, present_worktree_path,
+    OpenTerminal, TerminalError, TerminalEvent, TerminalKey, TerminalManager, TerminalSnapshot,
+    present_worktree_path,
 };
 
 #[derive(Deserialize)]
@@ -81,15 +83,6 @@ pub(super) fn call(
     payload: Value,
 ) -> Option<Result<Value, Value>> {
     Some(match tag {
-        "terminal.open" => {
-            let provider = payload.get("providerInstanceId").cloned();
-            decode(payload).and_then(|mut input: OpenTerminal| {
-                normalize_key(&mut input.key)?;
-                reject_missing_provider(provider)?;
-                authorize_open(store, &mut input)?;
-                encode(manager.open(input).map_err(wire)?)
-            })
-        }
         "terminal.write" => decode(payload).and_then(|mut input: WriteInput| {
             normalize_key(&mut input.key)?;
             manager
@@ -174,23 +167,32 @@ fn utf8_workspace(path: &Path) -> Result<String, Value> {
         .ok_or_else(|| invalid("Terminal folder must be a UTF-8 path."))
 }
 
-pub(super) fn subscribe(
-    manager: &TerminalManager,
+pub(super) async fn open(
+    local: &LocalOperations,
+    store: &Store,
+    payload: Value,
+) -> Result<Value, Value> {
+    let provider = payload.get("providerInstanceId").cloned();
+    let mut input: OpenTerminal = decode(payload)?;
+    normalize_key(&mut input.key)?;
+    reject_missing_provider(provider)?;
+    encode(launch(local, store, input).await?)
+}
+
+pub(super) async fn subscribe(
+    local: &LocalOperations,
     store: &Store,
     tag: &str,
     payload: Value,
-) -> Option<Result<Subscription, Value>> {
-    Some(match tag {
-        "terminal.observe" => decode(payload).and_then(|mut key: TerminalKey| {
-            normalize_key(&mut key)?;
-            observe(manager, key, None)
-        }),
-        "terminal.attach" => decode(payload).and_then(|mut input: AttachInput| {
-            normalize_key(&mut input.key)?;
-            attach(manager, store, input)
-        }),
-        _ => return None,
-    })
+) -> Result<Subscription, Value> {
+    if tag == "terminal.observe" {
+        let mut key: TerminalKey = decode(payload)?;
+        normalize_key(&mut key)?;
+        return observe(&local.terminals, key, None);
+    }
+    let mut input: AttachInput = decode(payload)?;
+    normalize_key(&mut input.key)?;
+    attach(local, store, input).await
 }
 
 pub(super) fn observe(
@@ -210,11 +212,12 @@ pub(super) fn observe(
     })
 }
 
-fn attach(
-    manager: &TerminalManager,
+async fn attach(
+    local: &LocalOperations,
     store: &Store,
     input: AttachInput,
 ) -> Result<Subscription, Value> {
+    let manager = &local.terminals;
     let key = input.key;
     let max_history_bytes = input.max_history_bytes;
     if input.resume
@@ -247,7 +250,7 @@ fn attach(
         .cwd
         .expect("a launch location is present when starting a session");
     reject_missing_provider(input.provider_instance_id.map(Value::String))?;
-    let mut opening = OpenTerminal {
+    let opening = OpenTerminal {
         key: key.clone(),
         cwd,
         worktree_path: input.worktree_path,
@@ -255,8 +258,7 @@ fn attach(
         rows: input.rows,
         env: input.env,
     };
-    authorize_open(store, &mut opening)?;
-    manager.open(opening).map_err(wire)?;
+    launch(local, store, opening).await?;
     observe(manager, key, max_history_bytes)
 }
 
@@ -274,14 +276,76 @@ fn reject_missing_provider(provider: Option<Value>) -> Result<(), Value> {
     }
 }
 
-fn authorize_open(store: &Store, input: &mut OpenTerminal) -> Result<(), Value> {
+async fn launch(
+    local: &LocalOperations,
+    store: &Store,
+    mut input: OpenTerminal,
+) -> Result<TerminalSnapshot, Value> {
     let workspace = store
         .terminal_workspace(&input.key.thread_id)
         .map_err(|_| invalid("Could not read the thread's terminal workspace."))?;
     let Some((project, worktree)) = workspace else {
         return Err(wire(TerminalError::Unknown(input.key.clone())));
     };
-    constrain_launch(input, &project, worktree.as_deref())
+    let _checkout = if let Some(root) = &worktree {
+        Some(super::vcs_checkout::checkout_lease(root).await)
+    } else {
+        None
+    };
+    if let Err(error) = constrain_launch(&mut input, &project, worktree.as_deref()) {
+        let Some(worktree) = worktree
+            .as_deref()
+            .filter(|root| eligible_launch(&input, root))
+        else {
+            return Err(error);
+        };
+        if error["_tag"] != "TerminalCwdNotFoundError" {
+            return Err(error);
+        }
+        let missing_cwd = workspace_directory(&input.cwd).err().unwrap_or(error);
+        if missing_cwd["_tag"] != "TerminalCwdNotFoundError"
+            || !restore_worktree(local, &input.key.thread_id, worktree).await
+        {
+            return Err(missing_cwd);
+        }
+        constrain_launch(&mut input, &project, Some(worktree))?;
+    }
+    local.terminals.open(input).map_err(wire)
+}
+
+fn eligible_launch(input: &OpenTerminal, worktree: &Path) -> bool {
+    worktree.is_absolute()
+        && input.cwd.starts_with(worktree)
+        && !input
+            .cwd
+            .components()
+            .any(|part| part == Component::ParentDir)
+        && input
+            .worktree_path
+            .as_ref()
+            .and_then(Option::as_deref)
+            .is_none_or(|requested| requested == worktree)
+}
+
+async fn restore_worktree(local: &LocalOperations, thread_id: &str, worktree: &Path) -> bool {
+    let Ok(Some((project, branch))) = local.turns.workspace_for_restoration(thread_id, worktree)
+    else {
+        return false;
+    };
+    let settings = &local.settings;
+    let Some(state_dir) = settings.path().parent() else {
+        return false;
+    };
+    let default = super::named_projects::root_for(state_dir).with_file_name("worktrees");
+    let snapshot = settings.read().ok().map(|snapshot| snapshot.for_client());
+    let roots = super::thread_launch::managed_worktrees_roots(
+        settings.path(),
+        snapshot.as_ref().unwrap_or(&Value::Null),
+        &default,
+    );
+    super::vcs_checkout::restore_existing_branch_locked(&project, worktree, &branch, &roots)
+        .await
+        .unwrap_or(false)
 }
 
 fn constrain_launch(

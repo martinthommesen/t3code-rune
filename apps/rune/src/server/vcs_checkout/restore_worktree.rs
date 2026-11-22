@@ -47,10 +47,19 @@ pub(in crate::server) async fn restore_existing_branch(
     branch: &str,
     managed_roots: &[PathBuf],
 ) -> Result<bool, GitCommandError> {
+    let _checkout = checkout_lease(worktree).await;
+    restore_existing_branch_locked(project, worktree, branch, managed_roots).await
+}
+
+pub(in crate::server) async fn restore_existing_branch_locked(
+    project: &Path,
+    worktree: &Path,
+    branch: &str,
+    managed_roots: &[PathBuf],
+) -> Result<bool, GitCommandError> {
     let (Some(project_cwd), Some(target)) = (project.to_str(), worktree.to_str()) else {
         return Ok(false);
     };
-    let _checkout = checkout_lease(worktree).await;
     let target_path = worktree.to_owned();
     let roots = managed_roots.to_vec();
     let applicable = tokio::task::spawn_blocking(move || eligible(&target_path, &roots))
