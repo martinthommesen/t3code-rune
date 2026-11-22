@@ -1071,8 +1071,8 @@ impl State {
             Event::WorkspaceProjectFile { operation, mode } => {
                 self.set_workspace_project_file(operation, mode);
             }
-            Event::WorkspaceModeSettled { operation, result } => {
-                self.settle_workspace_mode(operation, result);
+            Event::WorkspaceSettingSettled { operation, result } => {
+                self.settle_workspace_setting(operation, result);
             }
             Event::ProjectEditSettled {
                 project_id,

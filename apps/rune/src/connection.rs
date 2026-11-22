@@ -151,7 +151,7 @@ pub(crate) enum Event {
         operation: Uuid,
         mode: Option<WorkspaceMode>,
     },
-    WorkspaceModeSettled {
+    WorkspaceSettingSettled {
         operation: Uuid,
         result: Result<(), String>,
     },
@@ -299,9 +299,9 @@ enum Command {
         project_id: String,
         operation: Uuid,
     },
-    UpdateWorkspaceMode {
+    UpdateWorkspaceSetting {
         project_id: Option<String>,
-        mode: Option<WorkspaceMode>,
+        edit: workspace_settings::Edit,
         operation: Uuid,
     },
     LoadProjectFavicons(Vec<FaviconTarget>),
@@ -1729,12 +1729,12 @@ impl Session {
                 self.load_workspace_project_file(project_id, operation, events)
                     .await?;
             }
-            Command::UpdateWorkspaceMode {
+            Command::UpdateWorkspaceSetting {
                 project_id,
-                mode,
+                edit,
                 operation,
             } => {
-                self.save_workspace_mode(project_id, mode, operation, events)
+                self.save_workspace_setting(project_id, edit, operation, events)
                     .await?;
             }
             Command::EditKeybinding { edit, operation } => {

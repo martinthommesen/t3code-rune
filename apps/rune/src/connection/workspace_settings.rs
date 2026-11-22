@@ -10,11 +10,37 @@ use super::{
 };
 
 const KEY: &str = "defaultThreadEnvMode";
+const ORIGIN: &str = "newWorktreesStartFromOrigin";
 const PROJECT_OVERRIDES: &str = "projectSettingsOverrides";
+
+pub(super) enum Edit {
+    Mode(Option<WorkspaceMode>),
+    StartFromRemote(Option<bool>),
+}
+
+impl Edit {
+    fn property(&self, project_scope: bool) -> (&'static str, Value) {
+        match self {
+            Self::Mode(mode) => (KEY, json!(mode)),
+            Self::StartFromRemote(Some(enabled)) => (ORIGIN, json!(enabled)),
+            Self::StartFromRemote(None) if project_scope => (ORIGIN, Value::Null),
+            Self::StartFromRemote(None) => (ORIGIN, Value::Bool(true)),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct OriginSetting {
+    pub(crate) enabled: bool,
+    pub(crate) projects: HashMap<String, bool>,
+    pub(crate) writable: bool,
+    pub(crate) managed_by: Option<String>,
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct WorkspaceSetting {
     pub(crate) configured: Option<WorkspaceMode>,
+    pub(crate) origin: OriginSetting,
     pub(crate) projects: HashMap<String, WorkspaceMode>,
     pub(crate) writable: bool,
     pub(crate) managed_by: Option<String>,
@@ -23,6 +49,7 @@ pub(crate) struct WorkspaceSetting {
 pub(super) struct Subscription {
     can_write: bool,
     managed_by: Option<String>,
+    origin_managed_by: Option<String>,
     pending: Option<Pending>,
     overrides: Map<String, Value>,
     pending_file: Option<Pending>,
@@ -39,6 +66,7 @@ impl Subscription {
         Self {
             can_write,
             managed_by: None,
+            origin_managed_by: None,
             pending: None,
             overrides: Map::new(),
             pending_file: None,
@@ -54,7 +82,8 @@ impl Subscription {
             let settings = match event["type"].as_str() {
                 Some("snapshot") => {
                     let config = &event["config"];
-                    self.managed_by = managed_by(&config["managedPolicy"]);
+                    self.managed_by = managed_by(&config["managedPolicy"], KEY);
+                    self.origin_managed_by = managed_by(&config["managedPolicy"], ORIGIN);
                     &config["settings"]
                 }
                 Some("settingsUpdated") => &event["payload"]["settings"],
@@ -65,11 +94,25 @@ impl Subscription {
                     .as_object()
                     .cloned()
                     .unwrap_or_default();
-                current = Some(mode);
+                current = Some((mode, settings[ORIGIN].as_bool().unwrap_or(true)));
             }
         }
-        current.map(|configured| WorkspaceSetting {
+        current.map(|(configured, origin)| WorkspaceSetting {
             configured,
+            origin: OriginSetting {
+                enabled: origin,
+                projects: self
+                    .overrides
+                    .iter()
+                    .filter_map(|(id, project)| {
+                        project[ORIGIN]
+                            .as_bool()
+                            .map(|enabled| (id.clone(), enabled))
+                    })
+                    .collect(),
+                writable: self.can_write && self.origin_managed_by.is_none(),
+                managed_by: self.origin_managed_by.clone(),
+            },
             projects: self
                 .overrides
                 .iter()
@@ -84,9 +127,10 @@ impl Subscription {
         })
     }
 
-    fn patch(&self, project_id: Option<&str>, mode: Option<WorkspaceMode>) -> Value {
+    fn patch(&self, project_id: Option<&str>, edit: Edit) -> Value {
+        let (key, value) = edit.property(project_id.is_some());
         let Some(project_id) = project_id else {
-            return json!({KEY: mode});
+            return json!({key: value});
         };
         let mut project = self
             .overrides
@@ -94,10 +138,10 @@ impl Subscription {
             .and_then(Value::as_object)
             .cloned()
             .unwrap_or_default();
-        if let Some(mode) = mode {
-            project.insert(KEY.to_owned(), json!(mode));
+        if value.is_null() {
+            project.remove(key);
         } else {
-            project.remove(KEY);
+            project.insert(key.to_owned(), value);
         }
         // An empty object drops a genuinely empty entry while the server preserves opaque
         // fields which the client projection cannot see.
@@ -112,12 +156,15 @@ fn configured_mode(settings: &Value) -> Option<Option<WorkspaceMode>> {
     }
 }
 
-fn managed_by(policy: &Value) -> Option<String> {
+fn managed_by(policy: &Value, key: &str) -> Option<String> {
     let organization = policy["organization"].as_str()?;
     let locked = policy["lockedSettings"].as_array()?.iter().any(|entry| {
-        entry
-            .as_str()
-            .is_some_and(|path| path == KEY || path.starts_with("defaultThreadEnvMode."))
+        entry.as_str().is_some_and(|path| {
+            path == key
+                || path
+                    .strip_prefix(key)
+                    .is_some_and(|rest| rest.starts_with('.'))
+        })
     });
     (locked && !organization.is_empty()).then(|| organization.to_owned())
 }
@@ -132,11 +179,23 @@ impl Connection {
         project_id: Option<String>,
         mode: Option<WorkspaceMode>,
     ) -> Option<Uuid> {
+        self.update_workspace_setting(project_id, Edit::Mode(mode))
+    }
+
+    pub(crate) fn update_worktree_origin(
+        &self,
+        project_id: Option<String>,
+        enabled: Option<bool>,
+    ) -> Option<Uuid> {
+        self.update_workspace_setting(project_id, Edit::StartFromRemote(enabled))
+    }
+
+    fn update_workspace_setting(&self, project_id: Option<String>, edit: Edit) -> Option<Uuid> {
         let operation = Uuid::new_v4();
         self.commands
-            .send(Command::UpdateWorkspaceMode {
+            .send(Command::UpdateWorkspaceSetting {
                 project_id,
-                mode,
+                edit,
                 operation,
             })
             .ok()?;
@@ -156,15 +215,19 @@ impl Connection {
 }
 
 impl Session {
-    pub(super) async fn save_workspace_mode(
+    pub(super) async fn save_workspace_setting(
         &mut self,
         project_id: Option<String>,
-        mode: Option<WorkspaceMode>,
+        edit: Edit,
         operation: Uuid,
         events: &EventSender<impl Fn()>,
     ) -> Result<(), SessionStop> {
         let settings = &self.workspace_settings;
-        let denied = if let Some(organization) = &settings.managed_by {
+        let managed_by = match edit {
+            Edit::Mode(_) => &settings.managed_by,
+            Edit::StartFromRemote(_) => &settings.origin_managed_by,
+        };
+        let denied = if let Some(organization) = managed_by {
             Some(format!("Managed by {organization}."))
         } else if !settings.can_write {
             Some("This connection lacks permission to change environment settings.".into())
@@ -174,7 +237,7 @@ impl Session {
         {
             Some("The selected project is unavailable.".into())
         } else if settings.pending.is_some() {
-            Some("The workspace setting is already being saved.".into())
+            Some("The setting change is already being saved.".into())
         } else {
             None
         };
@@ -183,7 +246,7 @@ impl Session {
             return Ok(());
         }
 
-        let patch = settings.patch(project_id.as_deref(), mode);
+        let patch = settings.patch(project_id.as_deref(), edit);
         let id = self.allocate_id();
         self.workspace_settings.pending = Some(Pending {
             request: id.clone(),
@@ -301,7 +364,7 @@ impl Session {
 }
 
 fn settled(events: &EventSender<impl Fn()>, operation: Uuid, result: Result<(), String>) {
-    events.send(Event::WorkspaceModeSettled { operation, result });
+    events.send(Event::WorkspaceSettingSettled { operation, result });
 }
 
 #[cfg(test)]
@@ -346,16 +409,53 @@ mod tests {
         assert_eq!(current.configured, Some(WorkspaceMode::Worktree));
         assert_eq!(current.projects["a"], WorkspaceMode::Local);
         assert_eq!(
-            subscription.patch(Some("a"), Some(WorkspaceMode::Worktree)),
+            subscription.patch(Some("a"), Edit::Mode(Some(WorkspaceMode::Worktree))),
             json!({PROJECT_OVERRIDES:{"a":{KEY:"worktree","defaultAutoPull":true}}})
         );
         assert_eq!(
-            subscription.patch(Some("a"), None),
+            subscription.patch(Some("a"), Edit::Mode(None)),
             json!({PROJECT_OVERRIDES:{"a":{"defaultAutoPull":true}}})
         );
         assert_eq!(
-            subscription.patch(Some("b"), None),
+            subscription.patch(Some("b"), Edit::Mode(None)),
             json!({PROJECT_OVERRIDES:{"b":{}}})
+        );
+    }
+
+    #[test]
+    fn worktree_origin_reads_inheritance_and_resets_each_scope_without_cross_updates() {
+        let mut subscription = Subscription::new(true);
+        let current = subscription
+            .apply(&[json!({"version":1,"type":"snapshot","config":{
+                "settings": {ORIGIN:false, PROJECT_OVERRIDES: {
+                    "a": {ORIGIN:true,"defaultAutoPull":true},"b": {ORIGIN:false}
+                }},
+                "managedPolicy": {"organization": "Example", "lockedSettings": [KEY]}
+            }})])
+            .unwrap();
+        assert!(!current.writable);
+        assert!(current.origin.writable);
+        assert!(!current.origin.enabled);
+        assert!(current.origin.projects["a"]);
+        assert!(!current.origin.projects["b"]);
+        assert_eq!(
+            subscription.patch(None, Edit::StartFromRemote(None)),
+            json!({ORIGIN:true})
+        );
+        assert_eq!(
+            subscription.patch(Some("a"), Edit::StartFromRemote(None)),
+            json!({PROJECT_OVERRIDES:{"a":{"defaultAutoPull":true}}})
+        );
+        assert_eq!(
+            subscription.patch(Some("a"), Edit::StartFromRemote(Some(false))),
+            json!({PROJECT_OVERRIDES:{"a":{ORIGIN:false,"defaultAutoPull":true}}})
+        );
+        assert!(
+            subscription
+                .apply(&[json!({"version":1,"type":"settingsUpdated","payload":{"settings":{}}})])
+                .unwrap()
+                .origin
+                .enabled
         );
     }
 }

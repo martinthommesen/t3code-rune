@@ -6,6 +6,7 @@ mod appearance;
 mod keybinding_catalog;
 mod project;
 mod workspace;
+mod worktrees;
 
 pub(super) use project::{
     gear as project_settings_gear, poll as poll_project, settle as settle_project_edit,
@@ -50,6 +51,10 @@ static KEYBOARD: Icon = glyph!(
 static THREADS: Icon = glyph!(
     "messages-square",
     r#"<path d="M14 9a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v7l3-3h7a2 2 0 0 0 2-2zM22 17a2 2 0 0 0-2-2h-6a2 2 0 0 0-2 2v2a2 2 0 0 0 2 2h5l3 3z"/>"#
+);
+static WORKTREES: Icon = glyph!(
+    "git-fork",
+    r#"<circle cx="12" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9v2a2 2 0 0 1-2 2h-4m-6-4v2a2 2 0 0 0 2 2h4m0 2v-2"/>"#
 );
 static CLOSE: Icon = glyph!("x", r#"<path d="m18 6-12 12M6 6l12 12"/>"#);
 static CHEVRON: Icon = glyph!("chevron-right", r#"<path d="m9 18 6-6-6-6"/>"#);
@@ -98,6 +103,7 @@ enum Page {
     Keybindings,
     Threads,
     Projects,
+    Worktrees,
     Archive,
 }
 
@@ -109,6 +115,7 @@ impl Page {
             Self::Keybindings => "Keybindings",
             Self::Threads => "Threads",
             Self::Projects => "Projects",
+            Self::Worktrees => "Worktrees",
             Self::Archive => "Archive",
         }
     }
@@ -170,7 +177,7 @@ impl State {
         self.settings.workspace.current = setting;
     }
 
-    pub(super) fn settle_workspace_mode(
+    pub(super) fn settle_workspace_setting(
         &mut self,
         operation: uuid::Uuid,
         result: Result<(), String>,
@@ -196,7 +203,7 @@ impl State {
 
     pub(super) fn ensure_open_workspace_settings(&mut self) {
         if self.settings.open
-            && self.settings.page == Page::Threads
+            && matches!(self.settings.page, Page::Threads | Page::Worktrees)
             && let Some(connection) = &self.connection
         {
             connection.ensure_workspace_settings();
@@ -248,6 +255,7 @@ pub(super) fn overlay(state: &State, palette: Palette, width: f32, height: f32) 
         Page::Appearance => appearance::page(state, palette, content_width),
         Page::Keybindings => keybindings::page(state, palette, content_width),
         Page::Threads => workspace::page(state, palette, content_width),
+        Page::Worktrees => worktrees::page(state, palette, content_width, width < 640.0),
         Page::Projects => project::page(state, palette, content_width),
         Page::Archive => archive::page(state, palette, content_width),
     };
@@ -331,6 +339,7 @@ fn navigation(active: Page, width: f32, colors: sidebar_header::Colors) -> El {
         (Page::Keybindings, &KEYBOARD, "settings-keybindings"),
         (Page::Threads, &THREADS, "settings-threads"),
         (Page::Projects, &GEAR, "settings-projects"),
+        (Page::Worktrees, &WORKTREES, "settings-worktrees"),
         (Page::Archive, &archive::ARCHIVE, "settings-archive"),
     ] {
         let selected = active == page;
@@ -470,6 +479,14 @@ fn general(state: &State, palette: Palette, width: f32, large_touch_switch: bool
 }
 
 fn confirmation_switch(enabled: bool, large: bool, palette: Palette) -> El {
+    switch_track(enabled, large, palette, palette.accent)
+        .key("confirm-terminal-closing")
+        .label("Confirm terminal closing")
+        .focusable(true)
+        .on_press_tx(State::toggle_terminal_close_confirmation)
+}
+
+fn switch_track(enabled: bool, large: bool, palette: Palette, active: Color) -> El {
     let (width, height, thumb) = if large {
         (38.0, 22.0, 18.0)
     } else {
@@ -477,17 +494,13 @@ fn confirmation_switch(enabled: bool, large: bool, palette: Palette) -> El {
     };
     let neutral = rune::color::hex(if palette.dark { "#2e2e2e" } else { "#d4d4d8" })
         .expect("static switch palette");
-    el().key("confirm-terminal-closing")
-        .role("switch")
-        .label("Confirm terminal closing")
+    el().role("switch")
         .checked(enabled)
-        .focusable(true)
         .focus_ring(2.0, 1.0, palette.accent)
         .w(width)
         .h(height)
         .radius(height * 0.5)
-        .fill(if enabled { palette.accent } else { neutral })
-        .on_press_tx(State::toggle_terminal_close_confirmation)
+        .fill(if enabled { active } else { neutral })
         .child(
             el().absolute(if enabled { width - thumb - 2.0 } else { 2.0 }, 2.0)
                 .w(thumb)

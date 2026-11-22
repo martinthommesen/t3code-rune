@@ -36,6 +36,9 @@ impl Scope {
     }
 
     pub(super) fn reload(state: &mut State) {
+        if state.settings.page != super::super::Page::Threads {
+            return;
+        }
         let scope = &mut state.settings.workspace.scope;
         scope.file_request = scope
             .id
@@ -339,6 +342,7 @@ fn choose(state: &mut State, id: Option<String>, tx: &mut Tx) {
     let settings = &mut state.settings.workspace;
     settings.scope.id = id;
     settings.scope.file_mode = None;
+    settings.scope.file_request = None;
     settings.error = None;
     Scope::reload(state);
 }

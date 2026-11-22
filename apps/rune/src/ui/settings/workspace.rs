@@ -36,6 +36,13 @@ pub(super) struct Panel {
     error: Option<String>,
 }
 
+pub(super) struct OriginView<'a> {
+    pub(super) enabled: bool,
+    pub(super) may_reset: bool,
+    pub(super) writable: bool,
+    pub(super) managed_by: Option<&'a str>,
+}
+
 impl Panel {
     pub(super) fn settle(&mut self, operation: Uuid, result: Result<(), String>) {
         if self.pending == Some(operation) {
@@ -77,10 +84,8 @@ impl Panel {
         }
     }
 
-    fn writable(&self, state: &State) -> bool {
-        self.current
-            .as_ref()
-            .is_some_and(|setting| setting.writable)
+    fn scoped_writable(&self, state: &State, writable: bool) -> bool {
+        writable
             && state
                 .workspace
                 .as_ref()
@@ -92,6 +97,42 @@ impl Panel {
                 .is_none_or(|id| scope::project_is_available(state, id))
     }
 
+    fn writable(&self, state: &State) -> bool {
+        self.scoped_writable(
+            state,
+            self.current
+                .as_ref()
+                .is_some_and(|setting| setting.writable),
+        )
+    }
+
+    pub(super) fn project_selected(&self) -> bool {
+        self.scope.id.is_some()
+    }
+
+    pub(super) fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
+    pub(super) fn origin_view(&self, state: &State) -> Option<OriginView<'_>> {
+        let origin = &self.current.as_ref()?.origin;
+        let project = self
+            .scope
+            .id
+            .as_ref()
+            .and_then(|id| origin.projects.get(id))
+            .copied();
+        Some(OriginView {
+            enabled: project.unwrap_or(origin.enabled),
+            may_reset: if self.project_selected() {
+                project.is_some()
+            } else {
+                !origin.enabled
+            },
+            writable: self.scoped_writable(state, origin.writable),
+            managed_by: origin.managed_by.as_deref(),
+        })
+    }
     fn effective(&self) -> Option<WorkspaceMode> {
         let setting = self.current.as_ref()?;
         Some(
@@ -101,6 +142,43 @@ impl Panel {
                 .unwrap_or_default(),
         )
     }
+}
+
+pub(super) fn inheritance_marker(label: String, palette: Palette) -> El {
+    el().size(20.0, 20.0)
+        .center()
+        .help(label.clone())
+        .role("img")
+        .label(label)
+        .child(icon(&LAYERS, 12.0).color(palette.muted).a11y_hidden())
+}
+
+pub(super) fn scope_header(state: &State, palette: Palette) -> El {
+    scope::view(state, palette)
+}
+
+pub(super) fn save_origin(state: &mut State, enabled: Option<bool>) {
+    let panel = &state.settings.workspace;
+    if panel.pending.is_some()
+        || !panel
+            .origin_view(state)
+            .is_some_and(|origin| origin.writable)
+    {
+        return;
+    }
+    let project = panel.scope.id.clone();
+    let operation = state
+        .connection
+        .as_ref()
+        .and_then(|connection| connection.update_worktree_origin(project, enabled));
+    start_write(&mut state.settings.workspace, operation);
+}
+
+fn start_write(panel: &mut Panel, operation: Option<Uuid>) {
+    panel.pending = operation;
+    panel.error = operation
+        .is_none()
+        .then(|| "The environment connection is unavailable.".into());
 }
 
 pub(super) fn page(state: &State, palette: Palette, width: f32) -> El {
@@ -185,14 +263,7 @@ pub(super) fn page(state: &State, palette: Palette, width: f32) -> El {
         } else {
             "Built-in default".to_owned()
         };
-        title = title.child(
-            el().size(20.0, 20.0)
-                .center()
-                .help(inherited.clone())
-                .role("img")
-                .label(inherited)
-                .child(icon(&LAYERS, 12.0).color(palette.muted).a11y_hidden()),
-        );
+        title = title.child(inheritance_marker(inherited, palette));
     }
     if settings.configured().is_some() && (!project_scope || writable) {
         let reset = super::icon_button(
@@ -383,14 +454,11 @@ fn choose(state: &mut State, mode: Option<WorkspaceMode>, tx: &mut Tx) {
         return;
     }
     let project_id = settings.scope.id.clone();
-    state.settings.workspace.error = None;
-    state.settings.workspace.pending = state
+    let operation = state
         .connection
         .as_ref()
         .and_then(|connection| connection.update_workspace_mode(project_id, mode));
-    if state.settings.workspace.pending.is_none() {
-        state.settings.workspace.error = Some("The environment connection is unavailable.".into());
-    }
+    start_write(&mut state.settings.workspace, operation);
 }
 
 fn navigate(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
