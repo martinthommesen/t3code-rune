@@ -4,10 +4,15 @@ use rune::{
     Color, El, Key, ScrollSpec, TextEdit, TextStyle, Tx, col, el, icon, row, text, text_input,
 };
 
-use crate::connection::{Project, ProjectEdit, ProjectEditKind};
+use crate::connection::{Project, ProjectEdit, ProjectEditKind, ProjectIcon};
+use crate::ui::sidebar::project_badge;
 
 use super::super::{Palette, State, Workspace, error_text};
-use super::{CONTROL, DESCRIPTION, DIALOG, GEAR, Page};
+use super::{CONTROL, DESCRIPTION, DIALOG, GEAR, Page, RESET, icon_button};
+
+mod icon_picker;
+
+pub(super) use icon_picker::overlay as icon_overlay;
 
 const PROJECT_NAME: &str = "project-settings-name";
 const PROJECT_FONT: TextStyle = TextStyle::new(14.0, 400.0).lh(20.0);
@@ -25,6 +30,7 @@ pub(super) struct Form {
     edit: TextEdit,
     dirty: bool,
     pending: HashSet<ProjectEditKind>,
+    icon_picker: Option<icon_picker::Picker>,
 }
 
 impl Form {
@@ -38,6 +44,7 @@ impl Form {
             edit,
             dirty: false,
             pending: HashSet::new(),
+            icon_picker: None,
         }
     }
 
@@ -89,7 +96,8 @@ impl State {
             return;
         };
         if find_project(workspace, &form.project_id).is_none()
-            || kind != ProjectEditKind::Title && !self.sidebar.supports_project_organization()
+            || matches!(kind, ProjectEditKind::Pinned | ProjectEditKind::Archived)
+                && !self.sidebar.supports_project_organization()
             || !form.pending.insert(kind)
         {
             return;
@@ -268,6 +276,11 @@ pub(super) fn page(state: &State, palette: Palette, width: f32) -> El {
             name_input(form, palette, writable, narrow),
             narrow,
             palette,
+            None,
+        ))
+        .child(separator(palette))
+        .child(icon_setting(
+            state, workspace, project, form, writable, narrow, palette,
         ));
     if can_organize {
         let pinned = project.pinned_at.is_some();
@@ -280,6 +293,7 @@ pub(super) fn page(state: &State, palette: Palette, width: f32) -> El {
                 pin_switch(form, pinned, writable, palette),
                 narrow,
                 palette,
+                None,
             ))
             .child(separator(palette))
             .child(setting_row(
@@ -292,6 +306,7 @@ pub(super) fn page(state: &State, palette: Palette, width: f32) -> El {
                 archive_button(form, archived, writable, palette),
                 narrow,
                 palette,
+                None,
             ));
     }
     view = view.child(
@@ -429,18 +444,27 @@ fn separator(palette: Palette) -> El {
     el().w_full().h(1.0).fill(palette.line)
 }
 
-fn setting_row(title: &str, description: &str, control: El, narrow: bool, palette: Palette) -> El {
-    let copy = col()
-        .grow(1.0)
-        .min_w(0.0)
-        .gap(4.0)
-        .child(text(title).font(CONTROL).color(palette.ink))
-        .child(
-            text(description)
-                .font(DESCRIPTION)
-                .color(palette.muted)
-                .wrap(),
-        );
+fn setting_row(
+    title: &str,
+    description: &str,
+    control: El,
+    narrow: bool,
+    palette: Palette,
+    reset: Option<El>,
+) -> El {
+    let mut heading = row()
+        .items_center()
+        .gap(6.0)
+        .child(text(title).font(CONTROL).color(palette.ink));
+    if let Some(reset) = reset {
+        heading = heading.child(reset);
+    }
+    let copy = col().grow(1.0).min_w(0.0).gap(4.0).child(heading).child(
+        text(description)
+            .font(DESCRIPTION)
+            .color(palette.muted)
+            .wrap(),
+    );
     let setting = if narrow {
         col().gap(8.0)
     } else {
@@ -507,4 +531,76 @@ fn archive_button(form: &Form, archived: bool, writable: bool, palette: Palette)
             state.edit_project_setting(ProjectEdit::Archived(!archived));
         })
         .child(text(label).font(CONTROL).color(palette.ink))
+}
+
+fn icon_setting(
+    _state: &State,
+    workspace: &Workspace,
+    project: &Project,
+    form: &Form,
+    writable: bool,
+    narrow: bool,
+    palette: Palette,
+) -> El {
+    let description = match &project.icon {
+        Some(ProjectIcon::Lucide { name, color }) => format!("{name} · {color}"),
+        Some(ProjectIcon::Monogram { text, color }) => format!("{text} · {color}"),
+        Some(ProjectIcon::Emoji { emoji }) => emoji.clone(),
+        _ => project
+            .favicon_path
+            .as_deref()
+            .unwrap_or("Automatic")
+            .to_owned(),
+    };
+    let scratch = workspace.scratch_project.as_deref() == Some(project.id.as_str());
+    let default_icon = scratch.then(|| ProjectIcon::Lucide {
+        name: "message-square-dashed".into(),
+        color: "gray".into(),
+    });
+    let enabled = writable && !form.pending.contains(&ProjectEditKind::Icon);
+    let show_reset = project.favicon_path.is_some() || project.icon != default_icon;
+    let reset = show_reset.then(|| {
+        icon_button(
+            "reset-project-icon",
+            "Reset project icon to default",
+            &RESET,
+            12.0,
+            20.0,
+            palette,
+            |state, _| {
+                let scratch = state.settings.project.as_ref().is_some_and(|form| {
+                    state
+                        .workspace
+                        .as_ref()
+                        .and_then(|workspace| workspace.scratch_project.as_deref())
+                        == Some(form.project_id.as_str())
+                });
+                let icon = scratch.then(|| ProjectIcon::Lucide {
+                    name: "message-square-dashed".into(),
+                    color: "gray".into(),
+                });
+                state.edit_project_setting(ProjectEdit::Icon(icon));
+            },
+        )
+        .disabled(!enabled)
+        .focusable(enabled)
+    });
+    let controls = row()
+        .gap(8.0)
+        .items_center()
+        .child(project_badge::view_at(
+            project,
+            &workspace.favicons,
+            palette.dark,
+            24.0,
+        ))
+        .child(icon_picker::opener(palette, enabled));
+    setting_row(
+        "Project icon",
+        &description,
+        controls,
+        narrow,
+        palette,
+        reset,
+    )
 }

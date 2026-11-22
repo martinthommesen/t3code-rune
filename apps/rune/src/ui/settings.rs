@@ -160,6 +160,7 @@ pub(super) fn overlay(state: &State, palette: Palette, width: f32) -> Option<El>
         Page::Appearance => appearance::page(state, palette, content_width),
         Page::Projects => project::page(state, palette, content_width),
     };
+    let icon_picker = project::icon_overlay(state, palette, width);
     let dialog = row()
         .key(DIALOG)
         .hit()
@@ -191,21 +192,28 @@ pub(super) fn overlay(state: &State, palette: Palette, width: f32) -> Option<El>
                 .child(header(page, palette, color.border))
                 .child(content),
         );
-    Some(
-        col()
-            .key("client-settings-overlay")
-            .absolute(0.0, 0.0)
-            .w_full()
-            .h_full()
-            .padding(inset)
-            .center()
-            .child(
-                el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
-                    .fill(backdrop)
-                    .on_press_tx(State::close_client_settings),
-            )
-            .child(dialog),
-    )
+    let dialog = if icon_picker.is_some() {
+        dialog.inert()
+    } else {
+        dialog
+    };
+    let mut overlay = col()
+        .key("client-settings-overlay")
+        .absolute(0.0, 0.0)
+        .w_full()
+        .h_full()
+        .padding(inset)
+        .center()
+        .child(
+            el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+                .fill(backdrop)
+                .on_press_tx(State::close_client_settings),
+        )
+        .child(dialog);
+    if let Some(picker) = icon_picker {
+        overlay = overlay.child(picker);
+    }
+    Some(overlay)
 }
 
 fn navigation(active: Page, width: f32, colors: sidebar_header::Colors) -> El {

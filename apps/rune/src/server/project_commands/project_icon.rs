@@ -1,7 +1,3 @@
-use icu_properties::{
-    CodePointMapData,
-    props::{GeneralCategory, GeneralCategoryGroup},
-};
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -73,20 +69,7 @@ fn emoji<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error>
 
 fn monogram<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
     let text = trimmed(deserializer, 32)?;
-    let categories = CodePointMapData::<GeneralCategory>::new();
-    let is_letter_or_number = |character| {
-        let category = categories.get(character);
-        GeneralCategoryGroup::Letter.contains(category)
-            || GeneralCategoryGroup::Number.contains(category)
-    };
-    let mut characters = text.chars();
-    if characters.next().is_some_and(is_letter_or_number)
-        && characters.all(|character| {
-            is_letter_or_number(character)
-                || GeneralCategoryGroup::Mark.contains(categories.get(character))
-                || matches!(character, '‌' | '‍')
-        })
-    {
+    if t3_rune::project_icon::monogram_characters(&text) {
         Ok(text)
     } else {
         Err(D::Error::custom("Invalid project monogram text."))

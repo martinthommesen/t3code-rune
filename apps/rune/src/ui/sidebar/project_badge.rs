@@ -7,7 +7,7 @@ use crate::ui::project_favicons::ProjectFavicons;
 
 mod lucide;
 
-const COLOR_NAMES: [&str; 18] = [
+pub(in crate::ui) const COLOR_NAMES: [&str; 18] = [
     "gray", "red", "orange", "amber", "yellow", "lime", "green", "emerald", "teal", "cyan", "sky",
     "blue", "indigo", "violet", "purple", "fuchsia", "pink", "rose",
 ];
@@ -33,7 +33,7 @@ const COLORS: [([f32; 3], [f32; 3]); 18] = [
     ([0.712, 0.194, 13.428], [0.586, 0.253, 17.585]),
 ];
 
-fn project_identity(title: &str) -> (String, usize) {
+pub(in crate::ui) fn project_identity(title: &str) -> (String, usize) {
     let normalized: String = title.nfkc().collect();
     let normalized = normalized.trim();
     let mut words = normalized
@@ -112,7 +112,7 @@ pub(in crate::ui) fn view_at(
     }
 }
 
-pub(super) fn lookup_icon(name: &str) -> Option<&'static Icon> {
+pub(in crate::ui) fn lookup_icon(name: &str) -> Option<&'static Icon> {
     let mut pascal = String::with_capacity(name.len());
     for part in name.split('-') {
         let mut characters = part.chars();
@@ -127,12 +127,30 @@ pub(super) fn lookup_icon(name: &str) -> Option<&'static Icon> {
     lucide::ICONS.get(lucide::NAMES[position].1)
 }
 
-fn named_color(name: &str, dark: bool) -> Color {
+pub(in crate::ui) fn named_color(name: &str, dark: bool) -> Color {
     let index = COLOR_NAMES
         .iter()
         .position(|color| *color == name)
         .unwrap_or(0);
     palette_color(index, dark)
+}
+
+pub(in crate::ui) fn icon_names() -> &'static [String] {
+    static STOCK_NAMES: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(|| {
+        let parts =
+            regex_lite::Regex::new(r"[A-Z][a-z]*|[0-9]+[a-z]*").expect("Lucide name pattern");
+        lucide::ICONS
+            .iter()
+            .map(|icon| {
+                parts
+                    .find_iter(icon.name)
+                    .map(|part| part.as_str().to_ascii_lowercase())
+                    .collect::<Vec<_>>()
+                    .join("-")
+            })
+            .collect()
+    });
+    &STOCK_NAMES
 }
 
 fn palette_color(index: usize, dark: bool) -> Color {
@@ -141,7 +159,7 @@ fn palette_color(index: usize, dark: bool) -> Color {
     oklch(lightness, chroma, hue)
 }
 
-fn monogram(monogram: &str, foreground: Color, size: f32) -> El {
+pub(in crate::ui) fn monogram(monogram: &str, foreground: Color, size: f32) -> El {
     el().size(size, size)
         .center()
         .radius(size * 0.25)

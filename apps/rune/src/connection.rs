@@ -325,12 +325,14 @@ pub(crate) enum ProjectEditKind {
     Title,
     Pinned,
     Archived,
+    Icon,
 }
 
 pub(crate) enum ProjectEdit {
     Title(String),
     Pinned(bool),
     Archived(bool),
+    Icon(Option<ProjectIcon>),
 }
 
 impl ProjectEdit {
@@ -339,6 +341,7 @@ impl ProjectEdit {
             Self::Title(_) => ProjectEditKind::Title,
             Self::Pinned(_) => ProjectEditKind::Pinned,
             Self::Archived(_) => ProjectEditKind::Archived,
+            Self::Icon(_) => ProjectEditKind::Icon,
         }
     }
 
@@ -347,6 +350,10 @@ impl ProjectEdit {
             Self::Title(title) => payload["title"] = json!(title),
             Self::Pinned(pinned) => payload["pinned"] = json!(pinned),
             Self::Archived(archived) => payload["archived"] = json!(archived),
+            Self::Icon(icon) => {
+                payload["projectIcon"] = json!(icon);
+                payload["faviconPath"] = Value::Null;
+            }
         }
     }
 }
@@ -1709,7 +1716,8 @@ impl Session {
             Command::EditProject { project_id, edit } => {
                 let kind = edit.kind();
                 if !self.project_writes
-                    || kind != ProjectEditKind::Title && !self.project_organization
+                    || matches!(kind, ProjectEditKind::Pinned | ProjectEditKind::Archived)
+                        && !self.project_organization
                     || self.shell.project(&project_id).is_none()
                 {
                     events.send(Event::ProjectEditSettled {
