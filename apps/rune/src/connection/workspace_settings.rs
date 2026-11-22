@@ -5,17 +5,21 @@ use serde_json::{Map, Value, json};
 use tokio::time::Instant;
 use uuid::Uuid;
 
+use t3_rune::providers::codex::RuntimeMode;
+
 use super::{
     Command, Connection, Event, EventSender, REQUEST_TIMEOUT, Session, SessionStop, WorkspaceMode,
 };
 
 const KEY: &str = "defaultThreadEnvMode";
 const ORIGIN: &str = "newWorktreesStartFromOrigin";
+const PERMISSIONS: &str = "defaultRuntimeMode";
 const PROJECT_OVERRIDES: &str = "projectSettingsOverrides";
 
 pub(super) enum Edit {
     Mode(Option<WorkspaceMode>),
     StartFromRemote(Option<bool>),
+    Permissions(Option<RuntimeMode>),
 }
 
 impl Edit {
@@ -25,6 +29,9 @@ impl Edit {
             Self::StartFromRemote(Some(enabled)) => (ORIGIN, json!(enabled)),
             Self::StartFromRemote(None) if project_scope => (ORIGIN, Value::Null),
             Self::StartFromRemote(None) => (ORIGIN, Value::Bool(true)),
+            Self::Permissions(Some(mode)) => (PERMISSIONS, json!(mode)),
+            Self::Permissions(None) if project_scope => (PERMISSIONS, Value::Null),
+            Self::Permissions(None) => (PERMISSIONS, json!(RuntimeMode::FullAccess)),
         }
     }
 }
@@ -37,10 +44,79 @@ pub(crate) struct OriginSetting {
     pub(crate) managed_by: Option<String>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct PermissionPolicy {
+    managed_by: Option<String>,
+    ceiling: Option<(String, RuntimeMode)>,
+}
+
+impl PermissionPolicy {
+    fn read(policy: &Value) -> Self {
+        Self {
+            managed_by: managed_by(policy, PERMISSIONS),
+            ceiling: policy["organization"]
+                .as_str()
+                .filter(|name| !name.is_empty())
+                .and_then(|name| {
+                    let mode =
+                        RuntimeMode::deserialize(&policy["limits"]["maxRuntimeMode"]).ok()?;
+                    Some((name.to_owned(), mode))
+                }),
+        }
+    }
+
+    fn denial(&self, mode: RuntimeMode) -> Option<String> {
+        let (organization, ceiling) = self.ceiling.as_ref()?;
+        (permission_rank(mode) > permission_rank(*ceiling)).then(|| {
+            format!(
+                "{organization} limits threads to {}.",
+                PermissionSetting::label(*ceiling)
+            )
+        })
+    }
+}
+
+fn permission_rank(mode: RuntimeMode) -> u8 {
+    match mode {
+        RuntimeMode::ApprovalRequired => 0,
+        RuntimeMode::AutoAcceptEdits => 1,
+        RuntimeMode::Auto => 2,
+        RuntimeMode::FullAccess => 3,
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct PermissionSetting {
+    pub(crate) environment: RuntimeMode,
+    pub(crate) projects: HashMap<String, RuntimeMode>,
+    pub(crate) writable: bool,
+    policy: PermissionPolicy,
+}
+
+impl PermissionSetting {
+    pub(crate) fn managed_by(&self) -> Option<&str> {
+        self.policy.managed_by.as_deref()
+    }
+
+    pub(crate) fn denial(&self, mode: RuntimeMode) -> Option<String> {
+        self.policy.denial(mode)
+    }
+
+    pub(crate) fn label(mode: RuntimeMode) -> &'static str {
+        match mode {
+            RuntimeMode::ApprovalRequired => "Supervised",
+            RuntimeMode::AutoAcceptEdits => "Auto-accept edits",
+            RuntimeMode::Auto => "Auto",
+            RuntimeMode::FullAccess => "Full access",
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct WorkspaceSetting {
     pub(crate) configured: Option<WorkspaceMode>,
     pub(crate) origin: OriginSetting,
+    pub(crate) permission: PermissionSetting,
     pub(crate) projects: HashMap<String, WorkspaceMode>,
     pub(crate) writable: bool,
     pub(crate) managed_by: Option<String>,
@@ -50,6 +126,7 @@ pub(super) struct Subscription {
     can_write: bool,
     managed_by: Option<String>,
     origin_managed_by: Option<String>,
+    permission_policy: PermissionPolicy,
     pending: Option<Pending>,
     overrides: Map<String, Value>,
     pending_file: Option<Pending>,
@@ -67,6 +144,7 @@ impl Subscription {
             can_write,
             managed_by: None,
             origin_managed_by: None,
+            permission_policy: PermissionPolicy::default(),
             pending: None,
             overrides: Map::new(),
             pending_file: None,
@@ -84,6 +162,7 @@ impl Subscription {
                     let config = &event["config"];
                     self.managed_by = managed_by(&config["managedPolicy"], KEY);
                     self.origin_managed_by = managed_by(&config["managedPolicy"], ORIGIN);
+                    self.permission_policy = PermissionPolicy::read(&config["managedPolicy"]);
                     &config["settings"]
                 }
                 Some("settingsUpdated") => &event["payload"]["settings"],
@@ -94,10 +173,15 @@ impl Subscription {
                     .as_object()
                     .cloned()
                     .unwrap_or_default();
-                current = Some((mode, settings[ORIGIN].as_bool().unwrap_or(true)));
+                current = Some((
+                    mode,
+                    settings[ORIGIN].as_bool().unwrap_or(true),
+                    RuntimeMode::deserialize(&settings[PERMISSIONS])
+                        .unwrap_or(RuntimeMode::FullAccess),
+                ));
             }
         }
-        current.map(|(configured, origin)| WorkspaceSetting {
+        current.map(|(configured, origin, permissions)| WorkspaceSetting {
             configured,
             origin: OriginSetting {
                 enabled: origin,
@@ -112,6 +196,20 @@ impl Subscription {
                     .collect(),
                 writable: self.can_write && self.origin_managed_by.is_none(),
                 managed_by: self.origin_managed_by.clone(),
+            },
+            permission: PermissionSetting {
+                environment: permissions,
+                projects: self
+                    .overrides
+                    .iter()
+                    .filter_map(|(id, project)| {
+                        RuntimeMode::deserialize(&project[PERMISSIONS])
+                            .ok()
+                            .map(|mode| (id.clone(), mode))
+                    })
+                    .collect(),
+                writable: self.can_write && self.permission_policy.managed_by.is_none(),
+                policy: self.permission_policy.clone(),
             },
             projects: self
                 .overrides
@@ -190,6 +288,14 @@ impl Connection {
         self.update_workspace_setting(project_id, Edit::StartFromRemote(enabled))
     }
 
+    pub(crate) fn update_default_permissions(
+        &self,
+        project_id: Option<String>,
+        mode: Option<RuntimeMode>,
+    ) -> Option<Uuid> {
+        self.update_workspace_setting(project_id, Edit::Permissions(mode))
+    }
+
     fn update_workspace_setting(&self, project_id: Option<String>, edit: Edit) -> Option<Uuid> {
         let operation = Uuid::new_v4();
         self.commands
@@ -226,6 +332,7 @@ impl Session {
         let managed_by = match edit {
             Edit::Mode(_) => &settings.managed_by,
             Edit::StartFromRemote(_) => &settings.origin_managed_by,
+            Edit::Permissions(_) => &settings.permission_policy.managed_by,
         };
         let denied = if let Some(organization) = managed_by {
             Some(format!("Managed by {organization}."))
@@ -238,6 +345,9 @@ impl Session {
             Some("The selected project is unavailable.".into())
         } else if settings.pending.is_some() {
             Some("The setting change is already being saved.".into())
+        } else if let Edit::Permissions(mode) = &edit {
+            let mode = mode.or_else(|| project_id.is_none().then_some(RuntimeMode::FullAccess));
+            mode.and_then(|mode| settings.permission_policy.denial(mode))
         } else {
             None
         };
@@ -456,6 +566,40 @@ mod tests {
                 .unwrap()
                 .origin
                 .enabled
+        );
+    }
+    #[test]
+    fn permissions_resets_follow_the_selected_scope_and_policy() {
+        let mut state = Subscription::new(true);
+        let frame = json!({"version":1,"type":"snapshot","config":{
+            "settings":{"defaultRuntimeMode":"auto-accept-edits","projectSettingsOverrides":{
+                "fixture":{"defaultRuntimeMode":"approval-required","defaultAutoPull":true}
+            }},
+            "managedPolicy":{"organization":"Example","limits":{"maxRuntimeMode":"auto-accept-edits"}}
+        }});
+        let current = state.apply(&[frame]).unwrap();
+        assert_eq!(current.permission.environment, RuntimeMode::AutoAcceptEdits);
+        assert_eq!(
+            current.permission.projects["fixture"],
+            RuntimeMode::ApprovalRequired
+        );
+        assert_eq!(
+            current.permission.denial(RuntimeMode::AutoAcceptEdits),
+            None
+        );
+        assert_eq!(
+            current.permission.denial(RuntimeMode::Auto),
+            Some("Example limits threads to Auto-accept edits.".into())
+        );
+        assert_eq!(
+            state.patch(Some("fixture"), Edit::Permissions(None)),
+            json!({"projectSettingsOverrides":{
+                "fixture":{"defaultAutoPull":true}
+            }})
+        );
+        assert_eq!(
+            state.patch(None, Edit::Permissions(None)),
+            json!({"defaultRuntimeMode":"full-access"})
         );
     }
 }

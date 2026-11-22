@@ -5,9 +5,11 @@ use rune::{
 use uuid::Uuid;
 
 use crate::connection::{WorkspaceMode, WorkspaceSetting};
+use t3_rune::providers::codex::RuntimeMode;
 
 use super::{CONTROL, DESCRIPTION, Palette, RESET, SECTION, State, error_text};
 
+mod permissions;
 mod scope;
 
 const WIDTH: f32 = 160.0;
@@ -31,6 +33,7 @@ static LAYERS: Icon = Icon {
 pub(super) struct Panel {
     pub(super) current: Option<WorkspaceSetting>,
     pub(super) highlighted: Option<WorkspaceMode>,
+    permission_highlighted: Option<RuntimeMode>,
     scope: scope::Scope,
     pending: Option<Uuid>,
     error: Option<String>,
@@ -65,6 +68,7 @@ impl Panel {
 
     pub(super) fn close_popups(&mut self) {
         self.highlighted = None;
+        self.permission_highlighted = None;
         self.scope.close();
     }
 
@@ -314,14 +318,21 @@ pub(super) fn page(state: &State, palette: Palette, width: f32) -> El {
                 .px(16.0),
         )
         .child(
-            layout
-                .key("new-threads-workspace")
+            col()
                 .w_full()
-                .px(16.0)
-                .py(12.0)
                 .radius(12.0)
                 .border(1.0, palette.line)
-                .border_layout(),
+                .border_layout()
+                .child(permissions::setting_row(state, palette, width))
+                .child(
+                    layout
+                        .key("new-threads-workspace")
+                        .w_full()
+                        .px(16.0)
+                        .py(12.0)
+                        .border_sides([1.0, 0.0, 0.0, 0.0], palette.line)
+                        .border_layout(),
+                ),
         );
     if let Some(error) = &settings.error {
         section = section.child(error_text(error, palette));
@@ -349,6 +360,9 @@ pub(super) fn page(state: &State, palette: Palette, width: f32) -> El {
 pub(super) fn overlay(state: &State, palette: Palette) -> Option<[El; 2]> {
     if let Some(scope) = scope::overlay(state, palette) {
         return Some(scope);
+    }
+    if let Some(permissions) = permissions::overlay(state, palette) {
+        return Some(permissions);
     }
     let settings = &state.settings.workspace;
     let active = settings.highlighted.filter(|_| settings.writable(state))?;
@@ -434,6 +448,7 @@ fn option_key(mode: WorkspaceMode) -> &'static str {
 
 fn open(state: &mut State, tx: &mut Tx) {
     if state.settings.workspace.writable(state) && state.settings.workspace.pending.is_none() {
+        state.settings.workspace.permission_highlighted = None;
         state.settings.workspace.highlighted = state.settings.workspace.effective();
         tx.focus_when_shown(LIST, tx.focus_visible());
     }

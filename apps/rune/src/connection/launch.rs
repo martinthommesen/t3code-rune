@@ -5,6 +5,8 @@ use serde_json::{Value, json};
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
+use t3_rune::providers::codex::RuntimeMode;
+
 use super::projection::ProjectRow;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -29,15 +31,6 @@ impl ModelSelection {
     pub(super) fn plain_model(&self) -> Option<&str> {
         self.options.is_none().then_some(self.model.as_str())
     }
-}
-
-#[derive(Clone, Copy, Deserialize, Serialize)]
-#[serde(rename_all = "kebab-case")]
-enum RuntimeMode {
-    ApprovalRequired,
-    AutoAcceptEdits,
-    Auto,
-    FullAccess,
 }
 
 #[derive(Deserialize)]
