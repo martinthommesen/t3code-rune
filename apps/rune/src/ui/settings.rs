@@ -157,7 +157,7 @@ impl State {
 
     fn reset_terminal_close_confirmation(&mut self, tx: &mut Tx) {
         self.set_terminal_close_confirmation(true);
-        tx.focus("confirm-terminal-closing", tx.focus_visible());
+        tx.focus_when_shown("terminal-close-confirmation", tx.focus_visible());
     }
 
     fn set_terminal_close_confirmation(&mut self, enabled: bool) {
@@ -525,7 +525,7 @@ fn general(state: &State, palette: Palette, width: f32, large_touch_switch: bool
             palette,
             |state, tx| {
                 state.set_thread_delete_confirmation(true);
-                tx.focus("confirm-thread-deletion", tx.focus_visible());
+                tx.focus_when_shown("delete-confirmation", tx.focus_visible());
             },
         )
     });

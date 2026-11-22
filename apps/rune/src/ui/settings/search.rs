@@ -65,6 +65,13 @@ const SETTINGS: &[Setting] = &[
     },
     Setting {
         page: Page::General,
+        id: "delete-confirmation",
+        anchor: "delete-confirmation",
+        title: "Delete confirmation",
+        terms: "ask before thread chat history",
+    },
+    Setting {
+        page: Page::General,
         id: "terminal-close-confirmation",
         anchor: "terminal-close-confirmation",
         title: "Terminal close confirmation",
