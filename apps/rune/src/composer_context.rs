@@ -4,6 +4,8 @@ use regex_lite::Regex;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+pub(crate) mod thread_clipboard;
+
 const CONTEXT_VERSION: u8 = 1;
 const LABEL_UNITS: usize = 200;
 const EXCERPT_UNITS: usize = 64_000;
