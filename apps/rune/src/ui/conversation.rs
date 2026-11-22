@@ -99,7 +99,7 @@ impl Layout {
 pub(super) struct Colors {
     pub(super) background: Color,
     foreground: Color,
-    muted: Color,
+    pub(super) muted: Color,
     accent: Color,
     bubble: Color,
     fallbacks: Palette,

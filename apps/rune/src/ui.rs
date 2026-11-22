@@ -2471,7 +2471,11 @@ fn detail(
                 && conversation.worktree_setup.is_none()
                 && conversation.queued.is_empty()
             {
-                placeholder("No messages yet", "", palette)
+                col().w_full().grow(1.0).min_h(0.0).pb(8.0).center().child(
+                    text("Send a message to start the conversation.")
+                        .font(TextStyle::new(14.0, 400.0).lh(20.0))
+                        .color(colors.muted),
+                )
             } else {
                 conversation::transcript(conversation, entries, layout, colors, workspace)
             };
