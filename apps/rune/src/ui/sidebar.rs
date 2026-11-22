@@ -43,6 +43,8 @@ macro_rules! glyph {
     };
 }
 
+static PLUS: Icon = glyph!("sidebar-empty-plus", r#"<path d="M5 12h14M12 5v14"/>"#);
+
 static SEARCH: Icon = glyph!(
     "search",
     r#"<path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/>"#
@@ -645,6 +647,46 @@ fn project_option(key: String, title: &str, active: bool, badge: Option<El>, col
     )
 }
 
+fn no_projects(workspace: &Workspace, colors: Colors) -> El {
+    let mut section = col().w_full().pt(22.0).gap(8.0).items_center().child(
+        text("No projects yet")
+            .key("sidebar-empty-label")
+            .font(SMALL)
+            .color(colors.muted.alpha(0.60))
+            .role("status"),
+    );
+    if workspace.project_writes {
+        section = section.child(
+            row()
+                .key("sidebar-empty-add-project")
+                .role("button")
+                .label("Add project")
+                .w(97.0625)
+                .h(26.0)
+                .center()
+                .gap(4.0)
+                .radius(6.0)
+                .border(1.0, colors.border)
+                .border_layout()
+                .hover(colors.hover)
+                .focusable(!workspace.reconnecting)
+                .disabled(workspace.reconnecting)
+                .focus_ring(1.0, 1.0, colors.ring)
+                .on_press_tx(State::show_add_project)
+                .on_key(|state: &mut State, event, tx| {
+                    sidebar_header::activate_on_return(state, event, tx, State::show_add_project)
+                })
+                .child(icon(&PLUS, 12.0).color(colors.muted).a11y_hidden())
+                .child(
+                    text("Add project")
+                        .font(TextStyle::new(11.0, 500.0).lh(16.0))
+                        .color(colors.muted),
+                ),
+        );
+    }
+    section
+}
+
 fn thread_list(
     state: &State,
     workspace: &Workspace,
@@ -695,7 +737,15 @@ fn thread_list(
                     )
                 }),
         );
-    if state.sidebar.search.text.trim().is_empty() {
+    if state.sidebar.search.text.trim().is_empty()
+        && projects.is_empty()
+        && shell
+            .projects
+            .iter()
+            .all(|project| project.archived_at.is_some())
+    {
+        rows = rows.child(no_projects(workspace, colors));
+    } else if state.sidebar.search.text.trim().is_empty() {
         let empty = shell
             .projects
             .iter()

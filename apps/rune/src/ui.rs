@@ -1875,11 +1875,7 @@ fn workspace_view(
             .child(detail(state, workspace, palette, detail_layout))
             .child(sidebar_header::toggle(state, layout, colors));
     }
-    let status = if workspace.reconnecting {
-        "Reconnecting…"
-    } else {
-        workspace.label.as_str()
-    };
+    let footer = sidebar_footer(state, workspace, palette, colors);
     let side = col()
         .w(layout.width())
         .h_full()
@@ -1896,35 +1892,63 @@ fn workspace_view(
             layout,
             sidebar_height,
         ))
-        .child(
-            row()
-                .px(12.0)
-                .py(10.0)
-                .gap(8.0)
-                .center_y()
-                .border_sides([1.0, 0.0, 0.0, 0.0], palette.line)
-                .child(settings::opener(palette))
-                .child(button(
-                    "disconnect",
-                    "Disconnect",
-                    palette,
-                    false,
-                    true,
-                    |state, _| state.disconnect(),
-                ))
-                .child(
-                    text(status)
-                        .font(SMALL)
-                        .color(palette.muted)
-                        .role("status")
-                        .truncate()
-                        .grow(1.0)
-                        .min_w(0.0),
-                ),
-        );
+        .child(footer);
     frame
         .child(side)
         .child(detail(state, workspace, palette, detail_layout))
+}
+
+fn sidebar_footer(
+    state: &State,
+    workspace: &Workspace,
+    palette: Palette,
+    colors: sidebar_header::Colors,
+) -> El {
+    if state.local_environment {
+        return row()
+            .key("sidebar-footer")
+            .w_full()
+            .h(44.0)
+            .px(8.0)
+            .pt(4.0)
+            .pb(8.0)
+            .child(settings::opener(Palette {
+                muted: colors.muted.alpha(0.80),
+                hover: colors.hover,
+                accent: colors.ring,
+                ..palette
+            }));
+    }
+    let status = if workspace.reconnecting {
+        "Reconnecting…"
+    } else {
+        workspace.label.as_str()
+    };
+    row()
+        .key("sidebar-footer")
+        .px(12.0)
+        .py(10.0)
+        .gap(8.0)
+        .center_y()
+        .border_sides([1.0, 0.0, 0.0, 0.0], palette.line)
+        .child(settings::opener(palette))
+        .child(button(
+            "disconnect",
+            "Disconnect",
+            palette,
+            false,
+            true,
+            |state, _| state.disconnect(),
+        ))
+        .child(
+            text(status)
+                .font(SMALL)
+                .color(palette.muted)
+                .role("status")
+                .truncate()
+                .grow(1.0)
+                .min_w(0.0),
+        )
 }
 
 fn detail(
@@ -2224,6 +2248,7 @@ pub(crate) fn run(
             state.connect();
         }),
         poll: Some(State::poll),
+        on_key: Some(sidebar_header::shortcut),
         ..AppSpec::new("T3 Code", (1100.0, 780.0), State::default, view)
     };
     let local_environment = state_dir.is_some();
@@ -2235,7 +2260,9 @@ pub(crate) fn run(
         })
         .init(move || {
             let onboarding = onboarding::Onboarding::new(&client_settings);
+            let sidebar_open = client_settings.sidebar_open();
             let mut state = State {
+                sidebar_open,
                 client_settings,
                 local_environment,
                 onboarding,

@@ -17,6 +17,7 @@ const FILE_NAME: &str = "client-settings.json";
 const TERMINAL_CONFIRMATION: &str = "confirmTerminalClose";
 const THREAD_DETAILS_CLOSED: &str = "threadDetailsInlineClosed";
 const ONBOARDING_COMPLETED: &str = "onboardingCompletedAt";
+const SIDEBAR_OPEN: &str = "chat_thread_sidebar_open";
 const MAX_SYMLINK_HOPS: usize = 40;
 
 type ClosedThreadDetails = BTreeMap<String, BTreeSet<String>>;
@@ -57,6 +58,35 @@ impl ClientSettings {
             closed_thread_details,
             appearance: AppearancePreference::at_state_dir(state_dir),
         }
+    }
+
+    pub(crate) fn sidebar_open(&self) -> bool {
+        self.path
+            .as_deref()
+            .and_then(|path| read_document(path).ok())
+            .and_then(|document| {
+                let settings = match document.get("settings") {
+                    Some(value) => value.as_object()?,
+                    None => &document,
+                };
+                settings.get(SIDEBAR_OPEN).and_then(Value::as_bool)
+            })
+            .unwrap_or(true)
+    }
+
+    pub(crate) fn set_sidebar_open(&self, open: bool) -> io::Result<()> {
+        let Some(path) = &self.path else {
+            return Ok(());
+        };
+        let target = resolve_file_target(path)?;
+        let mut document = read_document(&target)?;
+        let preferences = preference_object(&mut document)?;
+        if open {
+            preferences.shift_remove(SIDEBAR_OPEN);
+        } else {
+            preferences.insert(SIDEBAR_OPEN.into(), Value::Bool(false));
+        }
+        write_document(&target, &document)
     }
 
     pub(crate) fn onboarding_completed(&self) -> io::Result<bool> {

@@ -1,7 +1,9 @@
 use std::sync::OnceLock;
 
 use rune::color::hex;
-use rune::{ChromeInsets, Color, El, Icon, Pixels, TextStyle, el, icon, row, text};
+use rune::{
+    ChromeInsets, Color, El, Icon, Key, KeyEvent, Mods, Pixels, TextStyle, Tx, el, icon, row, text,
+};
 
 use super::State;
 use super::navigation_history::{Destination, Direction};
@@ -160,6 +162,11 @@ pub(super) fn view(state: &State, layout: Layout, colors: Colors) -> El {
                 .focusable(true)
                 .focus_ring(2.0, -2.0, colors.ring)
                 .on_press(|state: &mut State| state.navigate(Destination::Home))
+                .on_key(|state: &mut State, event, tx| {
+                    activate_on_return(state, event, tx, |state, _| {
+                        state.navigate(Destination::Home)
+                    })
+                })
                 .child(
                     icon(&WORDMARK, WORDMARK_SIZE)
                         .color(colors.foreground)
@@ -190,7 +197,10 @@ pub(super) fn toggle(state: &State, layout: Layout, colors: Colors) -> El {
         .absolute(layout.leading + 1.0, (layout.height - CONTROL_SIZE) / 2.0)
         .expanded(state.sidebar_open)
         .focusable(true)
-        .on_press(|state: &mut State| state.sidebar_open = !state.sidebar_open)
+        .on_press_tx(toggle_from_button)
+        .on_key(|state: &mut State, event, tx| {
+            activate_on_return(state, event, tx, toggle_from_button)
+        })
         .child(icon(glyph, 16.0).color(colors.muted).a11y_hidden())
 }
 
@@ -213,9 +223,73 @@ fn history_button(state: &State, direction: Direction, colors: Colors) -> El {
         button
             .focusable(true)
             .on_press(move |state: &mut State| state.go(direction))
+            .on_key(move |state: &mut State, event, tx| {
+                activate_on_return(state, event, tx, |state, _| state.go(direction))
+            })
     } else {
         button.disabled(true)
     }
+}
+
+fn toggle_from_button(state: &mut State, tx: &mut Tx) {
+    state.toggle_sidebar();
+    tx.focus_when_shown("toggle-sidebar", tx.focus_visible());
+}
+
+impl State {
+    fn toggle_sidebar(&mut self) {
+        self.sidebar_open = !self.sidebar_open;
+        let _ = self.client_settings.set_sidebar_open(self.sidebar_open);
+    }
+}
+
+pub(super) fn activate_on_return(
+    state: &mut State,
+    event: &KeyEvent,
+    tx: &mut Tx,
+    press: impl FnOnce(&mut State, &mut Tx),
+) -> bool {
+    if event.key != Key::Enter || event.mods != Mods::default() {
+        return false;
+    }
+    if !tx.key_repeat() {
+        press(state, tx);
+    }
+    true
+}
+
+pub(super) fn shortcut(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
+    let mods = event.mods;
+    if state.workspace.is_none()
+        || state.onboarding.is_active()
+        || state.settings.is_open()
+        || state.add_project.is_some()
+        || state.terminal_close_confirmation_open()
+        || mods.shift
+        || mods.alt
+        || (cfg!(target_os = "macos") && mods.ctrl)
+        || (!cfg!(target_os = "macos") && mods.logo)
+    {
+        return false;
+    }
+    if event.is_command('b') {
+        if !tx.key_repeat() {
+            state.toggle_sidebar();
+        }
+        return true;
+    }
+    if tx.focused() == Some(super::terminal::INPUT_KEY) {
+        return false;
+    }
+    let direction = match event.key {
+        Key::Command('[') => Direction::Back,
+        Key::Command(']') => Direction::Forward,
+        _ => return false,
+    };
+    if !tx.key_repeat() {
+        state.go(direction);
+    }
+    true
 }
 
 fn control(key: &str, label: &str, colors: Colors) -> El {

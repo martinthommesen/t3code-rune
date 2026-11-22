@@ -43,6 +43,10 @@ pub(super) struct Onboarding {
 }
 
 impl Onboarding {
+    pub(super) fn is_active(&self) -> bool {
+        self.phase != Phase::App
+    }
+
     pub(super) fn new(settings: &ClientSettings) -> Self {
         Self {
             phase: match settings.onboarding_completed() {

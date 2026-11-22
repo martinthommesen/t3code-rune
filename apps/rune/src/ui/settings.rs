@@ -52,6 +52,12 @@ pub(super) struct Panel {
     return_focus: &'static str,
 }
 
+impl Panel {
+    pub(super) fn is_open(&self) -> bool {
+        self.open
+    }
+}
+
 impl Default for Panel {
     fn default() -> Self {
         Self {
@@ -131,6 +137,9 @@ pub(super) fn opener(palette: Palette) -> El {
         palette,
         State::open_client_settings,
     )
+    .on_key(|state: &mut State, event, tx| {
+        sidebar_header::activate_on_return(state, event, tx, State::open_client_settings)
+    })
 }
 
 pub(super) fn overlay(state: &State, palette: Palette, width: f32, height: f32) -> Option<El> {

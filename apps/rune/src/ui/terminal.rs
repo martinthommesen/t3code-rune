@@ -18,7 +18,7 @@ const DEFAULT_ROWS: u16 = 16;
 const LINE_HEIGHT: f32 = 16.0;
 const FONT: TextStyle = TextStyle::new(13.0, 400.0).lh(LINE_HEIGHT).mono();
 const CELL_WIDTH: f32 = 7.8;
-const INPUT_KEY: &str = "terminal-input";
+pub(super) const INPUT_KEY: &str = "terminal-input";
 
 pub(super) struct Pane {
     pub(super) attachment: u64,
@@ -413,6 +413,12 @@ impl State {
         {
             pane.message = Some(message);
         }
+    }
+
+    pub(super) fn terminal_close_confirmation_open(&self) -> bool {
+        self.terminal
+            .as_ref()
+            .is_some_and(|pane| pane.close_prompt.is_some())
     }
 
     pub(super) fn terminal_close_dialog(&self, palette: Palette) -> Option<El> {
