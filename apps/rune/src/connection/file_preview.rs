@@ -1,4 +1,5 @@
 use std::fs::File;
+use std::sync::Arc;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -59,11 +60,14 @@ impl ReadFailure {
 pub(crate) enum AssetPurpose {
     Inspect,
     Download,
+    ShowImage,
+    SaveImage,
 }
 
 pub(crate) enum AssetOutcome {
     Available,
     Prepared(File),
+    Image(Arc<[u8]>),
     Failed(String),
 }
 
@@ -114,16 +118,24 @@ impl Session {
             });
             return Ok(());
         }
+        let resource = match purpose {
+            AssetPurpose::ShowImage | AssetPurpose::SaveImage => json!({
+                "_tag": "workspace-file",
+                "threadId": input.thread_id,
+                "path": input.relative_path,
+            }),
+            AssetPurpose::Inspect | AssetPurpose::Download => json!({
+                "_tag": "media-file",
+                "threadId": input.thread_id,
+                "path": input.relative_path,
+                "disposition": "attachment",
+            }),
+        };
         self.request_preview(
             input.id,
             Operation::Asset(purpose),
             "assets.createUrl",
-            json!({"resource": {
-                "_tag":"media-file",
-                "threadId": input.thread_id,
-                "path": input.relative_path,
-                "disposition": "attachment",
-            }}),
+            json!({"resource": resource}),
         )
         .await
     }
@@ -191,8 +203,13 @@ impl Session {
                         .resolve_url(value["relativeUrl"].as_str()?)
                 });
                 let result = match (url, purpose) {
-                    (Some(url), AssetPurpose::Download) => {
-                        self.preview_downloads.start(pending.id, url);
+                    (
+                        Some(url),
+                        purpose @ (AssetPurpose::Download
+                        | AssetPurpose::ShowImage
+                        | AssetPurpose::SaveImage),
+                    ) => {
+                        self.preview_downloads.start(pending.id, url, purpose);
                         return;
                     }
                     (Some(_), AssetPurpose::Inspect) => AssetOutcome::Available,

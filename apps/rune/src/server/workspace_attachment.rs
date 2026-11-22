@@ -23,14 +23,24 @@ const CAPACITY: usize = 512;
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Input {
+    #[serde(rename = "_tag")]
+    kind: Resource,
     thread_id: String,
     path: String,
 }
 
+#[derive(Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum Resource {
+    MediaFile,
+    WorkspaceFile,
+}
+
 impl Input {
     pub(super) fn applies(payload: &Value) -> bool {
-        payload["resource"]["_tag"] == "media-file"
-            && payload["resource"]["disposition"] == "attachment"
+        let resource = &payload["resource"];
+        resource["_tag"] == "workspace-file"
+            || (resource["_tag"] == "media-file" && resource["disposition"] == "attachment")
     }
 
     pub(super) fn decode(payload: &Value) -> Option<Self> {
@@ -65,6 +75,7 @@ struct Grant {
     requested: String,
     path: PathBuf,
     metadata: Metadata,
+    kind: Resource,
 }
 
 #[derive(Default)]
@@ -77,13 +88,22 @@ impl Service {
         state_dir: &Path,
         input: Input,
     ) -> Result<Issued, Value> {
-        let resource = json!({
-            "_tag": "media-file",
+        let mut resource = json!({
+            "_tag": input.kind,
             "threadId": input.thread_id,
             "path": input.path,
-            "disposition": "attachment",
         });
+        if input.kind == Resource::MediaFile {
+            resource["disposition"] = json!("attachment");
+        }
         let failure = |tag| json!({"_tag": tag, "resource": resource});
+        if input.kind == Resource::WorkspaceFile
+            && !Path::new(&input.path)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("png"))
+        {
+            return Err(failure("AssetPreviewTypeValidationError"));
+        }
         let (project, worktree) = store
             .terminal_workspace(&input.thread_id)
             .map_err(|cause| {
@@ -125,6 +145,7 @@ impl Service {
             requested: input.path,
             path,
             metadata,
+            kind: input.kind,
         });
         Ok(Issued {
             relative_url,
@@ -132,8 +153,8 @@ impl Service {
         })
     }
 
-    fn file(&self, token: Uuid, name: &str, state_dir: &Path) -> io::Result<(File, u64)> {
-        let (cwd, requested, path, expected) = {
+    fn file(&self, token: Uuid, name: &str, state_dir: &Path) -> io::Result<(File, u64, Resource)> {
+        let (cwd, requested, path, expected, kind) = {
             let grants = self.0.lock().expect("workspace attachments");
             let grant = grants
                 .iter()
@@ -145,13 +166,14 @@ impl Service {
                 grant.requested.clone(),
                 grant.path.clone(),
                 grant.metadata.clone(),
+                grant.kind,
             )
         };
         let (opened_path, file, metadata) = open(&cwd, &requested, state_dir)?;
         if opened_path != path || !same_identity(&expected, &metadata) {
             return Err(io::ErrorKind::NotFound.into());
         }
-        Ok((file, metadata.len()))
+        Ok((file, metadata.len(), kind))
     }
 }
 
@@ -195,7 +217,7 @@ pub(super) async fn get(
         local.workspace_attachments.file(token, &name, state_dir)
     })
     .await;
-    let Ok(Ok((file, size))) = opened else {
+    let Ok(Ok((file, size, kind))) = opened else {
         let mut response = Response::new(Body::empty());
         *response.status_mut() = StatusCode::NOT_FOUND;
         return response;
@@ -223,13 +245,14 @@ pub(super) async fn get(
     let mut response = Response::new(body);
     let headers = response.headers_mut();
     headers.insert(header::CONTENT_LENGTH, size.into());
-    headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("application/octet-stream"),
-    );
+    let (mime, disposition) = match kind {
+        Resource::MediaFile => ("application/octet-stream", "attachment"),
+        Resource::WorkspaceFile => ("image/png", "inline"),
+    };
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(mime));
     headers.insert(
         header::CONTENT_DISPOSITION,
-        HeaderValue::from_static("attachment"),
+        HeaderValue::from_static(disposition),
     );
     headers.insert(
         header::CACHE_CONTROL,

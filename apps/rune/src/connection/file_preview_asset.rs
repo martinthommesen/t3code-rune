@@ -1,11 +1,12 @@
 use std::fs::File;
 use std::io::{self, Write};
+use std::sync::Arc;
 
-use reqwest::{Client, StatusCode, Url};
+use reqwest::{Client, Response, StatusCode, Url};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
-use super::file_preview::AssetOutcome;
+use super::file_preview::{AssetOutcome, AssetPurpose};
 use super::{Environment, project_favicon::asset_url};
 
 pub(super) struct Downloads {
@@ -48,13 +49,16 @@ impl Downloads {
         asset_url(&self.base, relative)
     }
 
-    pub(super) fn start(&mut self, id: Uuid, url: Url) {
+    pub(super) fn start(&mut self, id: Uuid, url: Url, purpose: AssetPurpose) {
         let client = self.client.clone();
         let task = tokio::spawn(async move {
-            match download(client, url).await {
-                Some(file) => AssetOutcome::Prepared(file),
-                None => AssetOutcome::Failed("The file could not be loaded. Try again.".into()),
-            }
+            let result = match purpose {
+                AssetPurpose::ShowImage => image(client, url).await.map(AssetOutcome::Image),
+                _ => download(client, url).await.map(AssetOutcome::Prepared),
+            };
+            result.unwrap_or_else(|| {
+                AssetOutcome::Failed("The file could not be loaded. Try again.".into())
+            })
         });
         self.active = Some(Transfer { id, task });
     }
@@ -72,11 +76,28 @@ impl Downloads {
     }
 }
 
-async fn download(client: Client, url: Url) -> Option<File> {
-    let mut response = client.get(url).send().await.ok()?;
-    if response.status() != StatusCode::OK {
-        return None;
+async fn open(client: Client, url: Url) -> Option<Response> {
+    let response = client.get(url).send().await.ok()?;
+    (response.status() == StatusCode::OK).then_some(response)
+}
+
+async fn image(client: Client, url: Url) -> Option<Arc<[u8]>> {
+    let mut response = open(client, url).await?;
+    let mut source = Vec::new();
+    let limit = rune::clipboard::MAX_IMAGE_BYTES;
+    while let Some(bytes) = response.chunk().await.ok()? {
+        if source.len().saturating_add(bytes.len()) > limit {
+            return None;
+        }
+        source.extend(bytes);
     }
+    source
+        .starts_with(b"\x89PNG\r\n\x1a\n")
+        .then(|| source.into())
+}
+
+async fn download(client: Client, url: Url) -> Option<File> {
+    let mut response = open(client, url).await?;
     let mut file = tokio::task::spawn_blocking(tempfile::tempfile)
         .await
         .ok()?

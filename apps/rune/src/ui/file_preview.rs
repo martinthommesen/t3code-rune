@@ -1,4 +1,5 @@
 mod binary;
+mod image;
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -10,7 +11,7 @@ use rune::{
 };
 use uuid::Uuid;
 
-use crate::connection::file_preview::{Contents, ReadFailure, ReadRequest};
+use crate::connection::file_preview::{AssetPurpose, Contents, ReadFailure, ReadRequest};
 
 use super::conversation::{self, Layout};
 use super::{Palette, ProjectView, State, Workspace};
@@ -148,6 +149,7 @@ enum Load {
     Pending,
     Text(Arc<TextFile>),
     Binary(binary::Phase),
+    Image(image::PreviewImage),
     Failed(ReadFailure),
 }
 
@@ -205,12 +207,19 @@ pub(super) fn activate_link(
         .unwrap_or(&project.path)
         .clone();
     let id = Uuid::new_v4();
-    connection.read_file_preview(ReadRequest {
+    let request = ReadRequest {
         id,
         thread_id: thread_id.to_owned(),
         cwd: cwd.clone(),
         relative_path: target.path.clone(),
-    });
+    };
+    let load = if image::supports(&target.path) {
+        connection.prepare_file_asset(request, AssetPurpose::ShowImage);
+        Load::Image(image::PreviewImage::new())
+    } else {
+        connection.read_file_preview(request);
+        Load::Pending
+    };
     state.file_preview = Some(Preview {
         id,
         thread_id: thread_id.to_owned(),
@@ -220,7 +229,7 @@ pub(super) fn activate_link(
         origin: origin.to_owned(),
         href: href.to_owned(),
         wrap: true,
-        load: Load::Pending,
+        load,
     });
     tx.focus_when_shown(TAB_CLOSE, false);
 }
@@ -335,6 +344,14 @@ impl Preview {
             thread_id: self.thread_id.clone(),
             cwd: self.cwd.clone(),
             relative_path: self.target.path.clone(),
+        }
+    }
+
+    fn save_phase(&mut self) -> Option<&mut binary::Phase> {
+        match &mut self.load {
+            Load::Binary(phase) => Some(phase),
+            Load::Image(image) => Some(&mut image.save),
+            _ => None,
         }
     }
 }
@@ -459,6 +476,13 @@ pub(super) fn view(
         ),
         Load::Text(file) => source(preview, file, colors, palette),
         Load::Binary(phase) => binary::view(preview, phase, colors, palette),
+        Load::Image(image) => image::view(
+            preview,
+            image,
+            image::Bounds::new(width, layout, workspace.filesystem_write),
+            colors,
+            palette,
+        ),
         Load::Failed(error) => error_view(preview, error, colors),
     };
     Some(pane.child(body))
@@ -562,7 +586,7 @@ fn control(
     glyph: &'static Icon,
     colors: Colors,
     palette: Palette,
-    action: fn(&mut State, &mut Tx),
+    action: impl Fn(&mut State, &mut Tx) + Copy + 'static,
 ) -> El {
     el().key(key)
         .role("button")

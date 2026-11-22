@@ -957,6 +957,7 @@ impl State {
         changed |= settings::poll_project(self);
         changed |= settings::poll_project_files(self, tx);
         changed |= self.poll_file_preview_save(tx);
+        changed |= self.poll_image_preview();
         changed |= worktree_setup::poll(self, tx);
         if self.sidebar_open
             && self

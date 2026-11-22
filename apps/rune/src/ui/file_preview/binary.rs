@@ -44,7 +44,19 @@ impl State {
         else {
             return;
         };
-        let Load::Binary(phase) = &mut preview.load else {
+        if let Load::Image(image) = &mut preview.load
+            && image.loading()
+        {
+            image.loaded(result, self.image_cache.as_ref());
+            return;
+        }
+        let title = if matches!(preview.load, Load::Image(_)) {
+            "Save image"
+        } else {
+            "Save file"
+        };
+        let name = filename(&preview.target.path).to_owned();
+        let Some(phase) = preview.save_phase() else {
             return;
         };
         *phase = match (&*phase, result) {
@@ -53,8 +65,8 @@ impl State {
             (Phase::Preparing, AssetOutcome::Failed(message)) => Phase::SaveError(message),
             (Phase::Preparing, AssetOutcome::Prepared(file)) => {
                 let options = FileDialogOptions {
-                    title: "Save file".to_owned(),
-                    file_name: Some(filename(&preview.target.path).to_owned()),
+                    title: title.to_owned(),
+                    file_name: Some(name),
                     ..Default::default()
                 };
                 tx.save_file(options, move |state: &mut State, answer, tx| {
@@ -74,21 +86,25 @@ impl State {
         self.request_preview_asset(AssetPurpose::Inspect);
     }
 
-    fn request_preview_asset(&mut self, purpose: AssetPurpose) {
+    pub(super) fn request_preview_asset(&mut self, purpose: AssetPurpose) {
         let Some((preview, connection)) = self.file_preview.as_mut().zip(self.connection.as_ref())
         else {
             return;
         };
-        let Load::Binary(phase) = &preview.load else {
+        let request = preview.request();
+        let Some(phase) = preview.save_phase() else {
             return;
         };
-        let next = match (purpose, phase) {
-            (AssetPurpose::Download, Phase::Ready | Phase::SaveError(_)) => Phase::Preparing,
+        let next = match (purpose, &*phase) {
+            (
+                AssetPurpose::Download | AssetPurpose::SaveImage,
+                Phase::Ready | Phase::SaveError(_),
+            ) => Phase::Preparing,
             (AssetPurpose::Inspect, Phase::Unavailable(_)) => Phase::Checking,
             _ => return,
         };
-        connection.prepare_file_asset(preview.request(), purpose);
-        preview.load = Load::Binary(next);
+        connection.prepare_file_asset(request, purpose);
+        *phase = next;
     }
 
     fn save_preview_destination(
@@ -105,9 +121,10 @@ impl State {
         else {
             return;
         };
-        if !matches!(preview.load, Load::Binary(Phase::Choosing)) {
+        let focus = preview_save_focus(preview);
+        let Some(existing @ Phase::Choosing) = preview.save_phase() else {
             return;
-        }
+        };
         let phase = match answer {
             Ok(None) => Phase::Ready,
             Err(error) => Phase::SaveError(error.to_string()),
@@ -130,17 +147,17 @@ impl State {
             }
         };
         if !matches!(phase, Phase::Writing(_)) {
-            tx.focus_when_shown(SAVE, false);
+            tx.focus_when_shown(focus, false);
         }
-        preview.load = Load::Binary(phase);
+        *existing = phase;
     }
 
     pub(in crate::ui) fn poll_file_preview_save(&mut self, tx: &mut Tx) -> bool {
-        let Some(Preview {
-            load: Load::Binary(phase),
-            ..
-        }) = &mut self.file_preview
-        else {
+        let Some(preview) = &mut self.file_preview else {
+            return false;
+        };
+        let focus = preview_save_focus(preview);
+        let Some(phase) = preview.save_phase() else {
             return false;
         };
         let Phase::Writing(result) = phase else {
@@ -155,8 +172,16 @@ impl State {
             Ok(Ok(())) => Phase::Ready,
         };
         *phase = complete;
-        tx.focus_when_shown(SAVE, false);
+        tx.focus_when_shown(focus, false);
         true
+    }
+}
+
+fn preview_save_focus(preview: &Preview) -> &'static str {
+    if matches!(preview.load, Load::Image(_)) {
+        super::image::PICTURE
+    } else {
+        SAVE
     }
 }
 
