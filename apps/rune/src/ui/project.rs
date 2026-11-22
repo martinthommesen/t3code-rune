@@ -288,13 +288,15 @@ impl State {
                 }
                 browse.listing = Some(listing);
             }
-            Err(FolderBrowseError::Missing(_)) if form.clone.is_none() => {
-                browse.parent = folder::parent(&browse.requested_path);
+            Err(FolderBrowseError::Missing) => {
+                let query = form
+                    .clone
+                    .as_ref()
+                    .and_then(|clone| clone.browse_query(&browse.requested_path));
+                browse.parent = folder::parent(query.unwrap_or(&browse.requested_path));
                 browse.path_missing = true;
             }
-            Err(FolderBrowseError::Missing(error) | FolderBrowseError::Other(error)) => {
-                browse.error = Some(error);
-            }
+            Err(FolderBrowseError::Other(error)) => browse.error = Some(error),
         }
     }
 
@@ -457,11 +459,12 @@ impl State {
         };
         match result {
             Ok(project) => {
-                let destination = if matches!(form.step, ProjectStep::Folder | ProjectStep::GitDestination) {
-                    ProjectDestination::Draft
-                } else {
-                    ProjectDestination::Project
-                };
+                let destination =
+                    if matches!(form.step, ProjectStep::Folder | ProjectStep::GitDestination) {
+                        ProjectDestination::Draft
+                    } else {
+                        ProjectDestination::Project
+                    };
                 self.add_project = None;
                 self.project_notice = project.commit_error;
                 self.added_project = Some(AddedProject {

@@ -83,6 +83,9 @@ pub(super) fn project(
     if let Some(value) = raw.get("addProjectBaseDirectory") {
         fields.insert("addProjectBaseDirectory".to_owned(), text(value)?.into());
     }
+    if let Some(value) = raw.get("ghqCloneLayout") {
+        fields.insert("ghqCloneLayout".to_owned(), value.as_bool()?.into());
+    }
     for key in ["worktreesDirectory", "threadTitleInstructions"] {
         if let Some(value) = raw.get(key).and_then(text) {
             fields.insert(key.to_owned(), value.into());

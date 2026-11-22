@@ -22,6 +22,13 @@ pub(in crate::ui) struct Setting {
 
 const SETTINGS: &[Setting] = &[
     Setting {
+        page: Page::Threads,
+        id: "ghq-clone-layout",
+        anchor: "clone-layout-setting",
+        title: "Clone into host folders",
+        terms: "clones git repositories ghq github.com owner repo nested directory",
+    },
+    Setting {
         page: Page::Worktrees,
         id: "storage-worktrees-location",
         anchor: "worktree-location-row",

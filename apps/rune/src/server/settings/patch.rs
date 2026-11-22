@@ -187,6 +187,7 @@ fn supported(key: &str) -> bool {
             | "worktreeSubmodules"
             | "worktreesDirectory"
             | "addProjectBaseDirectory"
+            | "ghqCloneLayout"
             | "branchNamingMode"
             | "branchNamePrefix"
             | "branchNameInstructions"
@@ -211,6 +212,7 @@ pub(super) fn invalid_value(key: &str, value: &Value) -> Option<&'static str> {
         | "newWorktreesStartFromOrigin"
         | "requireConnectDeviceApproval"
         | "enablePreviewTunnel"
+        | "ghqCloneLayout"
             if !value.is_boolean() =>
         {
             Some("Expected boolean")

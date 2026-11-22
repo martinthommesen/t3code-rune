@@ -16,7 +16,7 @@ pub(crate) struct FolderEntry {
 
 #[derive(Debug)]
 pub(crate) enum FolderBrowseError {
-    Missing(String),
+    Missing,
     Other(String),
 }
 
@@ -30,12 +30,11 @@ impl super::RpcExit {
     pub(super) fn into_folder_result(self) -> Result<FolderListing, FolderBrowseError> {
         let missing = matches!(&self, Self::Failure { cause }
             if cause.iter().any(|reason| matches!(reason, super::RpcCause::Fail { error } if error.path_missing)));
+        if missing {
+            return Err(FolderBrowseError::Missing);
+        }
         self.into_result()
-            .map_err(if missing {
-                FolderBrowseError::Missing
-            } else {
-                FolderBrowseError::Other
-            })
+            .map_err(FolderBrowseError::Other)
             .and_then(|value| {
                 serde_json::from_value(value)
                     .map_err(|_| "The environment returned an invalid folder listing.".into())

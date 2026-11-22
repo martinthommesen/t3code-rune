@@ -78,9 +78,9 @@ pub(crate) use terminal::{
 };
 pub(crate) use workspace_retry::WorkspaceRetry;
 pub(crate) use workspace_settings::{
-    AddProjectBaseDirectory, BranchNamingMode, BranchTextField, FavoriteSetting, ModelFavorite,
-    PermissionSetting, ProjectFileWorkspaceSettings, ResetWorkspaceOverride, SnoozeSetting,
-    SubmoduleMode, WorkspaceSetting, WorktreeLocation,
+    AddProjectBaseDirectory, BranchNamingMode, BranchTextField, CloneLayoutSetting,
+    FavoriteSetting, ModelFavorite, PermissionSetting, ProjectFileWorkspaceSettings,
+    ResetWorkspaceOverride, SnoozeSetting, SubmoduleMode, WorkspaceSetting, WorktreeLocation,
 };
 pub(crate) use worktree_setup::WorktreeSetup;
 

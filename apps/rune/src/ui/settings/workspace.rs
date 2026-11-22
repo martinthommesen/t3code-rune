@@ -12,6 +12,7 @@ use t3_rune::providers::codex::RuntimeMode;
 
 use super::{CONTROL, DESCRIPTION, Palette, RESET, SECTION, State, error_text};
 
+mod clone_layout;
 mod inheritance;
 pub(super) mod keyboard;
 mod permissions;

@@ -8,6 +8,8 @@ use uuid::Uuid;
 
 use super::{AddProject, Browse, FolderListing, Palette, ProjectStep, State, error_text};
 
+mod layout;
+
 const BODY: TextStyle = TextStyle::new(14.0, 400.0).lh(20.0);
 const INPUT: TextStyle = TextStyle::new(14.0, 400.0).lh(34.0);
 const FOOTER: TextStyle = TextStyle::new(14.0, 500.0).lh(20.0);
@@ -43,14 +45,22 @@ pub(super) struct Destination {
 }
 
 impl Destination {
-    fn new(raw: &str) -> Self {
+    fn new(raw: &str, hosted_layout: bool) -> (Self, String) {
         let remote = normalized_remote(raw);
-        Self {
-            raw: raw.into(),
-            leaf: directory_name(&remote).into(),
-            remote,
-            command: None,
-        }
+        let destination = hosted_layout
+            .then(|| layout::host_path(&remote))
+            .flatten()
+            .unwrap_or_else(|| directory_name(&remote).to_owned());
+        let leaf = destination.rsplit('/').next().unwrap_or_default();
+        (
+            Self {
+                raw: raw.into(),
+                leaf: leaf.into(),
+                remote,
+                command: None,
+            },
+            destination,
+        )
     }
 
     pub(super) fn browse_query<'a>(&self, path: &'a str) -> Option<&'a str> {
@@ -279,6 +289,7 @@ impl State {
     fn continue_git_project(&mut self, tx: &mut Tx) {
         let cwd = self.project_browse_cwd();
         let directory = super::initial_browse_query(self.configured_project_start_directory());
+        let hosted_layout = self.clone_into_host_folders();
         let can_browse = self
             .workspace
             .as_ref()
@@ -294,8 +305,9 @@ impl State {
         if raw.is_empty() {
             return;
         }
-        let clone = Destination::new(raw);
-        form.path.replace_text(format!("{directory}{}", clone.leaf));
+        let (clone, destination) = Destination::new(raw, hosted_layout);
+        form.path
+            .replace_text(layout::join(&directory, &destination));
         form.clone = Some(clone);
         form.browse = can_browse.then(|| Browse {
             cwd,
@@ -409,11 +421,10 @@ pub(super) fn dialog(form: &AddProject, palette: Palette) -> El {
         .as_ref()
         .is_some_and(|browse| browse.active_row > 0);
     let will_create = form.browse.as_ref().is_some_and(|browse| {
-        browse.pending.is_none()
+        browse.requested_path == form.path.text.trim()
+            && browse.pending.is_none()
             && browse.error.is_none()
-            && browse.listing.is_some()
-            && !browse.exact_entry
-            && !form.path.text.ends_with(['/', '\\'])
+            && (browse.path_missing || browse.listing.is_some() && !browse.exact_entry)
     });
     let label = if busy {
         "Cloning"
@@ -680,7 +691,6 @@ fn git_destination(form: &AddProject, clone: &Destination, palette: Palette) -> 
         );
     let mut contents = col().w_full().child(summary);
     if let Some(browse) = &form.browse
-        && let Some(listing) = &browse.listing
         && browse.row_count() > 0
     {
         let mut dirs = col().w_full().padding(8.0).child(
@@ -701,7 +711,12 @@ fn git_destination(form: &AddProject, clone: &Destination, palette: Palette) -> 
                 palette,
             ));
         }
-        for (index, entry) in listing.entries.iter().enumerate() {
+        for (index, entry) in browse
+            .listing
+            .iter()
+            .flat_map(|listing| &listing.entries)
+            .enumerate()
+        {
             let selected = browse.active_row == index + 1 + usize::from(browse.parent.is_some());
             dirs = dirs.child(destination_entry(
                 &entry.name,
@@ -817,7 +832,7 @@ mod tests {
         ] {
             assert_eq!(normalized_remote(url), repository);
         }
-        let mut clone = Destination::new("git@example.org:owner/native.git");
+        let (mut clone, _) = Destination::new("git@example.org:owner/native.git", false);
         assert_eq!(clone.leaf, "native");
         assert_eq!(clone.browse_query("~/native"), Some("~/"));
         assert_eq!(clone.browse_query("~/another"), None);

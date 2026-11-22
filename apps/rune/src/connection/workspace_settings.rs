@@ -18,6 +18,7 @@ const ORIGIN: &str = "newWorktreesStartFromOrigin";
 const PERMISSIONS: &str = "defaultRuntimeMode";
 const DIRECTORY: &str = "worktreesDirectory";
 const ADD_PROJECT_BASE: &str = "addProjectBaseDirectory";
+const CLONE_LAYOUT: &str = "ghqCloneLayout";
 const SUBMODULES: &str = "worktreeSubmodules";
 const BRANCH_NAMING: &str = "branchNamingMode";
 const FAVORITES: &str = "favorites";
@@ -43,6 +44,7 @@ pub(super) enum Edit {
     Permissions(Option<RuntimeMode>),
     WorktreesDirectory(String),
     AddProjectBaseDirectory(String),
+    CloneIntoHostFolders(bool),
     BranchNaming(Option<BranchNamingMode>),
     BranchText(BranchTextField, Option<String>),
     SnoozePresets(Vec<Preset>),
@@ -65,6 +67,7 @@ impl Edit {
             Self::Permissions(None) => (PERMISSIONS, json!(RuntimeMode::FullAccess)),
             Self::WorktreesDirectory(path) => (DIRECTORY, json!(path)),
             Self::AddProjectBaseDirectory(path) => (ADD_PROJECT_BASE, json!(path)),
+            Self::CloneIntoHostFolders(enabled) => (CLONE_LAYOUT, json!(enabled)),
             Self::BranchNaming(Some(mode)) => (BRANCH_NAMING, json!(mode)),
             Self::BranchNaming(None) if project_scope => (BRANCH_NAMING, Value::Null),
             Self::BranchNaming(None) => (BRANCH_NAMING, json!(BranchNamingMode::Static)),
@@ -283,6 +286,13 @@ pub(crate) struct AddProjectBaseDirectory {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+pub(crate) struct CloneLayoutSetting {
+    pub(crate) enabled: bool,
+    pub(crate) writable: bool,
+    pub(crate) managed_by: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct WorkspaceSetting {
     pub(crate) configured: Option<WorkspaceMode>,
     pub(crate) origin: OriginSetting,
@@ -290,6 +300,7 @@ pub(crate) struct WorkspaceSetting {
     pub(crate) permission: PermissionSetting,
     pub(crate) worktree_location: Option<WorktreeLocation>,
     pub(crate) add_project_base: Option<AddProjectBaseDirectory>,
+    pub(crate) clone_layout: Option<CloneLayoutSetting>,
     pub(crate) branch_naming: BranchNamingSetting,
     pub(crate) snooze: Option<SnoozeSetting>,
     pub(crate) favorites: FavoriteSetting,
@@ -331,6 +342,7 @@ pub(super) struct Subscription {
     directory_supported: bool,
     directory_managed_by: Option<String>,
     add_project_base_managed_by: Option<String>,
+    clone_layout_managed_by: Option<String>,
     branch_naming_managed_by: Option<String>,
     snooze_managed_by: Option<String>,
     branch_text_managed_by: [Option<String>; 2],
@@ -357,6 +369,7 @@ impl Subscription {
             directory_supported: false,
             directory_managed_by: None,
             add_project_base_managed_by: None,
+            clone_layout_managed_by: None,
             branch_naming_managed_by: None,
             snooze_managed_by: None,
             branch_text_managed_by: [None, None],
@@ -385,6 +398,8 @@ impl Subscription {
                     self.directory_managed_by = managed_by(&config["managedPolicy"], DIRECTORY);
                     self.add_project_base_managed_by =
                         managed_by(&config["managedPolicy"], ADD_PROJECT_BASE);
+                    self.clone_layout_managed_by =
+                        managed_by(&config["managedPolicy"], CLONE_LAYOUT);
                     self.branch_naming_managed_by =
                         managed_by(&config["managedPolicy"], BRANCH_NAMING);
                     self.snooze_managed_by = managed_by(&config["managedPolicy"], snooze::KEY);
@@ -419,6 +434,13 @@ impl Subscription {
                     managed_by: self.add_project_base_managed_by.clone(),
                 }
             }),
+            clone_layout: settings[CLONE_LAYOUT]
+                .as_bool()
+                .map(|enabled| CloneLayoutSetting {
+                    enabled,
+                    writable: self.can_write && self.clone_layout_managed_by.is_none(),
+                    managed_by: self.clone_layout_managed_by.clone(),
+                }),
             snooze: snooze::decode(&settings[snooze::KEY], snooze::KEY)
                 .ok()
                 .map(|presets| SnoozeSetting {
@@ -621,6 +643,10 @@ impl Connection {
         self.update_workspace_setting(None, Edit::AddProjectBaseDirectory(path))
     }
 
+    pub(crate) fn update_clone_layout(&self, enabled: bool) -> Option<Uuid> {
+        self.update_workspace_setting(None, Edit::CloneIntoHostFolders(enabled))
+    }
+
     pub(crate) fn update_worktree_location(&self, path: String) -> Option<Uuid> {
         self.update_workspace_setting(None, Edit::WorktreesDirectory(path))
     }
@@ -717,6 +743,7 @@ impl Session {
             Edit::Permissions(_) => &settings.permission_policy.managed_by,
             Edit::WorktreesDirectory(_) => &settings.directory_managed_by,
             Edit::AddProjectBaseDirectory(_) => &settings.add_project_base_managed_by,
+            Edit::CloneIntoHostFolders(_) => &settings.clone_layout_managed_by,
             Edit::BranchNaming(_) => &settings.branch_naming_managed_by,
             Edit::BranchText(field, _) => &settings.branch_text_managed_by[field.index()],
             Edit::SnoozePresets(_) => &settings.snooze_managed_by,
@@ -732,8 +759,12 @@ impl Session {
             && (!environment || !settings.directory_supported)
         {
             Some("Worktree location is unavailable for this scope.".into())
-        } else if matches!(edit, Edit::AddProjectBaseDirectory(_)) && !environment {
-            Some("Add project base directory is an environment-wide setting.".into())
+        } else if matches!(
+            edit,
+            Edit::AddProjectBaseDirectory(_) | Edit::CloneIntoHostFolders(_)
+        ) && !environment
+        {
+            Some("This setting is environment-wide and cannot be overridden by a project.".into())
         } else if let Some(organization) = managed_by {
             Some(format!("Managed by {organization}."))
         } else if !settings.can_write {

@@ -28,6 +28,7 @@ pub(super) enum Setting {
     Submodules,
     Snooze,
     ProjectBase,
+    CloneLayout,
 }
 
 impl Setting {
@@ -38,6 +39,7 @@ impl Setting {
             Self::Submodules => "worktree-submodules-inheritance",
             Self::Snooze => "snooze-options-inheritance",
             Self::ProjectBase => "add-project-base-inheritance",
+            Self::CloneLayout => "clone-layout-inheritance",
         }
     }
 
@@ -48,6 +50,7 @@ impl Setting {
             Self::Submodules => "worktree-submodules",
             Self::Snooze => super::snooze::ADD,
             Self::ProjectBase => super::project_start::INPUT,
+            Self::CloneLayout => super::clone_layout::SWITCH,
         }
     }
 
@@ -58,6 +61,7 @@ impl Setting {
             Self::Submodules => "reset-worktree-submodules",
             Self::Snooze => "reset-snooze-options",
             Self::ProjectBase => super::project_start::RESET_INPUT,
+            Self::CloneLayout => super::clone_layout::RESET_SWITCH,
         }
     }
 
@@ -76,7 +80,7 @@ impl Setting {
                 .get(id)
                 .copied()
                 .map(SubmoduleMode::label),
-            Self::Snooze | Self::ProjectBase => None,
+            Self::Snooze | Self::ProjectBase | Self::CloneLayout => None,
         }
     }
 
@@ -98,6 +102,11 @@ impl Setting {
                 .as_ref()
                 .map(|setting| setting.path.as_str())
                 .filter(|path| !path.is_empty()),
+            Self::CloneLayout => settings
+                .clone_layout
+                .as_ref()
+                .filter(|setting| setting.enabled)
+                .map(|_| "On"),
         }
     }
 
@@ -108,6 +117,7 @@ impl Setting {
             Self::Submodules => SubmoduleMode::Recursive.label(),
             Self::Snooze => OPTIONS_COUNT[snooze::defaults().len()],
             Self::ProjectBase => "Empty",
+            Self::CloneLayout => "Off",
         }
     }
 }
@@ -176,7 +186,9 @@ fn resolve_inheritance(state: &State, setting: Setting) -> Option<Inheritance<'_
     if setting == Setting::Snooze && (panel.project_selected() || current.snooze.is_none()) {
         return None;
     }
-    if setting == Setting::ProjectBase && current.add_project_base.is_none() {
+    if setting == Setting::ProjectBase && current.add_project_base.is_none()
+        || setting == Setting::CloneLayout && current.clone_layout.is_none()
+    {
         return None;
     }
     let machine = state.workspace.as_ref()?.label.as_str();
@@ -248,6 +260,10 @@ fn resolve_inheritance(state: &State, setting: Setting) -> Option<Inheritance<'_
             .is_some_and(|setting| setting.writable),
         Setting::ProjectBase => current
             .add_project_base
+            .as_ref()
+            .is_some_and(|setting| setting.writable),
+        Setting::CloneLayout => current
+            .clone_layout
             .as_ref()
             .is_some_and(|setting| setting.writable),
     };
@@ -527,6 +543,7 @@ fn tab(state: &mut State, setting: Setting, backwards: bool, tx: &mut Tx) -> boo
             .is_some_and(|setting| setting.writable && setting.may_reset),
         Setting::Snooze => super::snooze::can_reset(state),
         Setting::ProjectBase => super::project_start::resettable(state),
+        Setting::CloneLayout => super::clone_layout::resettable(state),
     } {
         setting.reset()
     } else {
@@ -537,6 +554,8 @@ fn tab(state: &mut State, setting: Setting, backwards: bool, tx: &mut Tx) -> boo
         super::snooze::focus_editor(state, tx);
     } else if target == super::project_start::INPUT {
         super::project_start::focus_control(state, tx);
+    } else if target == super::clone_layout::SWITCH {
+        super::clone_layout::focus_control(state, tx);
     } else {
         tx.focus(target, true);
     }
@@ -557,7 +576,7 @@ fn clear(state: &mut State, setting: Setting, tx: &mut Tx) {
         Setting::Permissions => ResetWorkspaceOverride::Permissions,
         Setting::Workspace => ResetWorkspaceOverride::Mode,
         Setting::Submodules => ResetWorkspaceOverride::WorktreeSubmodules,
-        Setting::Snooze | Setting::ProjectBase => return,
+        Setting::Snooze | Setting::ProjectBase | Setting::CloneLayout => return,
     };
     let operation = state
         .connection

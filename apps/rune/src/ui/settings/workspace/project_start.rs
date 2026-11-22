@@ -8,7 +8,7 @@ use crate::connection::AddProjectBaseDirectory;
 use super::super::{
     CLOSE, CONTROL, DESCRIPTION, Palette, RESET, SECTION, State, icon_button, path_input,
 };
-use super::{ITEM, inheritance, start_write};
+use super::{ITEM, clone_layout, inheritance, start_write};
 
 pub(super) const INPUT: &str = "add-project-base-directory";
 pub(super) const RESET_INPUT: &str = "reset-add-project-base-directory";
@@ -155,15 +155,19 @@ fn reset(state: &mut State, tx: &mut Tx) {
         return;
     }
     tx.focus(ROW, tx.focus_visible());
-    let panel = &mut state.settings.workspace;
-    if panel.project_selected() {
-        panel.project_start.warning_until = Some(Instant::now() + WARNING_DURATION);
-        tx.wake_after(WARNING_DURATION);
+    if state.settings.workspace.project_selected() {
+        warn_project_scope(state, tx);
         return;
     }
+    let panel = &mut state.settings.workspace;
     panel.project_start.replace(String::new());
     panel.project_start.edited = true;
     commit(state);
+}
+
+pub(super) fn warn_project_scope(state: &mut State, tx: &mut Tx) {
+    state.settings.workspace.project_start.warning_until = Some(Instant::now() + WARNING_DURATION);
+    tx.wake_after(WARNING_DURATION);
 }
 
 pub(in crate::ui) fn warning(state: &State, palette: Palette, width: f32) -> Option<El> {
@@ -309,20 +313,25 @@ pub(super) fn section(state: &State, palette: Palette, width: f32) -> Option<El>
                     .px(16.0),
             )
             .child(
-                content
-                    .key(ROW)
+                col()
                     .w_full()
-                    .role("group")
-                    .label("Add project starts in")
-                    .focusable(true)
-                    .tab_index(-1)
-                    .no_focus_ring()
-                    .hover_group()
-                    .px(16.0)
-                    .py(12.0)
                     .radius(12.0)
                     .border(1.0, palette.line)
-                    .border_layout(),
+                    .border_layout()
+                    .child(
+                        content
+                            .key(ROW)
+                            .w_full()
+                            .role("group")
+                            .label("Add project starts in")
+                            .focusable(true)
+                            .tab_index(-1)
+                            .no_focus_ring()
+                            .hover_group()
+                            .px(16.0)
+                            .py(12.0),
+                    )
+                    .children(clone_layout::setting_row(state, palette, width)),
             ),
     )
 }

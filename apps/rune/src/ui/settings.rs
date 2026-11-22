@@ -237,6 +237,15 @@ impl State {
         self.settings.workspace.settle(operation, result);
     }
 
+    pub(super) fn clone_into_host_folders(&self) -> bool {
+        self.settings
+            .workspace
+            .current
+            .as_ref()
+            .and_then(|settings| settings.clone_layout.as_ref())
+            .is_some_and(|setting| setting.enabled)
+    }
+
     pub(super) fn configured_project_start_directory(&self) -> Option<&str> {
         Some(
             self.settings
