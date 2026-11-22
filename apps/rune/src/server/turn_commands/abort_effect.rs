@@ -13,6 +13,10 @@ pub(in crate::server) enum AbortReason<'a> {
     Startup,
     Shutdown,
     RuntimeFailure(&'a str),
+    ProviderFailure {
+        message: &'a str,
+        code: Option<&'a str>,
+    },
     NativeTerminal(SettlementStatus),
 }
 
@@ -31,6 +35,7 @@ impl AbortReason<'_> {
                 "Cancelled because the server shut down before the provider work completed."
             }
             Self::RuntimeFailure(detail) => detail,
+            Self::ProviderFailure { message, .. } => message,
             Self::NativeTerminal(SettlementStatus::Interrupted) => "Stopped by the provider",
             Self::NativeTerminal(_) => "Provider turn failed.",
         }
@@ -38,7 +43,7 @@ impl AbortReason<'_> {
 
     fn request_status(&self) -> &'static str {
         match self {
-            Self::Shutdown | Self::NativeTerminal(_) => "cancelled",
+            Self::Shutdown | Self::NativeTerminal(_) | Self::ProviderFailure { .. } => "cancelled",
             Self::Startup | Self::RuntimeFailure(_) => "expired",
         }
     }
@@ -48,6 +53,7 @@ impl AbortReason<'_> {
             Self::Startup => "Server restarted",
             Self::Shutdown => "Server shut down",
             Self::RuntimeFailure(_) => "Provider session ended",
+            Self::ProviderFailure { .. } => "Provider error",
             Self::NativeTerminal(SettlementStatus::Interrupted) => "Interrupted",
             Self::NativeTerminal(_) => "Provider error",
         }
@@ -56,6 +62,7 @@ impl AbortReason<'_> {
     fn outcome(&self) -> &'static str {
         match self {
             Self::NativeTerminal(status) => terminal_status(*status),
+            Self::ProviderFailure { .. } => "failed",
             _ => "cancelled",
         }
     }
@@ -71,8 +78,9 @@ impl TurnCommands {
                 "SELECT effect.effect_id FROM orchestration_v2_effect_outbox AS effect
                  JOIN orchestration_v2_projection_runs AS run ON run.thread_id = effect.thread_id
                    AND run.run_id = json_extract(effect.payload_json, '$.runId')
-                 WHERE effect.effect_type = 'provider-turn.start' AND effect.status = 'succeeded'
-                   AND run.ordinal > 0 AND run.provider_instance_id = 'codex'
+                 WHERE effect.effect_type = 'provider-turn.start'
+                   AND (effect.status = 'succeeded' OR (effect.status = 'running' AND run.provider_instance_id = 'claudeAgent'))
+                   AND run.ordinal > 0 AND run.provider_instance_id IN ('codex', 'claudeAgent')
                    AND run.status = 'running'
                  ORDER BY effect.rowid",
             )?;
@@ -115,6 +123,7 @@ impl TurnCommands {
                     provider_status: row.get(9)?,
                     scope_id: row.get(10)?,
                     run_ordinal: row.get(11)?,
+                    driver: row.get(12)?,
                 })
             })
             .optional()?;
@@ -129,7 +138,9 @@ impl TurnCommands {
                 "command:runtime-reconcile:shutdown:{}:{now}",
                 state.thread_id
             )),
-            AbortReason::RuntimeFailure(_) | AbortReason::NativeTerminal(_) => None,
+            AbortReason::RuntimeFailure(_)
+            | AbortReason::ProviderFailure { .. }
+            | AbortReason::NativeTerminal(_) => None,
         };
         let stream = command_id.as_ref().map_or_else(
             || ThreadEventStream::server(&transaction, &state.thread_id),
@@ -174,7 +185,7 @@ impl TurnCommands {
 
         let node_metadata = |node_id: &str| {
             json!({
-                "runId": state.run_id, "nodeId": node_id, "providerInstanceId": CODEX_INSTANCE,
+                "runId": state.run_id, "nodeId": node_id, "providerInstanceId": state.driver,
             })
         };
         let outcome = reason.outcome();
@@ -183,7 +194,7 @@ impl TurnCommands {
         stream.append(
             "run.updated",
             &now,
-            &json!({"runId": state.run_id, "providerInstanceId":CODEX_INSTANCE}),
+            &json!({"runId": state.run_id, "providerInstanceId":state.driver}),
             &Value::Object(run),
         )?;
         stream.append(
@@ -213,11 +224,29 @@ impl TurnCommands {
             )?;
         }
         if state.provider_status == "running" {
+            let mut provider_turn = settled(
+                &state.provider_turn,
+                if matches!(reason, AbortReason::ProviderFailure { .. }) {
+                    "failed"
+                } else {
+                    "cancelled"
+                },
+                &now,
+            )?;
+            if state.driver != CODEX_INSTANCE {
+                provider_turn.shift_remove("tokenUsage");
+                provider_turn.insert(
+                    "turnTokenUsage".into(),
+                    json!({
+                        "usageStatus":"unavailable","usageScope":"main_agent","hasSubagents":false,
+                    }),
+                );
+            }
             stream.append(
                 "provider-turn.updated",
                 &now,
                 &node_metadata(&state.node_id),
-                &Value::Object(settled(&state.provider_turn, "cancelled", &now)?),
+                &Value::Object(provider_turn),
             )?;
         }
 
@@ -247,8 +276,10 @@ impl TurnCommands {
             AbortReason::NativeTerminal(SettlementStatus::Interrupted) => {
                 format!("{signal}interrupt-result")
             }
-            AbortReason::NativeTerminal(SettlementStatus::Failed) => format!(
-                "turn-item:provider:codex:native-item:{}",
+            AbortReason::NativeTerminal(SettlementStatus::Failed)
+            | AbortReason::ProviderFailure { .. } => format!(
+                "turn-item:provider:{}:native-item:{}",
+                state.driver,
                 encode_id_part(&format!("terminal-failure:{}", state.provider_turn_id)),
             ),
             _ => format!("{signal}server-recovery"),
@@ -283,12 +314,17 @@ impl TurnCommands {
                 notice["type"] = json!("run_interrupt_result");
                 notice["parentItemId"] = json!(format!("{signal}interrupt-request"));
             }
-            AbortReason::NativeTerminal(SettlementStatus::Failed) => {
+            AbortReason::NativeTerminal(SettlementStatus::Failed)
+            | AbortReason::ProviderFailure { .. } => {
+                let code = match &reason {
+                    AbortReason::ProviderFailure { code, .. } => *code,
+                    _ => None,
+                };
                 notice["status"] = json!("failed");
                 notice["type"] = json!("error");
                 notice["providerTurnId"] = json!(state.provider_turn_id);
                 notice["failure"] = json!({
-                    "class":"provider_error", "message":reason.detail(), "code":null, "retryable":null,
+                    "class":"provider_error", "message":reason.detail(), "code":code, "retryable":null,
                 });
                 if let Some(notice) = notice.as_object_mut() {
                     notice.remove("message");
@@ -309,7 +345,7 @@ impl TurnCommands {
         let sequence = stream.append(
             "provider-thread.updated",
             &now,
-            &json!({ "driver":"codex", "providerInstanceId":CODEX_INSTANCE }),
+            &json!({ "driver":state.driver, "providerInstanceId":state.driver }),
             &Value::Object(provider_thread),
         )?;
         if let Some(command_id) = command_id {
@@ -332,6 +368,11 @@ impl TurnCommands {
                )",
             params![state.thread_id, now, reason.detail(), state.provider_turn_id],
         )?;
+        if state.driver != CODEX_INSTANCE {
+            transaction.execute("UPDATE orchestration_v2_effect_outbox SET status='cancelled', lease_owner=NULL,
+                completed_at=?2, updated_at=?2, last_error=?3 WHERE effect_id=?1 AND status='running'",
+                params![effect_id, now, reason.detail()])?;
+        }
         if matches!(
             reason,
             AbortReason::NativeTerminal(SettlementStatus::Interrupted)
@@ -387,13 +428,14 @@ struct ActiveRun {
     provider_status: String,
     scope_id: String,
     run_ordinal: i64,
+    driver: String,
 }
 
 const ABORT_RUN: &str = "
     SELECT run.thread_id, run.run_id, node.node_id, provider_thread.provider_thread_id,
            provider_turn.provider_turn_id, run.payload_json, attempt.payload_json,
            provider_turn.payload_json, provider_thread.payload_json, provider_turn.status,
-           json_extract(node.payload_json, '$.checkpointScopeId'), run.ordinal
+           json_extract(node.payload_json, '$.checkpointScopeId'), run.ordinal, run.provider_instance_id
     FROM orchestration_v2_effect_outbox AS effect
     JOIN orchestration_v2_projection_runs AS run ON run.thread_id = effect.thread_id
       AND run.run_id = json_extract(effect.payload_json, '$.runId')
@@ -406,7 +448,9 @@ const ABORT_RUN: &str = "
       ON provider_turn.run_attempt_id = attempt.attempt_id AND provider_turn.node_id = node.node_id
       AND provider_turn.provider_thread_id = provider_thread.provider_thread_id
     WHERE effect.effect_id = ?1 AND effect.effect_type = 'provider-turn.start'
-      AND effect.status = 'succeeded' AND run.ordinal > 0 AND run.provider_instance_id = 'codex'
+      AND (effect.status = 'succeeded' OR (effect.status = 'running' AND run.provider_instance_id = 'claudeAgent'))
+      AND run.ordinal > 0 AND run.provider_instance_id IN ('codex', 'claudeAgent')
+      AND provider_thread.driver = run.provider_instance_id
       AND run.status = 'running' AND attempt.status = 'running' AND node.status = 'running'
       AND provider_turn.status IN ('running', 'completed', 'interrupted', 'failed')
       AND (?2 IS NULL OR provider_turn.status = ?2)

@@ -1,6 +1,7 @@
 pub(super) mod abort_effect;
 mod capture_effect;
 mod checkpoint_events;
+pub(super) mod claude;
 pub(super) mod context_handoff;
 mod finish_effect;
 pub(super) mod interrupt_effect;
@@ -41,6 +42,7 @@ use t3_rune::providers::codex::{InteractionMode, RuntimeMode};
 const COMMAND_TYPE: &str = "message.dispatch";
 const EFFECT_TYPE: &str = "provider-turn.start";
 const CODEX_INSTANCE: &str = "codex";
+const CLAUDE_INSTANCE: &str = "claudeAgent";
 const FIRST_RUN_ORDINAL: i64 = 1;
 const TURN_ITEM_ORDINAL_RANGE: i64 = 1_000_000;
 
@@ -162,7 +164,23 @@ struct ThreadLineage {
     root_thread_id: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NativeProvider {
+    Codex,
+    Claude,
+}
+
+impl NativeProvider {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Codex => CODEX_INSTANCE,
+            Self::Claude => CLAUDE_INSTANCE,
+        }
+    }
+}
+
 struct TurnIds {
+    provider: NativeProvider,
     run_id: String,
     attempt_id: String,
     root_node_id: String,
@@ -183,20 +201,50 @@ impl TurnIds {
         run_ordinal: i64,
         provider_thread_id: Option<&str>,
     ) -> Self {
+        Self::for_provider(
+            thread_id,
+            message_id,
+            run_ordinal,
+            provider_thread_id,
+            NativeProvider::Codex,
+            None,
+        )
+    }
+
+    fn for_provider(
+        thread_id: &str,
+        message_id: &str,
+        run_ordinal: i64,
+        provider_thread_id: Option<&str>,
+        provider: NativeProvider,
+        provider_session_id: Option<&str>,
+    ) -> Self {
         let thread = encode_id_part(thread_id);
         let run_id = format!("run:thread:{thread}:ordinal:{run_ordinal}");
         let encoded_run = encode_id_part(&run_id);
         let pending_thread = encode_id_part(&format!("pending:{run_id}"));
+        let instance_id = provider.as_str();
+        let provider_session_id =
+            provider_session_id
+                .map(str::to_owned)
+                .unwrap_or_else(|| match provider {
+                    NativeProvider::Codex => {
+                        format!("provider-session:provider-instance:{instance_id}:shared")
+                    }
+                    NativeProvider::Claude => format!(
+                        "provider-session:provider-instance:{instance_id}:thread:{thread}:{}",
+                        Uuid::new_v4()
+                    ),
+                });
         Self {
+            provider,
             run_id,
             attempt_id: format!("run-attempt:run:{encoded_run}:attempt:1"),
             root_node_id: format!("node:run:{encoded_run}:root"),
             provider_thread_id: provider_thread_id.map(str::to_owned).unwrap_or_else(|| {
-                format!("provider-thread:provider:codex:native-thread:{pending_thread}")
+                format!("provider-thread:provider:{instance_id}:native-thread:{pending_thread}")
             }),
-            provider_session_id: format!(
-                "provider-session:provider-instance:{CODEX_INSTANCE}:shared"
-            ),
+            provider_session_id,
             checkpoint_scope_id: format!("checkpoint-scope:thread:{thread}:name:root"),
             user_turn_item_id: format!("turn-item:message:{}", encode_id_part(message_id)),
         }
@@ -215,6 +263,14 @@ impl TurnCommands {
     pub(super) fn dispatch(
         &self,
         command: MessageDispatch,
+    ) -> Result<DispatchReceipt, TurnCommandError> {
+        self.dispatch_with_settings(command, None)
+    }
+
+    pub(super) fn dispatch_with_settings(
+        &self,
+        command: MessageDispatch,
+        settings: Option<&super::settings::SettingsSnapshot>,
     ) -> Result<DispatchReceipt, TurnCommandError> {
         if command.manual_continuation_of_run_id.is_some() {
             return self.dispatch_manual_continuation(command);
@@ -255,10 +311,11 @@ impl TurnCommands {
         }
         let Some(IdleWorkspace {
             mut thread_payload,
+            project_id,
             workspace_root,
             run_ordinal,
             mut provider_thread,
-        }) = idle_workspace(&transaction, &thread_id)?
+        }) = idle_workspace(&transaction, &thread_id, settings.is_some())?
         else {
             return Err(TurnCommandError::Unsupported(
                 "This command requires an idle root-workspace Codex thread in an active project.",
@@ -278,7 +335,28 @@ impl TurnCommands {
                 "This command requires a root-workspace thread with an existing workspace directory.",
             ));
         }
-        validate_model_selection(&thread.model_selection)?;
+        let provider = match thread_payload["providerInstanceId"].as_str() {
+            Some(CODEX_INSTANCE) => {
+                validate_model_selection(&thread.model_selection)?;
+                NativeProvider::Codex
+            }
+            Some(CLAUDE_INSTANCE) => {
+                let config = settings
+                    .and_then(|settings| {
+                        settings.claude_instance(Some(&project_id), CLAUDE_INSTANCE)
+                    })
+                    .ok_or(TurnCommandError::Unsupported(
+                        "The selected Claude Code instance is unavailable.",
+                    ))?;
+                validate_claude_turn(&thread, &text, &config)?;
+                NativeProvider::Claude
+            }
+            _ => {
+                return Err(TurnCommandError::Unsupported(
+                    "The selected provider is unavailable.",
+                ));
+            }
+        };
         let trimmed_text = text.trim();
         if trimmed_text.eq_ignore_ascii_case("/logout")
             || trimmed_text.eq_ignore_ascii_case("/compact")
@@ -288,13 +366,17 @@ impl TurnCommands {
                 "This command requires a regular text prompt.",
             ));
         }
-        let turn = TurnIds::for_run(
+        let turn = TurnIds::for_provider(
             &thread_id,
             &message_id,
             run_ordinal,
             provider_thread
                 .as_ref()
                 .and_then(|provider| provider["id"].as_str()),
+            provider,
+            provider_thread
+                .as_ref()
+                .and_then(|provider| provider["providerSessionId"].as_str()),
         );
         let accepted_at = OffsetDateTime::now_utc();
         let activity = if thread.last_visited_at.is_none() {
@@ -415,6 +497,7 @@ fn existing_dispatch(
 
 struct IdleWorkspace {
     thread_payload: Value,
+    project_id: String,
     workspace_root: PathBuf,
     run_ordinal: i64,
     provider_thread: Option<Value>,
@@ -423,10 +506,11 @@ struct IdleWorkspace {
 fn idle_workspace(
     transaction: &Transaction<'_>,
     thread_id: &str,
+    claude_available: bool,
 ) -> Result<Option<IdleWorkspace>, TurnCommandError> {
     let row = transaction.query_row(
         "SELECT thread.payload_json, project.workspace_root, last_run.ordinal,
-                provider_thread.payload_json
+                provider_thread.payload_json, thread.project_id
          FROM orchestration_v2_projection_threads AS thread
          JOIN projection_projects AS project ON project.project_id = thread.project_id
          LEFT JOIN orchestration_v2_projection_runs AS last_run ON last_run.run_id = (
@@ -439,7 +523,8 @@ fn idle_workspace(
          WHERE thread.thread_id = ?1 AND thread.archived_at IS NULL AND thread.deleted_at IS NULL
            AND project.archived_at IS NULL AND project.deleted_at IS NULL
            AND COALESCE(json_array_length(project.tracked_folders_json), 0) = 0
-           AND json_extract(thread.payload_json, '$.providerInstanceId') = 'codex'
+           AND (json_extract(thread.payload_json, '$.providerInstanceId') = 'codex'
+                OR (?2 AND json_extract(thread.payload_json, '$.providerInstanceId') = 'claudeAgent'))
            AND NOT EXISTS (
                SELECT 1 FROM orchestration_v2_projection_runs AS active
                WHERE active.thread_id = thread.thread_id
@@ -464,8 +549,11 @@ fn idle_workspace(
                  AND (last_run.status <> 'interrupted'
                       OR json_extract(last_run.payload_json, '$.checkpointId') IS NOT NULL)
                  AND last_run.provider_thread_id = provider_thread.provider_thread_id
-                 AND provider_thread.provider_instance_id = 'codex' AND provider_thread.driver = 'codex'
-                 AND provider_thread.provider_session_id = 'provider-session:provider-instance:codex:shared'
+                 AND provider_thread.provider_instance_id = json_extract(thread.payload_json, '$.providerInstanceId')
+                 AND provider_thread.driver = provider_thread.provider_instance_id
+                 AND ((provider_thread.driver = 'codex'
+                       AND provider_thread.provider_session_id = 'provider-session:provider-instance:codex:shared')
+                      OR (provider_thread.driver = 'claudeAgent' AND last_run.status = 'completed'))
                  AND json_extract(provider_thread.payload_json, '$.nativeThreadRef.strength') = 'strong'
                  AND COALESCE(json_array_length(
                       provider_thread.payload_json,'$.pendingBackgroundTasks'), 0) = 0
@@ -498,11 +586,11 @@ fn idle_workspace(
                         AND json_extract(result.payload_json, '$.message') = 'Run interrupted before provider start'
                  ))
            )",
-        [thread_id],
+        params![thread_id, claude_available],
         |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<i64>>(2)?,
-            row.get::<_, Option<String>>(3)?)),
+            row.get::<_, Option<String>>(3)?, row.get::<_, String>(4)?)),
     ).optional()?;
-    let Some((payload, workspace_root, previous_ordinal, provider_thread)) = row else {
+    let Some((payload, workspace_root, previous_ordinal, provider_thread, project_id)) = row else {
         return Ok(None);
     };
     let run_ordinal =
@@ -514,12 +602,50 @@ fn idle_workspace(
             ))?;
     Ok(Some(IdleWorkspace {
         thread_payload: serde_json::from_str(&payload)?,
+        project_id,
         workspace_root: workspace_root.into(),
         run_ordinal,
         provider_thread: provider_thread
             .map(|payload| serde_json::from_str(&payload))
             .transpose()?,
     }))
+}
+
+fn validate_claude_turn(
+    thread: &ThreadProjection,
+    text: &str,
+    config: &super::settings::ClaudeInstance,
+) -> Result<(), TurnCommandError> {
+    let model = thread.model_selection["model"].as_str().unwrap_or_default();
+    let supported = thread.model_selection["instanceId"] == CLAUDE_INSTANCE
+        && thread
+            .model_selection
+            .as_object()
+            .is_some_and(|selection| selection.len() == 2)
+        && model.starts_with("claude-")
+        && thread.runtime_mode == RuntimeMode::FullAccess
+        && thread.interaction_mode == InteractionMode::Default
+        && config.launch_args.trim().is_empty()
+        && config.auto_compact_window.is_none()
+        && !config
+            .custom_models
+            .iter()
+            .any(|entry| entry == model || entry["slug"] == model)
+        && config
+            .environment
+            .iter()
+            .all(|entry| matches!(entry.value, super::settings::EnvironmentValue::Literal(_)));
+    if !supported
+        || text.split_whitespace().next().is_some_and(|word| {
+            word.strip_prefix('/')
+                .is_some_and(|command| !command.is_empty() && !command.contains('/'))
+        })
+    {
+        return Err(TurnCommandError::Unsupported(
+            "This Claude Code turn requires a plain text prompt, a default model configuration, and Full access mode.",
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn validate_model_selection(selection: &Value) -> Result<&str, TurnCommandError> {
@@ -673,17 +799,18 @@ fn append_dispatch(
         now,
         activity,
     } = dispatch;
-    let provider_metadata = json!({ "driver": "codex", "providerInstanceId": CODEX_INSTANCE });
+    let driver = ids.provider.as_str();
+    let provider_metadata = json!({ "driver": driver, "providerInstanceId": driver });
     let run_metadata = json!({
         "runId": ids.run_id,
         "nodeId": ids.root_node_id,
-        "providerInstanceId": CODEX_INSTANCE,
+        "providerInstanceId": driver,
     });
     let mut run = json!({
         "id": ids.run_id,
         "threadId": thread_id,
         "ordinal": run_ordinal,
-        "providerInstanceId": CODEX_INSTANCE,
+        "providerInstanceId": driver,
         "modelSelection": model_selection,
         "providerThreadId": ids.provider_thread_id,
         "userMessageId": message_id,
@@ -741,10 +868,10 @@ fn append_dispatch(
         None
     } else {
         Some(provider_thread.unwrap_or_else(|| {
-            json!({
+            let mut provider = json!({
                     "id": ids.provider_thread_id,
-                    "driver": "codex",
-                    "providerInstanceId": CODEX_INSTANCE,
+                    "driver": driver,
+                    "providerInstanceId": driver,
                     "providerSessionId": ids.provider_session_id,
                     "appThreadId": thread_id,
                     "ownerNodeId": null,
@@ -757,7 +884,14 @@ fn append_dispatch(
                     "forkedFrom": null,
                     "createdAt": now,
                     "updatedAt": now,
-            })
+            });
+            if ids.provider == NativeProvider::Claude {
+                provider["pendingBackgroundTasks"] = json!([]);
+                provider["contextUsage"] = Value::Null;
+                provider["nativeMetadata"] = Value::Null;
+                provider["goal"] = Value::Null;
+            }
+            provider
         }))
     };
     if matches!(
@@ -784,7 +918,7 @@ fn append_dispatch(
                 "runId": ids.run_id,
                 "attemptOrdinal": 1,
                 "rootNodeId": ids.root_node_id,
-                "providerInstanceId": CODEX_INSTANCE,
+                "providerInstanceId": driver,
                 "providerThreadId": ids.provider_thread_id,
                 "providerTurnId": null,
                 "reason": "initial",
@@ -820,7 +954,7 @@ fn append_dispatch(
         stream.append(
             "thread.metadata-updated",
             &occurred_at,
-            &json!({ "providerInstanceId": CODEX_INSTANCE }),
+            &json!({ "providerInstanceId": driver }),
             &payload,
         )?;
     }

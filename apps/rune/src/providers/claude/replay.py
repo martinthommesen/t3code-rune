@@ -43,7 +43,7 @@ def replay():
         assert '--allow-dangerously-skip-permissions' in sys.argv
     assert os.environ['CLAUDE_CODE_ENTRYPOINT'] == 't3-code'
 
-    with Path('frames.ndjson').open('a') as log:
+    with Path(os.environ.get('T3_CLAUDE_REPLAY_LOG', 'frames.ndjson')).open('a') as log:
         log.write(json.dumps({'argv': sys.argv[1:]}) + '\n')
         log.flush()
         for line in sys.stdin:

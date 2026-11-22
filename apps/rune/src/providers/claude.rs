@@ -1,4 +1,5 @@
 mod launch;
+mod usage;
 mod wire;
 
 use std::collections::VecDeque;
@@ -18,9 +19,10 @@ use super::ndjson::{self, MAX_FRAME_BYTES, ReadError};
 use wire::Incoming;
 
 pub use launch::{Launch, PermissionMode, SessionTarget};
+pub use usage::{ContextUsage, ProcessLedger, TurnUsage};
 pub use wire::{
-    AssistantBlock, AssistantMessage, AssistantSnapshot, Initialization, Message, ModelUsage,
-    TurnResult, Usage,
+    AssistantBlock, AssistantMessage, AssistantSnapshot, CacheCreation, Initialization, Message,
+    ModelUsage, OutputDetails, TurnResult, Usage,
 };
 
 const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(5 * 60);

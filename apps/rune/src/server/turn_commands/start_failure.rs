@@ -35,12 +35,31 @@ impl TurnCommands {
         failure: StartFailure,
         detail: &str,
     ) -> Result<Option<i64>, TurnCommandError> {
+        self.fail_starting_run(
+            &claim.effect_id,
+            &claim.worker_id,
+            &claim.run_id,
+            CODEX_INSTANCE,
+            failure,
+            detail,
+        )
+    }
+
+    pub(super) fn fail_starting_run(
+        &self,
+        effect_id: &str,
+        worker_id: &str,
+        run_id: &str,
+        instance: &str,
+        failure: StartFailure,
+        detail: &str,
+    ) -> Result<Option<i64>, TurnCommandError> {
         let mut connection = self.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let starting = transaction
             .query_row(
                 CURRENT_STARTING_RUN,
-                params![claim.effect_id, claim.worker_id, claim.run_id],
+                params![effect_id, worker_id, run_id, instance],
                 |row| {
                     Ok(Starting {
                         thread_id: row.get(0)?,
@@ -59,10 +78,7 @@ impl TurnCommands {
         };
         let now = timestamp(OffsetDateTime::now_utc());
         let (signal, title) = failure.labels();
-        let turn_item_id = format!(
-            "turn-item:run:{}:signal:{signal}",
-            encode_id_part(&claim.run_id)
-        );
+        let turn_item_id = format!("turn-item:run:{}:signal:{signal}", encode_id_part(run_id));
         let ordinal = allocate_turn_item_in_run(
             &transaction,
             &starting.thread_id,
@@ -72,7 +88,7 @@ impl TurnCommands {
         let item = json!({
             "id": turn_item_id,
             "threadId": starting.thread_id,
-            "runId": claim.run_id,
+            "runId": run_id,
             "nodeId": starting.root_node_id,
             "providerThreadId": starting.provider_thread_id,
             "providerTurnId": null,
@@ -93,9 +109,9 @@ impl TurnCommands {
             },
         });
         let metadata = json!({
-            "runId": claim.run_id,
+            "runId": run_id,
             "nodeId": starting.root_node_id,
-            "providerInstanceId": CODEX_INSTANCE,
+            "providerInstanceId": instance,
         });
         let stream = ThreadEventStream::server(&transaction, &starting.thread_id);
         stream.append("turn-item.updated", &now, &metadata, &item)?;
@@ -115,7 +131,7 @@ impl TurnCommands {
              SET status = 'succeeded', lease_owner = NULL, completed_at = ?2,
                  updated_at = ?2, last_error = NULL
              WHERE effect_id = ?1",
-            params![claim.effect_id, now],
+            params![effect_id, now],
         )?;
         record_projected_sequence(&transaction, sequence, &now)?;
         transaction.commit()?;
@@ -146,6 +162,6 @@ const CURRENT_STARTING_RUN: &str = "
          AND node.run_id = run.run_id
     WHERE effect.effect_id = ?1 AND effect.lease_owner = ?2 AND run.run_id = ?3
       AND effect.status = 'running' AND effect.effect_type = 'provider-turn.start'
-      AND run.ordinal > 0 AND run.provider_instance_id = 'codex' AND run.status = 'starting'
+      AND run.ordinal > 0 AND run.provider_instance_id = ?4 AND run.status = 'starting'
       AND attempt.status = 'pending' AND node.status = 'pending'
 ";

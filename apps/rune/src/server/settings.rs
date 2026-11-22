@@ -11,7 +11,7 @@ mod providers;
 
 pub(crate) use jsonc::parse as parse_settings_json;
 use providers::ProviderInstance;
-pub(super) use providers::{CodexInstance, CodexInstanceError, EnvironmentValue};
+pub(super) use providers::{ClaudeInstance, CodexInstance, CodexInstanceError, EnvironmentValue};
 
 const DEFAULTS: &str = include_str!("settings/defaults.json");
 
@@ -96,25 +96,49 @@ impl SettingsSnapshot {
         if !self.readable {
             return Err(CodexInstanceError::InvalidSettings);
         }
-        let config = self
-            .provider_instances
-            .iter()
-            .find(|(id, _)| id == instance_id)
-            .map(|(_, instance)| instance);
+        let (config, enabled) = self.effective_instance(project_id, instance_id);
         if config.map_or(instance_id != "codex", |instance| {
             instance.driver != "codex"
         }) {
             return Err(CodexInstanceError::Unavailable);
         }
+        if !enabled {
+            return Err(CodexInstanceError::Disabled);
+        }
+        providers::codex_config(config)
+    }
+
+    pub(super) fn claude_instance(
+        &self,
+        project_id: Option<&str>,
+        instance_id: &str,
+    ) -> Option<ClaudeInstance> {
+        let (config, enabled) = self.effective_instance(project_id, instance_id);
+        (self.readable
+            && enabled
+            && config.map_or(instance_id == "claudeAgent", |instance| {
+                instance.driver == "claudeAgent"
+            }))
+        .then(|| providers::claude_config(config))
+        .flatten()
+    }
+
+    fn effective_instance(
+        &self,
+        project_id: Option<&str>,
+        instance_id: &str,
+    ) -> (Option<&ProviderInstance>, bool) {
+        let config = self
+            .provider_instances
+            .iter()
+            .find(|(id, _)| id == instance_id)
+            .map(|(_, instance)| instance);
         let enabled = project_id
             .and_then(|id| self.public["projectSettingsOverrides"].get(id))
             .and_then(|settings| settings["providerInstances"].get(instance_id))
             .and_then(|instance| instance["enabled"].as_bool())
             .unwrap_or_else(|| config.is_none_or(ProviderInstance::enabled));
-        if !enabled {
-            return Err(CodexInstanceError::Disabled);
-        }
-        providers::codex_config(config)
+        (config, enabled)
     }
 }
 

@@ -30,15 +30,16 @@ pub(super) fn assistant_text(
     item: AssistantText<'_>,
 ) -> Vec<NativeEvent> {
     let native_item_part = encode_id_part(item.native_item_id);
+    let driver = turn.provider.as_str();
     let provider_turn_id = format!(
-        "provider-turn:provider:codex:native-turn:{}",
+        "provider-turn:provider:{driver}:native-turn:{}",
         encode_id_part(item.native_turn_id)
     );
-    let node_id = format!("node:provider:codex:native-item:{native_item_part}");
-    let message_id = format!("message:provider:codex:native-item:{native_item_part}");
-    let turn_item_id = format!("turn-item:provider:codex:native-item:{native_item_part}");
+    let node_id = format!("node:provider:{driver}:native-item:{native_item_part}");
+    let message_id = format!("message:provider:{driver}:native-item:{native_item_part}");
+    let turn_item_id = format!("turn-item:provider:{driver}:native-item:{native_item_part}");
     let native_ref = json!({
-        "driver": "codex",
+        "driver": driver,
         "nativeId": item.native_item_id,
         "strength": "strong",
     });

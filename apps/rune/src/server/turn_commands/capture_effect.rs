@@ -13,7 +13,7 @@ use super::checkpoint_events::{
 use super::queued_worktree::ROOT_SCOPE_MATCH;
 use super::start_effect::ClaimedTurnStart;
 use super::{
-    CODEX_INSTANCE, ThreadEventStream, TurnCommandError, TurnCommands, allocate_turn_item_in_run,
+    ThreadEventStream, TurnCommandError, TurnCommands, allocate_turn_item_in_run,
     record_projected_sequence, timestamp,
 };
 
@@ -30,7 +30,8 @@ impl TurnCommands {
                   SELECT 1 FROM orchestration_v2_projection_runs AS run
                   WHERE run.thread_id = effect.thread_id
                     AND run.run_id = json_extract(effect.payload_json, '$.runId')
-                    AND run.ordinal > 0 AND run.status IN ('waiting', 'interrupted', 'cancelled') AND run.provider_instance_id = 'codex'
+                    AND run.ordinal > 0 AND run.status IN ('waiting', 'interrupted', 'cancelled')
+                    AND run.provider_instance_id IN ('codex', 'claudeAgent')
                )",
             [&now],
         )?)
@@ -55,12 +56,26 @@ impl TurnCommands {
         &self,
         claim: &ClaimedTurnStart,
     ) -> Result<(), TurnCommandError> {
-        let ordinal = u64::try_from(claim.run_ordinal).map_err(|_| {
+        self.capture_baseline_in(
+            &claim.turn.cwd,
+            &claim.checkpoint_scope_id,
+            claim.run_ordinal,
+        )
+        .await
+    }
+
+    pub(in crate::server) async fn capture_baseline_in(
+        &self,
+        workspace: &Path,
+        scope: &str,
+        run_ordinal: i64,
+    ) -> Result<(), TurnCommandError> {
+        let ordinal = u64::try_from(run_ordinal).map_err(|_| {
             TurnCommandError::Unsupported("The active run has an invalid checkpoint ordinal.")
         })?;
-        let reference = checkpoint_ref(&claim.checkpoint_scope_id, ordinal.saturating_sub(1));
+        let reference = checkpoint_ref(scope, ordinal.saturating_sub(1));
         capture(CaptureInput {
-            cwd: &claim.turn.cwd,
+            cwd: workspace,
             checkpoint_ref: &reference,
             previous_checkpoint_ref: None,
             exclude_paths: &[],
@@ -131,12 +146,13 @@ impl TurnCommands {
         if candidate.cwd != claimed.cwd
             || candidate.scope_id != claimed.scope_id
             || candidate.run_ordinal != claimed.run_ordinal
+            || candidate.provider_instance_id != claimed.provider_instance_id
         {
             return Ok(None);
         }
         let target = RootCheckpoint::new(
             &candidate.scope_id,
-            CODEX_INSTANCE,
+            &candidate.provider_instance_id,
             candidate.run_ordinal,
             &run_ref,
         );
@@ -170,7 +186,7 @@ impl TurnCommands {
                 thread_id: &candidate.thread_id,
                 run_id: &candidate.run_id,
                 root_node_id: &candidate.root_node_id,
-                provider_instance_id: CODEX_INSTANCE,
+                provider_instance_id: &candidate.provider_instance_id,
                 provider_thread_id: &candidate.provider_thread_id,
                 requested_at: &candidate.requested_at,
                 captured_at: &claimed_at,
@@ -261,6 +277,7 @@ struct Candidate {
     previous_checkpoint_preserved: bool,
     run: String,
     root_node: String,
+    provider_instance_id: String,
 }
 
 fn ready_checkpoint(
@@ -288,6 +305,7 @@ fn ready_checkpoint(
                     previous_checkpoint_preserved: row.get(10)?,
                     run: row.get(11)?,
                     root_node: row.get(12)?,
+                    provider_instance_id: row.get(13)?,
                 })
             },
         )
@@ -312,7 +330,7 @@ const READY_CHECKPOINT: &str = "
                 AND (baseline.status = 'ready'
                      OR (baseline.status IN ('missing', 'error') AND baseline.run_id IS NOT NULL))
            ),
-           run.payload_json, node.payload_json
+           run.payload_json, node.payload_json, run.provider_instance_id
     FROM orchestration_v2_effect_outbox AS candidate
     JOIN orchestration_v2_projection_runs AS run ON run.thread_id = candidate.thread_id
       AND run.run_id = json_extract(candidate.payload_json, '$.runId')
@@ -329,7 +347,9 @@ const READY_CHECKPOINT: &str = "
            OR (candidate.status = 'running' AND candidate.lease_owner = ?3))
       AND json_extract(candidate.payload_json, '$.type') = 'checkpoint.capture'
       AND candidate.effect_id = 'effect:checkpoint.capture:' || run.run_id
-      AND run.status IN ('waiting', 'interrupted', 'cancelled') AND run.ordinal > 0 AND run.provider_instance_id = 'codex'
+      AND run.status IN ('waiting', 'interrupted', 'cancelled') AND run.ordinal > 0
+      AND (run.provider_instance_id = 'codex' OR (run.provider_instance_id = 'claudeAgent'
+           AND run.status = 'waiting' AND json_extract(thread.payload_json, '$.worktreePath') IS NULL))
       AND node.status = run.status AND node.kind = 'root_turn'
       AND scope.kind = 'root_run'
       AND json_extract(scope.payload_json, '$.cwd') =

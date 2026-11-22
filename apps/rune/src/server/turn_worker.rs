@@ -33,6 +33,7 @@ use self::reasoning::{PartOutput, ReasoningOutput};
 use self::streaming::{AssistantStreaming, Snapshot, StreamingMode};
 use self::terminals::RunningTerminals;
 use super::ProjectionChange;
+use super::claude_worker;
 use super::settings::{CodexInstanceError, SettingsError, SettingsFile};
 use super::turn_commands::abort_effect::AbortReason;
 use super::turn_commands::context_handoff::HistoryDelivery;
@@ -88,6 +89,7 @@ pub(super) enum WorkerError {
     Settings(SettingsError),
     ProviderSettings(CodexInstanceError),
     Provider(CodexAdapterError),
+    Claude(claude_worker::Error),
     Unavailable(&'static str),
     Interrupted,
 }
@@ -102,6 +104,7 @@ impl fmt::Display for WorkerError {
             Self::Provider(_) => {
                 formatter.write_str("The Codex app-server could not complete the turn.")
             }
+            Self::Claude(error) => error.fmt(formatter),
             Self::Unavailable(reason) => formatter.write_str(reason),
             Self::Interrupted => formatter.write_str("The Codex worker stopped during this turn."),
         }
@@ -115,6 +118,7 @@ impl Error for WorkerError {
             Self::Settings(error) => Some(error),
             Self::ProviderSettings(error) => Some(error),
             Self::Provider(error) => Some(error),
+            Self::Claude(error) => Some(error),
             _ => None,
         }
     }
@@ -137,6 +141,7 @@ impl TurnWorker {
         commands: &TurnCommands,
         changes: &broadcast::Sender<ProjectionChange>,
     ) -> Result<(), WorkerError> {
+        commands.requeue_unoffered_claude_start(None, None)?;
         for thread_id in commands.recover_lost_starts()? {
             let _ = changes.send(ProjectionChange::Thread(thread_id));
         }
@@ -206,7 +211,10 @@ impl Worker {
         mut stop: oneshot::Receiver<()>,
     ) -> Result<(), WorkerError> {
         let mut runtime = None;
-        let result = self.consume(&queue, &mut stop, &mut runtime).await;
+        let mut claude = claude_worker::Runtimes::default();
+        let result = self
+            .consume(&queue, &mut stop, &mut runtime, &mut claude)
+            .await;
         let release = self.release(&mut runtime, None).await;
         result.and(release)
     }
@@ -216,12 +224,18 @@ impl Worker {
         queue: &TurnQueue,
         stop: &mut oneshot::Receiver<()>,
         runtime: &mut Option<ActiveRuntime>,
+        claude: &mut claude_worker::Runtimes,
     ) -> Result<(), WorkerError> {
+        let mut idle_check = tokio::time::interval(Duration::from_secs(60));
         loop {
             tokio::select! {
                 biased;
                 _ = &mut *stop => return Ok(()),
                 () = queue.wake.notified() => {},
+                _ = idle_check.tick() => {
+                    claude.release_idle().await;
+                    continue;
+                }
             }
             let mut cursor = 0;
             loop {
@@ -242,7 +256,7 @@ impl Worker {
                     let result = tokio::select! {
                         biased;
                         _ = &mut *stop => None,
-                        result = self.execute(&effect_id, runtime, queue) => Some(result),
+                        result = self.execute(&effect_id, runtime, claude, queue) => Some(result),
                     };
                     let Some(result) = result else {
                         let release = self.release(runtime, None).await;
@@ -252,7 +266,7 @@ impl Worker {
                     if let Err(error) = result {
                         let detail = error.to_string();
                         self.reconcile_stopped(&effect_id, AbortReason::RuntimeFailure(&detail))?;
-                        eprintln!("Codex worker: {error}");
+                        eprintln!("Provider worker: {error}");
                     }
                 }
             }
@@ -302,6 +316,8 @@ impl Worker {
                 .complete_inactive_interrupts(&receipt.thread_id)?;
             return Ok(());
         }
+        self.commands
+            .requeue_unoffered_claude_start(Some(effect_id), Some(&self.worker_id))?;
         if let Some(thread_id) = self
             .commands
             .recover_unaccepted_start(effect_id, RecoveryTrigger::Shutdown(&self.worker_id))?
@@ -315,6 +331,7 @@ impl Worker {
         &self,
         effect_id: &str,
         runtime: &mut Option<ActiveRuntime>,
+        claude: &mut claude_worker::Runtimes,
         queue: &TurnQueue,
     ) -> Result<Option<i64>, WorkerError> {
         if effect_id.starts_with("effect:checkpoint.capture:") {
@@ -335,7 +352,35 @@ impl Worker {
             return Ok(sequence);
         }
         let Some(claim) = self.commands.claim_start(effect_id, &self.worker_id)? else {
-            return Ok(None);
+            let Some(claim) = self
+                .commands
+                .claim_claude_start(effect_id, &self.worker_id)?
+            else {
+                return Ok(None);
+            };
+            let result = claude
+                .execute(&self.commands, &self.settings, &claim, |sequence| {
+                    self.publish(&claim.thread_id, sequence)
+                })
+                .await;
+            return match result {
+                Ok(sequence) => Ok(Some(sequence)),
+                Err(error) => {
+                    let detail = error.to_string();
+                    if let Some(sequence) = self.commands.fail_claude_start(&claim, &detail)? {
+                        self.publish(&claim.thread_id, sequence);
+                    } else if let Some(receipt) = self.commands.abort_started_run(
+                        effect_id,
+                        AbortReason::ProviderFailure {
+                            message: &detail,
+                            code: error.code(),
+                        },
+                    )? {
+                        self.publish(&receipt.thread_id, receipt.sequence);
+                    }
+                    Err(WorkerError::Claude(error))
+                }
+            };
         };
         let thread_id = claim
             .thread

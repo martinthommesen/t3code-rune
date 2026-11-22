@@ -1,4 +1,5 @@
 mod bootstrap;
+mod claude_worker;
 mod credentials;
 mod environment_identity;
 mod filesystem_browse;

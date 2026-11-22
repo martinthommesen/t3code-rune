@@ -1308,9 +1308,11 @@ fn dispatch_thread(
             serde_json::from_value::<MessageDispatch>(payload)
                 .map_err(|error| error.to_string())
                 .and_then(|input| {
-                    local
-                        .turns
-                        .dispatch(input)
+                    let result = match local.settings.read() {
+                        Ok(settings) => local.turns.dispatch_with_settings(input, Some(&settings)),
+                        Err(_) => local.turns.dispatch(input),
+                    };
+                    result
                         .map(|receipt| (receipt.sequence, receipt.committed))
                         .map_err(|error| error.to_string())
                 })

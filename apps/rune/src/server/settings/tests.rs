@@ -1,6 +1,39 @@
 use super::*;
 
 #[test]
+fn resolves_claude_launch_settings_without_exposing_provider_credentials() {
+    let defaults = SettingsSnapshot::decode("{}")
+        .claude_instance(None, "claudeAgent")
+        .unwrap();
+    assert_eq!(defaults.binary_path, "claude");
+    assert!(defaults.home_path.is_empty());
+    let settings = SettingsSnapshot::decode(
+        r#"{
+        "providerInstances": {"claudeAgent": {"driver": "claudeAgent", "enabled": false, "config": {
+            "binaryPath": " ~/bin/claude ", "homePath": " ~/.claude-fixture ",
+            "launchArgs": " --chrome ", "autoCompactWindow": "200000", "idleCompaction": "onReturn",
+            "customModels": [{"slug":"local-enterprise", "name":"Local"}]
+        }, "environment":[{"name":"FIXTURE_KEY", "value":"private-value", "sensitive":true}]}},
+        "projectSettingsOverrides": {"allows":{"providerInstances":{"claudeAgent":{"enabled":true}}}}
+    }"#,
+    );
+    assert!(settings.claude_instance(None, "claudeAgent").is_none());
+    let instance = settings
+        .claude_instance(Some("allows"), "claudeAgent")
+        .unwrap();
+    assert_eq!(instance.binary_path, "~/bin/claude");
+    assert_eq!(instance.home_path, "~/.claude-fixture");
+    assert_eq!(instance.launch_args, " --chrome ");
+    assert_eq!(instance.auto_compact_window, Some(200000));
+    assert_eq!(instance.custom_models[0]["slug"], "local-enterprise");
+    assert!(
+        matches!(instance.environment[0].value, EnvironmentValue::Literal(ref text) if text == "private-value")
+    );
+    assert!(!settings.for_client().to_string().contains("private-value"));
+    assert!(settings.claude_instance(None, "codex").is_none());
+}
+
+#[test]
 fn a_persisted_file_supplies_private_codex_launch_configuration() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("settings.json");

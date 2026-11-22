@@ -51,7 +51,7 @@ impl TurnCommands {
              JOIN orchestration_v2_projection_runs AS run ON run.thread_id = effect.thread_id
                AND run.run_id = json_extract(effect.payload_json, '$.runId')
              WHERE effect.rowid > ?1 AND effect.status = 'pending' AND effect.available_at <= ?2
-               AND run.ordinal > 0 AND run.provider_instance_id = 'codex'
+               AND run.ordinal > 0 AND run.provider_instance_id IN ('codex', 'claudeAgent')
                AND ((effect.effect_type = 'provider-turn.start' AND run.status = 'starting')
                     OR (effect.effect_type = 'checkpoint.capture' AND run.status IN ('waiting', 'interrupted', 'cancelled')))
              ORDER BY effect.rowid LIMIT ?3",

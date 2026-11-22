@@ -13,6 +13,15 @@ pub(in crate::server) struct CodexInstance {
     pub(in crate::server) environment: Vec<EnvironmentVariable>,
 }
 
+pub(in crate::server) struct ClaudeInstance {
+    pub(in crate::server) binary_path: String,
+    pub(in crate::server) home_path: String,
+    pub(in crate::server) launch_args: String,
+    pub(in crate::server) auto_compact_window: Option<u32>,
+    pub(in crate::server) custom_models: Vec<Value>,
+    pub(in crate::server) environment: Vec<EnvironmentVariable>,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(in crate::server) enum CodexInstanceError {
     Unavailable,
@@ -311,13 +320,6 @@ pub(super) fn codex_config(
         None => Ok(String::from(fallback)),
     };
     let binary_path = get_string("binaryPath", "codex")?;
-    let custom_models = match fields.get("customModels") {
-        Some(value) => value
-            .as_array()
-            .and_then(|models| models.iter().map(normalize_custom_model).collect())
-            .ok_or_else(invalid)?,
-        None => Vec::new(),
-    };
     Ok(CodexInstance {
         binary_path: if binary_path.is_empty() {
             "codex".to_owned()
@@ -327,11 +329,70 @@ pub(super) fn codex_config(
         home_path: get_string("homePath", "")?,
         shadow_home_path: get_string("shadowHomePath", "")?,
         launch_args: get_string("launchArgs", "")?,
-        custom_models,
+        custom_models: custom_models(fields).ok_or_else(invalid)?,
         environment: instance
             .and_then(|instance| instance.environment.clone())
             .unwrap_or_default(),
     })
+}
+
+pub(super) fn claude_config(instance: Option<&ProviderInstance>) -> Option<ClaudeInstance> {
+    let empty = Fields::new();
+    let fields = match instance.and_then(|instance| instance.config.as_ref()) {
+        None | Some(Value::Null) => &empty,
+        Some(value) => value.as_object()?,
+    };
+    optional_bool(fields.get("enabled"))?;
+    if let Some(value) = fields.get("idleCompaction")
+        && !matches!(
+            value.as_str(),
+            Some("default" | "onReturn" | "beforeCacheExpires" | "off")
+        )
+    {
+        return None;
+    }
+    let string = |key| fields.get(key).map_or(Some(""), Value::as_str);
+    let binary_path = super::trim(string("binaryPath")?);
+    let auto_compact_window = match super::trim(string("autoCompactWindow")?) {
+        "" => None,
+        window if !window.starts_with('0') && window.bytes().all(|byte| byte.is_ascii_digit()) => {
+            Some(
+                window
+                    .parse()
+                    .ok()
+                    .filter(|tokens| (100_000..=1_000_000).contains(tokens))?,
+            )
+        }
+        _ => return None,
+    };
+    Some(ClaudeInstance {
+        binary_path: if binary_path.is_empty() {
+            "claude"
+        } else {
+            binary_path
+        }
+        .to_owned(),
+        home_path: super::trim(string("homePath")?).to_owned(),
+        launch_args: string("launchArgs")?.to_owned(),
+        auto_compact_window,
+        custom_models: custom_models(fields)?,
+        environment: instance
+            .and_then(|instance| instance.environment.clone())
+            .unwrap_or_default(),
+    })
+}
+
+fn custom_models(fields: &Fields) -> Option<Vec<Value>> {
+    fields.get("customModels").map_or_else(
+        || Some(Vec::new()),
+        |value| {
+            value
+                .as_array()?
+                .iter()
+                .map(normalize_custom_model)
+                .collect()
+        },
+    )
 }
 
 fn public_custom_model(model: &Value) -> Option<Value> {
