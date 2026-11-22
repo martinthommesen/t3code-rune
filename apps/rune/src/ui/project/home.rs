@@ -2,7 +2,12 @@ use rune::color::{hex, oklch};
 use rune::{Color, El, Icon, TextStyle, Tx, col, icon, row, text};
 use uuid::Uuid;
 
-use crate::ui::{Palette, State, Workspace, conversation::Layout};
+use crate::ui::{Destination, Palette, State, Workspace, conversation::Layout};
+
+pub(in crate::ui) struct ScratchRequest {
+    pub(super) command_id: String,
+    pub(super) draft_origin: Option<String>,
+}
 
 static PLUS: Icon = Icon {
     name: "empty-home-add-project",
@@ -147,23 +152,32 @@ fn action(
 }
 
 impl State {
-    fn start_scratch_project(&mut self, _: &mut Tx) {
-        if self.scratch_request.is_some()
-            || !self.workspace.as_ref().is_some_and(|workspace| {
-                workspace.scratch_projects
-                    && workspace.project_writes
-                    && workspace.launch_writes
-                    && !workspace.reconnecting
-            })
-        {
+    pub(in crate::ui) fn start_scratch_project(&mut self, _: &mut Tx) {
+        if self.scratch_request.is_some() {
             return;
         }
+        let Some(workspace) = self.workspace.as_ref().filter(|workspace| {
+            workspace.scratch_projects
+                && workspace.project_writes
+                && workspace.launch_writes
+                && !workspace.reconnecting
+        }) else {
+            return;
+        };
+        let draft_origin = match workspace.destination() {
+            Destination::Home => None,
+            Destination::NewThread(project) => Some(project),
+            _ => return,
+        };
         let Some(connection) = &self.connection else {
             return;
         };
-        let command = Uuid::new_v4().to_string();
-        connection.start_scratch_project(command.clone());
+        let command_id = Uuid::new_v4().to_string();
+        connection.start_scratch_project(command_id.clone());
         self.project_notice = None;
-        self.scratch_request = Some(command);
+        self.scratch_request = Some(ScratchRequest {
+            command_id,
+            draft_origin,
+        });
     }
 }

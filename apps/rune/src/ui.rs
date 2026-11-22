@@ -256,7 +256,7 @@ struct State {
     draft_workspace_popup: Option<draft_hero::WorkspacePopup>,
     add_project: Option<project::AddProject>,
     added_project: Option<project::AddedProject>,
-    scratch_request: Option<String>,
+    scratch_request: Option<project::ScratchRequest>,
     project_notice: Option<String>,
     client_settings: ClientSettings,
     settings: settings::Panel,

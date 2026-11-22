@@ -74,6 +74,31 @@ pub(super) fn view(
         palette,
     );
     stack = stack.child(headline);
+    if workspace.scratch_projects && !scratch {
+        let enabled = !draft.pending && !workspace.reconnecting && state.scratch_request.is_none();
+        let muted = if palette.dark {
+            oklch(0.708, 0.0, 0.0)
+        } else {
+            oklch(0.552, 0.016, 285.938)
+        };
+        stack = stack.child(
+            el().pin(Some(0.0), Some(-38.0), Some(0.0), None)
+                .h(20.0)
+                .center()
+                .child(
+                    text("or start without a project")
+                        .key("draft-start-scratch")
+                        .label("or start without a project")
+                        .role("button")
+                        .font(TextStyle::new(14.0, 500.0).lh(20.0))
+                        .color(muted)
+                        .disabled(!enabled)
+                        .focusable(enabled)
+                        .focus_ring(1.0, 1.0, palette.accent)
+                        .on_press_tx(State::start_scratch_project),
+                ),
+        );
+    }
     if sidebar::draft_picker_open(state) {
         let popup_width = width.min(288.0);
         let left = (trigger_center - popup_width / 2.0).clamp(0.0, width - popup_width);

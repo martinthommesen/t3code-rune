@@ -9,7 +9,7 @@ pub(super) mod clone_banner;
 mod git_url;
 mod home;
 
-pub(super) use home::empty_home;
+pub(super) use home::{ScratchRequest, empty_home};
 
 #[derive(Default)]
 pub(super) struct AddProject {
@@ -25,6 +25,7 @@ pub(super) struct AddProject {
 pub(super) struct AddedProject {
     id: String,
     open_draft: bool,
+    draft_origin: Option<String>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -374,8 +375,15 @@ impl State {
         command_id: &str,
         result: Result<ProjectCreated, String>,
     ) {
-        if self.scratch_request.as_deref() == Some(command_id) {
-            self.scratch_request = None;
+        if self
+            .scratch_request
+            .as_ref()
+            .is_some_and(|pending| pending.command_id == command_id)
+        {
+            let pending = self
+                .scratch_request
+                .take()
+                .expect("matched scratch request");
             match result {
                 Ok(project) => {
                     if let Some(workspace) = &mut self.workspace {
@@ -384,6 +392,7 @@ impl State {
                     self.added_project = Some(AddedProject {
                         id: project.project_id,
                         open_draft: true,
+                        draft_origin: pending.draft_origin,
                     });
                     self.select_added_project();
                 }
@@ -406,6 +415,7 @@ impl State {
                 self.added_project = Some(AddedProject {
                     id: project.project_id,
                     open_draft,
+                    draft_origin: None,
                 });
                 self.select_added_project();
             }
@@ -430,6 +440,14 @@ impl State {
                 .added_project
                 .take()
                 .expect("a project selection is pending");
+            if let Some(origin) = added.draft_origin {
+                if self.workspace.as_ref().is_some_and(|workspace| {
+                    workspace.destination() == super::Destination::NewThread(origin)
+                }) {
+                    super::sidebar::change_draft_project(self, &added.id);
+                }
+                return;
+            }
             let destination = super::Destination::NewThread(added.id.clone());
             if added.open_draft
                 && self

@@ -462,7 +462,7 @@ pub(super) fn draft_project_picker(
     )
 }
 
-fn change_draft_project(state: &mut State, target: &str) {
+pub(super) fn change_draft_project(state: &mut State, target: &str) {
     let Some(current) = state
         .workspace
         .as_ref()
