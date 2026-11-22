@@ -66,6 +66,14 @@ impl ProviderModel {
             .filter_map(|option| Some((option["id"].as_str()?, option["label"].as_str()?)))
     }
 
+    pub(crate) fn default_service_tier(&self) -> Option<&str> {
+        let options = self.capabilities.as_ref()?["optionDescriptors"].as_array()?;
+        let setting = options
+            .iter()
+            .find(|item| item["id"] == "serviceTier" && item["type"] == "select")?;
+        setting["currentValue"].as_str()
+    }
+
     pub(crate) fn default_reasoning(&self) -> Option<(&str, &str)> {
         let current = self.reasoning_descriptor()?["currentValue"].as_str()?;
         self.reported_reasoning_options()

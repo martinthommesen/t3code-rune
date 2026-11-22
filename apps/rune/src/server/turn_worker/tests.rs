@@ -2270,35 +2270,57 @@ set -eu
 
     #[tokio::test]
     async fn applies_saved_reasoning_effort_to_the_same_resumed_native_thread() {
-        verify_two_turn_conversation(true, Some(reasoning_selection(ReasoningEffort::Low))).await;
+        verify_two_turn_conversation(
+            true,
+            Some((
+                reasoning_selection(ReasoningEffort::High),
+                reasoning_selection(ReasoningEffort::Low),
+            )),
+        )
+        .await;
     }
 
     #[tokio::test]
     async fn changes_the_saved_codex_model_without_overriding_its_default_effort() {
         verify_two_turn_conversation(
             true,
-            Some(json!({"instanceId":"codex","model":"gpt-5.6-sol"})),
+            Some((
+                reasoning_selection(ReasoningEffort::High),
+                json!({"instanceId":"codex","model":"gpt-5.6-sol"}),
+            )),
         )
         .await;
     }
 
-    async fn verify_two_turn_conversation(restart: bool, changed_selection: Option<Value>) {
+    #[tokio::test]
+    async fn uses_explicit_ultra_for_the_saved_sol_model_after_restart() {
+        verify_two_turn_conversation(
+            true,
+            Some((
+                json!({"instanceId":"codex","model":"gpt-5.6-sol"}),
+                json!({"instanceId":"codex","model":"gpt-5.6-sol","options":[
+                    {"id":"reasoningEffort","value":"ultra"},
+                    {"id":"serviceTier","value":"default"}
+                ]}),
+            )),
+        )
+        .await;
+    }
+
+    async fn verify_two_turn_conversation(restart: bool, change: Option<(Value, Value)>) {
         let fixture = Fixture::new();
         let commands = fixture.commands();
         let (first_phase, second_phase) = resume_replay_frames();
         let first_text = replay_prompt(&first_phase);
         let second_text = replay_prompt(&second_phase);
-        if changed_selection.is_some() {
+        if let Some((initial, _)) = &change {
             fixture
                 .connection()
                 .execute(
                     "UPDATE orchestration_v2_projection_threads
                  SET payload_json = json_set(payload_json, '$.modelSelection', json(?1))
                  WHERE thread_id = ?2",
-                    rusqlite::params![
-                        reasoning_selection(ReasoningEffort::High).to_string(),
-                        THREAD
-                    ],
+                    rusqlite::params![initial.to_string(), THREAD],
                 )
                 .unwrap();
         }
@@ -2327,7 +2349,7 @@ set -eu
         first_script.push(char::from(10));
         let (changes, _) = broadcast::channel(32);
         let settings = settings_for_script(&fixture, &first_script);
-        if changed_selection.is_some() {
+        if change.is_some() {
             assert!(
                 !commands
                     .can_change_saved_codex_model(THREAD, &settings.read().unwrap())
@@ -2347,7 +2369,7 @@ set -eu
             )
             .unwrap();
 
-        if let Some(selection) = &changed_selection {
+        if let Some((_, selection)) = &change {
             change_saved_model(&commands, &settings, &connection, selection);
         }
         if restart {
@@ -2379,8 +2401,8 @@ set -eu
         next["commandId"] = "follow-up".into();
         next["messageId"] = "message:follow-up".into();
         next["text"] = json!(second_text);
-        if let Some(selection) = &changed_selection {
-            next["modelSelection"] = reasoning_selection(ReasoningEffort::High);
+        if let Some((initial, selection)) = &change {
+            next["modelSelection"] = initial.clone();
             assert!(
                 commands
                     .dispatch(serde_json::from_value(next.clone()).unwrap())
@@ -2392,7 +2414,7 @@ set -eu
             .dispatch(serde_json::from_value(next).unwrap())
             .unwrap();
         assert_ne!(first.run_id, next.run_id);
-        if let Some(selection) = &changed_selection {
+        if let Some((initial, selection)) = &change {
             let change: String = connection
                 .query_row(
                     "SELECT json_extract(payload_json, '$.modelSwitch')
@@ -2405,7 +2427,7 @@ set -eu
             assert_eq!(
                 serde_json::from_str::<Value>(&change).unwrap(),
                 json!({
-                    "from":reasoning_selection(ReasoningEffort::High), "to":selection,
+                    "from":initial, "to":selection,
                 })
             );
         }
@@ -2475,19 +2497,25 @@ set -eu
         assert_eq!(wire_turns.len(), 2);
         assert_eq!(wire_turns[0]["params"]["input"][0]["text"], first_text);
         assert_eq!(wire_turns[1]["params"]["input"][0]["text"], second_text);
-        if let Some(selection) = &changed_selection {
-            assert_eq!(wire_turns[0]["params"]["model"], ReasoningEffort::MODEL_ID);
-            assert_eq!(wire_turns[0]["params"]["effort"], "high");
-            let next = &wire_turns[1]["params"];
-            let effort = selection
-                .get("options")
-                .and_then(|options| options[0].get("value"));
-            assert_eq!(next["model"], selection["model"]);
-            assert_eq!(next.get("effort"), effort);
-            assert_eq!(
-                next["collaborationMode"]["settings"].get("reasoning_effort"),
-                effort
-            );
+        if let Some((initial, selection)) = &change {
+            for (turn, selected) in wire_turns.iter().zip([initial, selection]) {
+                let params = &turn["params"];
+                let effort = selected
+                    .get("options")
+                    .and_then(|options| options[0].get("value"));
+                assert_eq!(params["model"], selected["model"]);
+                assert_eq!(params.get("effort"), effort);
+                let tier = selected
+                    .get("options")
+                    .and_then(|options| options.as_array())
+                    .and_then(|items| items.iter().find(|option| option["id"] == "serviceTier"))
+                    .and_then(|choice| choice.get("value"));
+                assert_eq!(params.get("serviceTier"), tier);
+                assert_eq!(
+                    params["collaborationMode"]["settings"].get("reasoning_effort"),
+                    effort
+                );
+            }
         }
         assert!(
             wire_turns

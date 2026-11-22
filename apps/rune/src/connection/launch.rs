@@ -45,10 +45,22 @@ impl ModelSelection {
     }
 
     pub(crate) fn codex_reasoning(effort: ReasoningEffort) -> Self {
+        Self::codex_with_reasoning(ReasoningEffort::MODEL_ID, effort, false)
+    }
+
+    pub(crate) fn codex_with_reasoning(
+        model: &str,
+        effort: ReasoningEffort,
+        standard_service_tier: bool,
+    ) -> Self {
+        let mut options = vec![json!({"id":ReasoningEffort::OPTION_ID,"value":effort})];
+        if standard_service_tier {
+            options.push(json!({"id":"serviceTier","value":"default"}));
+        }
         Self {
             instance_id: DraftProvider::Codex.instance_id().to_owned(),
-            model: ReasoningEffort::MODEL_ID.to_owned(),
-            options: Some(json!([{"id":ReasoningEffort::OPTION_ID,"value":effort}])),
+            model: model.to_owned(),
+            options: Some(Value::Array(options)),
         }
     }
 

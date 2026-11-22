@@ -36,6 +36,15 @@ pub(super) struct Model {
     pub(super) default_reasoning_effort: Option<String>,
     #[serde(default)]
     pub(super) supported_reasoning_efforts: Vec<ModelEffort>,
+    pub(super) service_tiers: Option<Vec<ModelServiceTier>>,
+    pub(super) additional_speed_tiers: Option<Vec<String>>,
+    pub(super) default_service_tier: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct ModelServiceTier {
+    pub(super) id: String,
+    pub(super) name: String,
 }
 
 #[derive(Deserialize)]

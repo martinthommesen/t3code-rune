@@ -178,7 +178,10 @@ impl<'a> Models<'a> {
         }
         .copied();
         let codex_effort = selected
-            .filter(|choice| choice.provider == DraftProvider::Codex)
+            .filter(|choice| {
+                choice.provider == DraftProvider::Codex
+                    && choice.model.slug == ReasoningEffort::MODEL_ID
+            })
             .and_then(|choice| {
                 EffortPicker::for_model(
                     choice.model,
@@ -222,16 +225,26 @@ impl<'a> Models<'a> {
                 })
                 .collect(),
             selected: Some(selected),
-            codex_effort: EffortPicker::for_model(model, selection.reasoning_effort()),
+            codex_effort: model
+                .default_service_tier()
+                .is_none_or(|tier| tier == "default")
+                .then(|| EffortPicker::for_model(model, selection.reasoning_effort()))
+                .flatten(),
             favorites: &workspace.model_favorites,
             permissions: thread.providers.permissions_label(),
         })
     }
 
-    pub(super) fn supports_effort(&self, effort: ReasoningEffort) -> bool {
+    pub(super) fn select_effort(&self, effort: ReasoningEffort) -> Option<ModelSelection> {
         self.codex_effort
             .as_ref()
-            .is_some_and(|picker| picker.supports(effort))
+            .filter(|picker| picker.supports(effort))?;
+        let model = self.selected?.model;
+        Some(ModelSelection::codex_with_reasoning(
+            &model.slug,
+            effort,
+            model.default_service_tier() == Some("default"),
+        ))
     }
 
     pub(super) fn contains_model(&self, model: &str) -> bool {
@@ -485,13 +498,15 @@ impl<'a> Models<'a> {
         let width = model_picker::popup_width(lane);
         let columns = width >= 420.0;
         let details = if let Some(effort) = &self.codex_effort {
+            let model = self.selected.expect("Codex reasoning model").model;
+            let name = if matches!(target, Target::Saved(_)) {
+                model.codex_short_name()
+            } else {
+                Cow::Borrowed(model.name.as_str())
+            };
             effort.view(
                 target,
-                self.selected
-                    .expect("Codex reasoning model")
-                    .model
-                    .name
-                    .as_str(),
+                &name,
                 if columns { 192.0 } else { width - 45.0 },
                 palette,
                 QUERY,
@@ -599,7 +614,10 @@ impl<'a> Models<'a> {
         let provider = choice.provider;
         let slug = choice.model.slug.clone();
         let legacy = choice.model.is_legacy;
-        let codex_levels = choice.model.reasoning_levels();
+        let codex_levels = (!matches!(&target, Target::Draft(_))
+            || slug == ReasoningEffort::MODEL_ID)
+            .then(|| choice.model.reasoning_levels())
+            .flatten();
         let action = self
             .favorites
             .action(provider.instance_id(), &slug, shelf, palette, color);

@@ -38,8 +38,8 @@ use serde_json::{Value, json};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use t3_rune::providers::codex::ReasoningEffort;
 use t3_rune::providers::codex::{InteractionMode, RuntimeMode};
+use t3_rune::providers::codex::{ReasoningEffort, ReasoningOptions};
 
 const COMMAND_TYPE: &str = "message.dispatch";
 const EFFECT_TYPE: &str = "provider-turn.start";
@@ -684,7 +684,7 @@ pub(super) fn supports_plain_claude_config(
 
 pub(super) struct CodexTurnModel<'a> {
     model: &'a str,
-    reasoning_effort: Option<ReasoningEffort>,
+    reasoning: Option<ReasoningOptions>,
 }
 
 pub(super) fn codex_default_effort_override(model: &str) -> Option<ReasoningEffort> {
@@ -712,17 +712,14 @@ pub(super) fn validate_model_selection(
     if selection["instanceId"] != CODEX_INSTANCE {
         return Err(unsupported());
     }
-    let reasoning_effort = match fields.get("options") {
+    let reasoning = match fields.get("options") {
         None if fields.len() == 2 => None,
         Some(options) if fields.len() == 3 => {
-            Some(ReasoningEffort::from_options(model, options).ok_or_else(unsupported)?)
+            Some(ReasoningOptions::parse(model, options).ok_or_else(unsupported)?)
         }
         _ => return Err(unsupported()),
     };
-    Ok(CodexTurnModel {
-        model,
-        reasoning_effort,
-    })
+    Ok(CodexTurnModel { model, reasoning })
 }
 
 pub(super) fn allocate_turn_item_in_run(

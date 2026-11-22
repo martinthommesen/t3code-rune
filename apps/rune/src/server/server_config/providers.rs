@@ -248,11 +248,18 @@ fn wire_model(model: Model) -> Option<Value> {
         .map(trim_js)
         .filter(|name| !name.is_empty())
         .unwrap_or(slug);
+    let descriptors: Vec<_> = [
+        reasoning_descriptor(slug, &model),
+        service_tier_descriptor(&model),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     let mut value = json!({
         "slug": slug,
         "name": model_name(name),
         "isCustom": false,
-        "capabilities": reasoning_capability(slug, &model),
+        "capabilities": if descriptors.is_empty() { Value::Null } else { json!({"optionDescriptors":descriptors}) },
     });
     if model.is_default {
         value["isDefault"] = true.into();
@@ -260,7 +267,7 @@ fn wire_model(model: Model) -> Option<Value> {
     Some(value)
 }
 
-fn reasoning_capability(slug: &str, model: &Model) -> Value {
+fn reasoning_descriptor(slug: &str, model: &Model) -> Option<Value> {
     let default = codex_default_effort_override(slug)
         .map(ReasoningEffort::as_str)
         .or(model.default_reasoning_effort.as_deref());
@@ -288,7 +295,7 @@ fn reasoning_capability(slug: &str, model: &Model) -> Value {
         })
         .collect();
     if options.is_empty() {
-        return Value::Null;
+        return None;
     }
     let mut reasoning = json!({
         "id":ReasoningEffort::OPTION_ID,"label":"Reasoning","type":"select","options":options
@@ -298,7 +305,52 @@ fn reasoning_capability(slug: &str, model: &Model) -> Value {
     {
         reasoning["currentValue"] = default.into();
     }
-    json!({"optionDescriptors":[reasoning]})
+    Some(reasoning)
+}
+
+fn service_tier_descriptor(model: &Model) -> Option<Value> {
+    let tiers: Vec<_> = if let Some(reported) = model
+        .service_tiers
+        .as_ref()
+        .filter(|tiers| !tiers.is_empty())
+    {
+        reported
+            .iter()
+            .map(|tier| (tier.id.as_str(), tier.name.as_str()))
+            .collect()
+    } else {
+        model
+            .additional_speed_tiers
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(|tier| {
+                let id = tier.as_str();
+                (id, if id == "fast" { "Fast" } else { id })
+            })
+            .collect()
+    };
+    if tiers.is_empty() {
+        return None;
+    }
+    let default = model
+        .default_service_tier
+        .as_deref()
+        .filter(|default| tiers.iter().any(|(tier, _)| tier == default))
+        .unwrap_or("default");
+    let options: Vec<_> = std::iter::once(("default", "Standard"))
+        .chain(tiers)
+        .map(|(id, label)| {
+            let mut option = json!({"id":id,"label":label});
+            if id == default {
+                option["isDefault"] = true.into();
+            }
+            option
+        })
+        .collect();
+    Some(
+        json!({"id":"serviceTier","label":"Service Tier","type":"select","options":options,"currentValue":default}),
+    )
 }
 
 fn model_name(name: &str) -> String {

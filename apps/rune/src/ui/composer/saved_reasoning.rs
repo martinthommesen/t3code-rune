@@ -45,11 +45,7 @@ impl State {
         thread_id: &str,
         effort: ReasoningEffort,
     ) {
-        self.edit_saved_model(thread_id, |models| {
-            models
-                .supports_effort(effort)
-                .then(|| ModelSelection::codex_reasoning(effort))
-        });
+        self.edit_saved_model(thread_id, |models| models.select_effort(effort));
     }
 
     pub(in crate::ui) fn choose_saved_model(&mut self, thread_id: &str, model: &str) {
