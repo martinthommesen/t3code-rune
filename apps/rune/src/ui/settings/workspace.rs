@@ -9,11 +9,13 @@ use t3_rune::providers::codex::RuntimeMode;
 
 use super::{CONTROL, DESCRIPTION, Palette, RESET, SECTION, State, error_text};
 
+mod keyboard;
 mod permissions;
 mod scope;
 
 const WIDTH: f32 = 160.0;
 const TRIGGER: &str = "default-workspace";
+const OPTIONS: [WorkspaceMode; 2] = [WorkspaceMode::Local, WorkspaceMode::Worktree];
 const LIST: &str = "default-workspace-options";
 const ITEM: TextStyle = TextStyle::new(14.0, 400.0).lh(20.0);
 
@@ -34,6 +36,8 @@ pub(super) struct Panel {
     pub(super) current: Option<WorkspaceSetting>,
     pub(super) highlighted: Option<WorkspaceMode>,
     permission_highlighted: Option<RuntimeMode>,
+    workspace_typeahead: keyboard::Typeahead,
+    permission_typeahead: keyboard::Typeahead,
     scope: scope::Scope,
     pending: Option<Uuid>,
     error: Option<String>,
@@ -69,6 +73,8 @@ impl Panel {
     pub(super) fn close_popups(&mut self) {
         self.highlighted = None;
         self.permission_highlighted = None;
+        self.workspace_typeahead.clear();
+        self.permission_typeahead.clear();
         self.scope.close();
     }
 
@@ -251,15 +257,7 @@ pub(super) fn page(state: &State, palette: Palette, width: f32) -> El {
         trigger = trigger.active_descendant(option_key(mode));
     }
     if writable {
-        trigger = trigger
-            .on_press_tx(open)
-            .on_key(|state: &mut State, event, tx| {
-                if !matches!(event.key, Key::Up | Key::Down) {
-                    return false;
-                }
-                open(state, tx);
-                true
-            });
+        trigger = trigger.on_press_tx(open).on_key(trigger_input);
     } else if let Some(organization) = settings
         .current
         .as_ref()
@@ -427,34 +425,30 @@ pub(super) fn overlay(state: &State, palette: Palette) -> Option<[El; 2]> {
             inset: false,
         })
         .on_key(navigate)
-        .children(
-            [WorkspaceMode::Local, WorkspaceMode::Worktree]
-                .into_iter()
-                .map(|mode| {
-                    let selected = settings.effective() == Some(mode);
-                    let fill = if mode == active || selected {
-                        palette.ink.alpha(0.08)
-                    } else {
-                        Color::TRANSPARENT
-                    };
-                    row()
-                        .key(option_key(mode))
-                        .role("option")
-                        .label(label(mode))
-                        .focus_selected(selected)
-                        .w_full()
-                        .h(28.0)
-                        .radius(4.0)
-                        .px(8.0)
-                        .items_center()
-                        .fill(fill)
-                        .on_hover(move |state: &mut State| {
-                            state.settings.workspace.highlighted = Some(mode)
-                        })
-                        .on_press_tx(move |state, tx| choose(state, Some(mode), tx))
-                        .child(text(label(mode)).font(ITEM).color(palette.ink))
-                }),
-        );
+        .children(OPTIONS.into_iter().map(|mode| {
+            let selected = settings.effective() == Some(mode);
+            let fill = if mode == active || selected {
+                palette.ink.alpha(0.08)
+            } else {
+                Color::TRANSPARENT
+            };
+            row()
+                .key(option_key(mode))
+                .role("option")
+                .label(label(mode))
+                .focus_selected(selected)
+                .w_full()
+                .h(28.0)
+                .radius(4.0)
+                .px(8.0)
+                .items_center()
+                .fill(fill)
+                .on_hover(move |state: &mut State| {
+                    state.settings.workspace.highlighted = Some(mode)
+                })
+                .on_press_tx(move |state, tx| choose(state, Some(mode), tx))
+                .child(text(label(mode)).font(ITEM).color(palette.ink))
+        }));
     Some([outside, panel])
 }
 
@@ -479,6 +473,7 @@ fn option_key(mode: WorkspaceMode) -> &'static str {
 fn open(state: &mut State, tx: &mut Tx) {
     if state.settings.workspace.writable(state) && state.settings.workspace.pending.is_none() {
         state.settings.workspace.permission_highlighted = None;
+        state.settings.workspace.workspace_typeahead.clear();
         state.settings.workspace.highlighted = state.settings.workspace.effective();
         tx.focus_when_shown(LIST, tx.focus_visible());
     }
@@ -506,27 +501,81 @@ fn choose(state: &mut State, mode: Option<WorkspaceMode>, tx: &mut Tx) {
     start_write(&mut state.settings.workspace, operation);
 }
 
+fn trigger_input(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
+    if matches!(event.key, Key::Up | Key::Down) {
+        open(state, tx);
+        return true;
+    }
+    if event.key == Key::Tab {
+        state.settings.workspace.workspace_typeahead.clear();
+    }
+    typeahead(state, event, tx)
+}
+
+fn typeahead(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
+    let settings = &mut state.settings.workspace;
+    if matches!(&event.key, Key::Text(value) if value == " ")
+        && !settings.workspace_typeahead.typing()
+    {
+        return false;
+    }
+    let selected = settings.effective().unwrap_or_default();
+    let index = OPTIONS
+        .iter()
+        .position(|&mode| mode == selected)
+        .unwrap_or_default();
+    let options = OPTIONS.map(|mode| Some(label(mode)));
+    match settings.workspace_typeahead.input(event, index, &options) {
+        keyboard::Input::Other => false,
+        keyboard::Input::Typed(mode) => {
+            if let Some(index) = mode {
+                if settings.highlighted.is_some() {
+                    settings.highlighted = Some(OPTIONS[index]);
+                } else {
+                    choose(state, Some(OPTIONS[index]), tx);
+                }
+            }
+            true
+        }
+    }
+}
+
 fn navigate(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
-    let Some(current) = state.settings.workspace.highlighted else {
+    let Some(active) = state.settings.workspace.highlighted else {
         return false;
     };
+    if typeahead(state, event, tx) {
+        return true;
+    }
     match event.key {
         Key::Escape => close(state, tx),
         Key::Tab => {
-            close(state, tx);
-            return false;
+            let panel = &state.settings.workspace;
+            let target = if !event.mods.shift {
+                "close-client-settings"
+            } else if panel.configured().is_some() {
+                "reset-default-workspace"
+            } else if permissions::writable(state) {
+                "default-permissions"
+            } else {
+                "threads-project-scope"
+            };
+            state.settings.workspace.highlighted = None;
+            state.settings.workspace.workspace_typeahead.clear();
+            tx.focus(target, true);
         }
-        Key::Enter => choose(state, Some(current), tx),
-        Key::Text(ref value) if value == " " => choose(state, Some(current), tx),
-        Key::Home => state.settings.workspace.highlighted = Some(WorkspaceMode::Local),
-        Key::End => state.settings.workspace.highlighted = Some(WorkspaceMode::Worktree),
-        Key::Up | Key::Down => {
-            state.settings.workspace.highlighted = Some(match current {
-                WorkspaceMode::Local => WorkspaceMode::Worktree,
-                WorkspaceMode::Worktree => WorkspaceMode::Local,
-            });
+        Key::Enter => choose(state, Some(active), tx),
+        Key::Text(ref value) if value == " " => choose(state, Some(active), tx),
+        _ => {
+            let index = OPTIONS
+                .iter()
+                .position(|&mode| mode == active)
+                .unwrap_or_default();
+            let Some(next) = keyboard::arrow_index(&event.key, index, OPTIONS.len()) else {
+                return false;
+            };
+            state.settings.workspace.highlighted = Some(OPTIONS[next]);
         }
-        _ => return false,
     }
     true
 }

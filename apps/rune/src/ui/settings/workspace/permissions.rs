@@ -6,8 +6,8 @@ use crate::connection::PermissionSetting;
 use t3_rune::providers::codex::RuntimeMode;
 
 use super::{
-    CHEVRON, CONTROL, DESCRIPTION, ITEM, Palette, RESET, State, inheritance_marker, start_write,
-    surface,
+    CHEVRON, CONTROL, DESCRIPTION, ITEM, Palette, RESET, State, inheritance_marker, keyboard,
+    start_write, surface,
 };
 
 const TRIGGER: &str = "default-permissions";
@@ -83,6 +83,14 @@ impl Selection<'_> {
     fn mode(&self) -> RuntimeMode {
         self.project_mode.unwrap_or(self.settings.environment)
     }
+
+    fn may_reset(&self, project_scope: bool) -> bool {
+        if project_scope {
+            self.project_mode.is_some()
+        } else {
+            self.mode() != RuntimeMode::FullAccess
+        }
+    }
 }
 
 fn selection(state: &State) -> Option<Selection<'_>> {
@@ -147,15 +155,7 @@ pub(super) fn setting_row(state: &State, palette: Palette, width: f32) -> El {
         trigger = trigger.active_descendant(style(active).0);
     }
     if writable {
-        trigger = trigger
-            .on_press_tx(open)
-            .on_key(|state: &mut State, event, tx| {
-                if !matches!(event.key, Key::Up | Key::Down) {
-                    return false;
-                }
-                open(state, tx);
-                true
-            });
+        trigger = trigger.on_press_tx(open).on_key(trigger_input);
     } else if let Some(organization) = current
         .as_ref()
         .and_then(|current| current.settings.managed_by())
@@ -194,12 +194,7 @@ pub(super) fn setting_row(state: &State, palette: Palette, width: f32) -> El {
         } else {
             title = title.child(el().size(20.0, 20.0).a11y_hidden());
         }
-        let may_reset = if project_scope {
-            current.project_mode.is_some()
-        } else {
-            current.mode() != RuntimeMode::FullAccess
-        };
-        if writable && may_reset {
+        if writable && current.may_reset(project_scope) {
             let reset = super::super::icon_button(
                 "reset-default-permissions",
                 if project_scope {
@@ -334,6 +329,7 @@ fn open(state: &mut State, tx: &mut Tx) {
     }
     let mode = current.mode();
     state.settings.workspace.highlighted = None;
+    state.settings.workspace.permission_typeahead.clear();
     state.settings.workspace.permission_highlighted = Some(mode);
     tx.focus_when_shown(LIST, tx.focus_visible());
 }
@@ -362,19 +358,90 @@ fn choose(state: &mut State, mode: Option<RuntimeMode>, tx: &mut Tx) {
     start_write(&mut state.settings.workspace, operation);
 }
 
+pub(super) fn writable(state: &State) -> bool {
+    selection(state).is_some_and(|current| current.writable)
+}
+
+fn trigger_input(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
+    if matches!(event.key, Key::Up | Key::Down) {
+        open(state, tx);
+        return true;
+    }
+    if event.key == Key::Tab {
+        state.settings.workspace.permission_typeahead.clear();
+    }
+    typeahead(state, event, tx)
+}
+
+fn typeahead(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
+    let Some(current) = selection(state) else {
+        return false;
+    };
+    let options = MODES.map(|mode| {
+        current
+            .settings
+            .denial(mode)
+            .is_none()
+            .then(|| PermissionSetting::label(mode))
+    });
+    let index = MODES
+        .iter()
+        .position(|&mode| current.mode() == mode)
+        .unwrap_or_default();
+    let panel = &mut state.settings.workspace;
+    if matches!(&event.key, Key::Text(value) if value == " ")
+        && !panel.permission_typeahead.typing()
+    {
+        return false;
+    }
+    match panel.permission_typeahead.input(event, index, &options) {
+        keyboard::Input::Other => false,
+        keyboard::Input::Typed(mode) => {
+            if let Some(index) = mode {
+                if panel.permission_highlighted.is_some() {
+                    panel.permission_highlighted = Some(MODES[index]);
+                } else {
+                    choose(state, Some(MODES[index]), tx);
+                }
+            }
+            true
+        }
+    }
+}
+
 fn navigate(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
     let Some(active) = state.settings.workspace.permission_highlighted else {
         return false;
     };
+    if typeahead(state, event, tx) {
+        return true;
+    }
     match event.key {
         Key::Escape => close(state, tx),
         Key::Tab => {
-            close(state, tx);
-            return false;
+            let panel = &state.settings.workspace;
+            let target = if event.mods.shift {
+                if selection(state)
+                    .is_some_and(|current| current.may_reset(panel.project_selected()))
+                {
+                    "reset-default-permissions"
+                } else {
+                    "threads-project-scope"
+                }
+            } else if !panel.writable(state) {
+                "close-client-settings"
+            } else if panel.configured().is_some() {
+                "reset-default-workspace"
+            } else {
+                "default-workspace"
+            };
+            state.settings.workspace.permission_highlighted = None;
+            state.settings.workspace.permission_typeahead.clear();
+            tx.focus(target, true);
         }
         Key::Enter => choose(state, Some(active), tx),
         Key::Text(ref input) if input == " " => choose(state, Some(active), tx),
-        Key::Home | Key::End | Key::Up | Key::Down => {
+        _ => {
             let Some(current) = selection(state) else {
                 return false;
             };
@@ -382,20 +449,15 @@ fn navigate(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
                 .into_iter()
                 .filter(|&mode| current.settings.denial(mode).is_none())
                 .collect();
-            if allowed.is_empty() {
-                return true;
-            }
-            let index = allowed.iter().position(|&mode| mode == active).unwrap_or(0);
-            let next = match event.key {
-                Key::Home => 0,
-                Key::End => allowed.len() - 1,
-                Key::Up => (index + allowed.len() - 1) % allowed.len(),
-                Key::Down => (index + 1) % allowed.len(),
-                _ => unreachable!(),
+            let index = allowed
+                .iter()
+                .position(|&mode| mode == active)
+                .unwrap_or_default();
+            let Some(next) = keyboard::arrow_index(&event.key, index, allowed.len()) else {
+                return false;
             };
             state.settings.workspace.permission_highlighted = Some(allowed[next]);
         }
-        _ => return false,
     }
     true
 }
