@@ -13,11 +13,12 @@ const TAB_TEXT: TextStyle = TextStyle::new(12.0, 400.0).lh(16.0);
 const DIALOG_TITLE: TextStyle = TextStyle::new(20.0, 600.0).lh(27.5);
 const DIALOG_BODY: TextStyle = TextStyle::new(14.0, 400.0).lh(20.0);
 pub(super) const CANCEL_CLOSE_KEY: &str = "cancel-terminal-close";
-const PRIMARY_SHORTCUT: &str = if cfg!(target_os = "macos") {
-    "Cmd"
-} else {
-    "Ctrl"
-};
+pub(super) struct ShortcutLabels {
+    pub(super) horizontal: Option<String>,
+    pub(super) vertical: Option<String>,
+    pub(super) new: Option<String>,
+    pub(super) close: Option<String>,
+}
 
 macro_rules! glyph {
     ($name:literal, $path:literal) => {
@@ -59,6 +60,7 @@ pub(super) fn drawer(
     [height, maximum]: [f32; 2],
     palette: Palette,
     enabled: bool,
+    shortcuts: ShortcutLabels,
 ) -> El {
     let group = tabs.and_then(Tabs::active_group);
     let direction = group.map_or(SplitDirection::Horizontal, |group| group.direction);
@@ -109,41 +111,42 @@ pub(super) fn drawer(
         )
     };
     let actions = row()
-        .h(22.0)
+        .h(21.0)
+        .center_y()
         .child(action(
             "terminal-split-horizontal",
             &side_label,
-            (!at_limit).then_some("D"),
+            shortcuts.horizontal.as_deref().filter(|_| !at_limit),
             &SPLIT_HORIZONTAL,
             palette,
             enabled && !at_limit,
             |state, tx| state.split_terminal(SplitDirection::Horizontal, tx),
         ))
-        .child(el().w(1.0).h_full().fill(border))
+        .child(el().w(1.0).h(16.0).fill(border))
         .child(action(
             "terminal-split-vertical",
             &stack_label,
-            (!at_limit).then_some("Shift+D"),
+            shortcuts.vertical.as_deref().filter(|_| !at_limit),
             &SPLIT_VERTICAL,
             palette,
             enabled && !at_limit,
             |state, tx| state.split_terminal(SplitDirection::Vertical, tx),
         ))
-        .child(el().w(1.0).h_full().fill(border))
+        .child(el().w(1.0).h(16.0).fill(border))
         .child(action(
             "terminal-new",
             "New Terminal",
-            Some("N"),
+            shortcuts.new.as_deref(),
             &PLUS,
             palette,
             enabled,
             State::new_terminal_tab,
         ))
-        .child(el().w(1.0).h_full().fill(border))
+        .child(el().w(1.0).h(16.0).fill(border))
         .child(action(
             "terminal-close",
             "Close Terminal",
-            Some("W"),
+            shortcuts.close.as_deref(),
             &TRASH,
             palette,
             enabled,
@@ -155,11 +158,13 @@ pub(super) fn drawer(
             .child(tab_sidebar(tabs, actions, palette, enabled));
     } else {
         drawer = drawer.child(
-            actions
+            row()
+                .padding(1.0)
                 .fill(palette.canvas)
                 .radius(6.0)
                 .border(1.0, palette.line)
-                .pin(None, Some(8.0), Some(8.0), None),
+                .pin(None, Some(9.0), Some(8.0), None)
+                .child(actions),
         );
     }
     drawer.child(
@@ -218,11 +223,17 @@ fn action(
     enabled: bool,
     press: fn(&mut State, &mut Tx),
 ) -> El {
+    let label = if let Some(shortcut) = shortcut {
+        format!("{label} ({shortcut})")
+    } else {
+        label.to_owned()
+    };
     let action = el()
         .key(key)
         .role("button")
-        .label(label)
-        .w(22.0)
+        .label(&label)
+        .help(label)
+        .w(21.0)
         .h_full()
         .center()
         .child(
@@ -231,7 +242,7 @@ fn action(
                 .a11y_hidden(),
         );
     let action = match shortcut {
-        Some(shortcut) => action.shortcut_hint(format!("{PRIMARY_SHORTCUT}+{shortcut}")),
+        Some(shortcut) => action.shortcut_hint(shortcut),
         None => action,
     };
     if enabled {

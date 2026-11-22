@@ -605,6 +605,21 @@ impl State {
             .unwrap_or(stored)
             .max(MIN_DRAWER_HEIGHT)
             .min(maximum);
+        let bindings = match &self.keybindings {
+            Some(bindings) => bindings,
+            None => crate::connection::Keybindings::stock(),
+        };
+        let shortcut = |command| {
+            bindings.shortcut_label(command, |flag| {
+                matches!(flag, "terminalFocus" | "terminalOpen" | "isDesktop")
+            })
+        };
+        let shortcuts = view::ShortcutLabels {
+            horizontal: shortcut("terminal.split"),
+            vertical: shortcut("terminal.splitVertical"),
+            new: shortcut("terminal.new"),
+            close: shortcut("terminal.close"),
+        };
         view::drawer(
             terminal,
             &self.terminal_peers,
@@ -612,6 +627,7 @@ impl State {
             [height, maximum],
             palette,
             self.terminal_tab_actions_enabled(),
+            shortcuts,
         )
     }
 

@@ -1,6 +1,6 @@
 use std::sync::OnceLock;
 
-use rune::{Chord, ChordMod, KeyEvent, Tx};
+use rune::{Chord, ChordMod, KeyEvent, KeyPlatform, Tx};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::time::Instant;
@@ -241,6 +241,40 @@ impl Keybindings {
                 writable,
             })
         })
+    }
+
+    pub(crate) fn shortcut_label(
+        &self,
+        command: &str,
+        context: impl Fn(&str) -> bool + Copy,
+    ) -> Option<String> {
+        let platform = KeyPlatform::current();
+        let mut claimed = Vec::new();
+        for binding in self.bindings.iter().rev() {
+            let Some(chord) = binding.shortcut else {
+                continue;
+            };
+            if binding
+                .condition
+                .as_ref()
+                .is_some_and(|condition| !condition.evaluate(context))
+                || claimed
+                    .iter()
+                    .any(|earlier| chord.same_keys(earlier, platform))
+            {
+                continue;
+            }
+            if binding.rule.command == command {
+                let label = chord.label();
+                return Some(if platform == KeyPlatform::Mac {
+                    label
+                } else {
+                    label.replace("Win+", "Meta+").replace("Super+", "Meta+")
+                });
+            }
+            claimed.push(chord);
+        }
+        None
     }
 
     pub(crate) fn command<'a>(

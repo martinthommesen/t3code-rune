@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use rune::color::oklch;
-use rune::{App, AppSpec, Color, Cx, El, TextEdit, TextStyle, Tx, Waker};
+use rune::color::{hex, oklch};
+use rune::{App, AppSpec, Color, Cx, El, HelpLook, TextEdit, TextStyle, Tx, Waker};
 use rune::{col, el, row, text, text_input};
 
 use crate::client_settings::ClientSettings;
@@ -1716,6 +1716,20 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
             .client_settings
             .appearance_mode()
             .is_dark(cx.system_dark()),
+    );
+    let (tooltip_fill, tooltip_ink, tooltip_edge) = if palette.dark {
+        ("#0e0e0e", "#f5f5f5", "#232323")
+    } else {
+        ("#ffffff", "#18181b", "#e3e3e3")
+    };
+    cx.help_look(
+        HelpLook::system(palette.dark)
+            .fill(hex(tooltip_fill).unwrap_or(palette.field))
+            .ink(hex(tooltip_ink).unwrap_or(palette.ink))
+            .ring(1.0, hex(tooltip_edge).unwrap_or(palette.line))
+            .radius(6.0)
+            .padding(9.0, 5.0)
+            .margin(5.0),
     );
     let chrome = cx.chrome_insets();
     let chrome_layout = sidebar_header::Layout::new(chrome, state.window_chrome.leading_inset());
