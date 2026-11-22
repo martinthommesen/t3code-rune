@@ -1,7 +1,7 @@
 use rune::El;
 use uuid::Uuid;
 
-use t3_rune::providers::codex::ReasoningEffort;
+use t3_rune::providers::codex::{ReasoningEffort, ServiceTier};
 
 use crate::connection::{DraftProvider, ModelSelection, Thread};
 
@@ -46,6 +46,10 @@ impl State {
         effort: ReasoningEffort,
     ) {
         self.edit_saved_model(thread_id, |models| models.select_effort(effort));
+    }
+
+    pub(super) fn choose_saved_speed(&mut self, thread_id: &str, tier: ServiceTier) {
+        self.edit_saved_model(thread_id, |models| models.select_speed(tier));
     }
 
     pub(in crate::ui) fn choose_saved_model(&mut self, thread_id: &str, model: &str) {

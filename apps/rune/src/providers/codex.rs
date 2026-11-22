@@ -21,7 +21,7 @@ pub use events::{
     TurnEvent, UserInputRequest, WebSearchUpdate,
 };
 
-pub use reasoning::{ReasoningEffort, ReasoningOptions};
+pub use reasoning::{ReasoningEffort, ReasoningOptions, ServiceTier};
 
 pub use usage::{
     NativeTokenCounts, TokenTotals, TokenUsageSnapshot, TurnContextUsage, TurnTokenUsage,
@@ -98,7 +98,7 @@ pub struct TurnOptions {
     pub runtime_mode: RuntimeMode,
     pub interaction_mode: InteractionMode,
     pub reasoning_effort: Option<String>,
-    pub standard_service_tier: bool,
+    pub service_tier: Option<ServiceTier>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -774,8 +774,8 @@ fn turn_params(thread_id: &ThreadId, cwd: &str, options: &TurnOptions, summary: 
         params["effort"] = json!(effort);
         params["collaborationMode"]["settings"]["reasoning_effort"] = json!(effort);
     }
-    if options.standard_service_tier {
-        params["serviceTier"] = json!("default");
+    if let Some(tier) = options.service_tier {
+        params[ServiceTier::OPTION_ID] = json!(tier.as_str());
     }
     params
 }

@@ -2307,6 +2307,19 @@ set -eu
         .await;
     }
 
+    #[tokio::test]
+    async fn resumes_saved_sol_with_fast_and_explicit_standard() {
+        for (before, after) in [("default", "priority"), ("priority", "default")] {
+            let selection = |tier| {
+                json!({"instanceId":"codex","model":"gpt-5.6-sol","options":[
+                    {"id":"reasoningEffort","value":"ultra"},
+                    {"id":"serviceTier","value":tier}
+                ]})
+            };
+            verify_two_turn_conversation(true, Some((selection(before), selection(after)))).await;
+        }
+    }
+
     async fn verify_two_turn_conversation(restart: bool, change: Option<(Value, Value)>) {
         let fixture = Fixture::new();
         let commands = fixture.commands();

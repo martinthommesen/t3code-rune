@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use serde::Deserialize;
 use serde_json::Value;
 
-use t3_rune::providers::codex::ReasoningEffort;
+use t3_rune::providers::codex::{ReasoningEffort, ServiceTier};
 
 pub(crate) type ProviderCatalog = HashMap<String, ProviderMetadata>;
 
@@ -66,12 +66,23 @@ impl ProviderModel {
             .filter_map(|option| Some((option["id"].as_str()?, option["label"].as_str()?)))
     }
 
-    pub(crate) fn default_service_tier(&self) -> Option<&str> {
-        let options = self.capabilities.as_ref()?["optionDescriptors"].as_array()?;
-        let setting = options
+    fn service_tier_descriptor(&self) -> Option<&Value> {
+        self.capabilities.as_ref()?["optionDescriptors"]
+            .as_array()?
             .iter()
-            .find(|item| item["id"] == "serviceTier" && item["type"] == "select")?;
-        setting["currentValue"].as_str()
+            .find(|item| item["id"] == ServiceTier::OPTION_ID && item["type"] == "select")
+    }
+
+    pub(crate) fn default_service_tier(&self) -> Option<&str> {
+        self.service_tier_descriptor()?["currentValue"].as_str()
+    }
+
+    pub(crate) fn service_tier_choice(&self, tier: ServiceTier) -> Option<(&str, Option<&str>)> {
+        let option = self.service_tier_descriptor()?["options"]
+            .as_array()?
+            .iter()
+            .find(|option| option["id"] == tier.as_str())?;
+        Some((option["label"].as_str()?, option["description"].as_str()))
     }
 
     pub(crate) fn default_reasoning(&self) -> Option<(&str, &str)> {

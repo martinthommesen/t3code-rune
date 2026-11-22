@@ -45,6 +45,7 @@ pub(super) struct Model {
 pub(super) struct ModelServiceTier {
     pub(super) id: String,
     pub(super) name: String,
+    pub(super) description: Option<String>,
 }
 
 #[derive(Deserialize)]

@@ -316,7 +316,13 @@ fn service_tier_descriptor(model: &Model) -> Option<Value> {
     {
         reported
             .iter()
-            .map(|tier| (tier.id.as_str(), tier.name.as_str()))
+            .map(|tier| {
+                (
+                    tier.id.as_str(),
+                    tier.name.as_str(),
+                    tier.description.as_deref(),
+                )
+            })
             .collect()
     } else {
         model
@@ -326,7 +332,7 @@ fn service_tier_descriptor(model: &Model) -> Option<Value> {
             .iter()
             .map(|tier| {
                 let id = tier.as_str();
-                (id, if id == "fast" { "Fast" } else { id })
+                (id, if id == "fast" { "Fast" } else { id }, None)
             })
             .collect()
     };
@@ -336,12 +342,15 @@ fn service_tier_descriptor(model: &Model) -> Option<Value> {
     let default = model
         .default_service_tier
         .as_deref()
-        .filter(|default| tiers.iter().any(|(tier, _)| tier == default))
+        .filter(|default| tiers.iter().any(|(tier, _, _)| tier == default))
         .unwrap_or("default");
-    let options: Vec<_> = std::iter::once(("default", "Standard"))
+    let options: Vec<_> = std::iter::once(("default", "Standard", None))
         .chain(tiers)
-        .map(|(id, label)| {
+        .map(|(id, label, description)| {
             let mut option = json!({"id":id,"label":label});
+            if let Some(description) = description.filter(|value| !value.is_empty()) {
+                option["description"] = description.into();
+            }
             if id == default {
                 option["isDefault"] = true.into();
             }

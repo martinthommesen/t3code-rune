@@ -478,7 +478,7 @@ mod subprocess {
             runtime_mode: RuntimeMode::ApprovalRequired,
             interaction_mode: InteractionMode::Plan,
             reasoning_effort: Some("high".into()),
-            standard_service_tier: false,
+            service_tier: None,
         };
         let turn = client.start_turn(&key.thread_id, &options).await.unwrap();
         assert_eq!(turn.key, key);
@@ -558,7 +558,7 @@ mod subprocess {
             model: "openai.gpt-6-astra".into(),
             runtime_mode: RuntimeMode::AutoAcceptEdits,
             reasoning_effort: None,
-            standard_service_tier: false,
+            service_tier: None,
             ..options.clone()
         };
         assert_eq!(

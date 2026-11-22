@@ -17,6 +17,7 @@ mod model_favorites;
 mod model_picker;
 mod resume;
 mod saved_reasoning;
+mod saved_speed;
 
 pub(super) use draft_model_picker::Picker as DraftModelPicker;
 pub(super) use model_favorites::Favorites as ModelFavorites;

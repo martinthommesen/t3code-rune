@@ -10,13 +10,14 @@ use crate::connection::{
     WorkspaceMode,
 };
 
-use t3_rune::providers::codex::ReasoningEffort;
+use t3_rune::providers::codex::{ReasoningEffort, ServiceTier};
 
 use super::super::sidebar::provider_badge;
 use super::super::{Draft, Palette, State, Thread, Workspace};
 use super::codex_effort::{self, EffortPicker};
 use super::model_favorites::{self, Favorites};
 use super::model_picker::{self, CHECK, Colors, DETAILS, LABEL, SEARCH};
+use super::saved_speed::{self, SavedSpeed};
 
 const TRIGGER: &str = "draft-model-picker";
 const QUERY: &str = "draft-model-search";
@@ -128,6 +129,8 @@ pub(super) struct Models<'a> {
     choices: Vec<Choice<'a>>,
     selected: Option<Choice<'a>>,
     codex_effort: Option<EffortPicker>,
+    saved_speed: Option<SavedSpeed<'a>>,
+    saved_service_tier: Option<ServiceTier>,
     favorites: &'a Favorites,
     permissions: Option<&'static str>,
 }
@@ -193,6 +196,8 @@ impl<'a> Models<'a> {
         Some(Self {
             selected,
             codex_effort,
+            saved_speed: None,
+            saved_service_tier: None,
             choices,
             favorites: &workspace.model_favorites,
             permissions: policy.full_access().then_some("Full access"),
@@ -214,6 +219,18 @@ impl<'a> Models<'a> {
             metadata,
             model,
         };
+        let reported_tier = model.default_service_tier();
+        let standard = reported_tier == Some(ServiceTier::Standard.as_str());
+        let saved_service_tier = selection
+            .service_tier()
+            .or(standard.then_some(ServiceTier::Standard));
+        let codex_effort = (standard || reported_tier.is_none())
+            .then(|| EffortPicker::for_model(model, selection.reasoning_effort()))
+            .flatten();
+        let saved_speed = codex_effort
+            .as_ref()
+            .and_then(EffortPicker::current)
+            .and_then(|_| SavedSpeed::for_model(model, saved_service_tier));
         Some(Self {
             choices: metadata
                 .models()
@@ -225,11 +242,9 @@ impl<'a> Models<'a> {
                 })
                 .collect(),
             selected: Some(selected),
-            codex_effort: model
-                .default_service_tier()
-                .is_none_or(|tier| tier == "default")
-                .then(|| EffortPicker::for_model(model, selection.reasoning_effort()))
-                .flatten(),
+            codex_effort,
+            saved_speed,
+            saved_service_tier,
             favorites: &workspace.model_favorites,
             permissions: thread.providers.permissions_label(),
         })
@@ -243,7 +258,17 @@ impl<'a> Models<'a> {
         Some(ModelSelection::codex_with_reasoning(
             &model.slug,
             effort,
-            model.default_service_tier() == Some("default"),
+            self.saved_service_tier,
+        ))
+    }
+
+    pub(super) fn select_speed(&self, tier: ServiceTier) -> Option<ModelSelection> {
+        self.saved_speed.as_ref()?;
+        let effort = self.codex_effort.as_ref()?.current()?;
+        Some(ModelSelection::codex_with_reasoning(
+            &self.selected?.model.slug,
+            effort,
+            Some(tier),
         ))
     }
 
@@ -298,8 +323,12 @@ impl<'a> Models<'a> {
                     .then(|| initial.model.default_reasoning().map(|(_, label)| label))
                     .flatten()
             });
+        let fast = self.saved_speed.as_ref().and_then(SavedSpeed::fast_label);
         let label = if let Some(effort) = effort {
-            format!("{}, {effort}", initial.model.name)
+            fast.map_or_else(
+                || format!("{}, {effort}", initial.model.name),
+                |speed| format!("{}, {effort} {speed}", initial.model.name),
+            )
         } else if claude {
             format!("{}, High · 200k", initial.model.name)
         } else {
@@ -313,7 +342,8 @@ impl<'a> Models<'a> {
             let suffix = effort.map_or(0.0, |effort| {
                 rune::text::measure(effort, &[], LABEL, None).0 + 4.0
             });
-            (width + suffix).clamp(78.0, 183.0)
+            let speed = if fast.is_some() { 18.0 } else { 0.0 };
+            (width + suffix + speed).clamp(78.0, 183.0)
         };
         let mut trigger = row()
             .key(TRIGGER)
@@ -346,6 +376,9 @@ impl<'a> Models<'a> {
         trigger = trigger.child(text(name.as_ref()).font(LABEL).color(color.ink).truncate());
         if let Some(effort) = effort {
             trigger = trigger.child(text(effort).font(LABEL).color(color.muted));
+            if fast.is_some() {
+                trigger = trigger.child(saved_speed::bolt(color.muted).ml(2.0));
+            }
         } else if claude {
             trigger = trigger
                 .child(text("High").font(LABEL).color(color.muted))
@@ -544,11 +577,29 @@ impl<'a> Models<'a> {
         } else {
             body.child(col().grow(1.0).min_h(0.0).child(list).child(details))
         };
+        let speed = match target {
+            Target::Saved(thread) => self
+                .saved_speed
+                .as_ref()
+                .map(|speed| speed.view(thread, palette)),
+            Target::Draft(_) => None,
+        };
         let target = target.clone();
-        let frame = model_picker::popup_frame("draft-model-popup", "Models", lane, palette, body)
-            .on_key(move |state: &mut State, event, tx| escape(state, &target, event, tx));
-        if let Some(label) = self.permissions {
-            frame.child(model_picker::permissions_footer(label, color))
+        let frame = if speed.is_some() {
+            model_picker::popup_frame(
+                "draft-model-popup",
+                "Models",
+                lane,
+                palette,
+                body.focus_group(),
+            )
+        } else {
+            model_picker::popup_frame("draft-model-popup", "Models", lane, palette, body)
+                .focus_group()
+        }
+        .on_key(move |state: &mut State, event, tx| escape(state, &target, event, tx));
+        if self.permissions.is_some() || speed.is_some() {
+            frame.child(model_picker::footer(self.permissions, speed, color))
         } else {
             frame
         }

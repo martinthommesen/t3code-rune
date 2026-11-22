@@ -189,8 +189,9 @@ pub(super) fn popup(
             .child(col().grow(1.0).child(list).child(details))
     };
     popup_frame("claude-model-popup", "Claude models", lane, palette, body)
+        .focus_group()
         .on_key(move |state: &mut State, event, tx| escape(state, &target, event, tx))
-        .child(permissions_footer("Full access", color))
+        .child(footer(Some("Full access"), None, color))
 }
 
 pub(super) fn popup_width(lane: f32) -> f32 {
@@ -210,7 +211,6 @@ pub(super) fn popup_frame(
         .key(key)
         .role("dialog")
         .label(name)
-        .focus_group()
         .w(width)
         .h(if width >= 420.0 { 393.0 } else { 260.0 })
         .on_background_press_tx(|_: &mut State, tx| tx.live_only())
@@ -229,20 +229,27 @@ pub(super) fn popup_frame(
         .child(body)
 }
 
-pub(super) fn permissions_footer(label: &str, color: Colors) -> El {
-    row()
+pub(super) fn footer(permissions: Option<&str>, speed: Option<El>, color: Colors) -> El {
+    let mut footer = row()
         .w_full()
         .h(44.0)
-        .px(15.0)
+        .pl(if speed.is_some() { 12.0 } else { 15.0 })
+        .pr(15.0)
         .center_y()
-        .border_sides([1.0, 0.0, 0.0, 0.0], color.line)
-        .child(el().grow(1.0))
-        .child(
+        .border_sides([1.0, 0.0, 0.0, 0.0], color.line);
+    if let Some(speed) = speed {
+        footer = footer.child(speed);
+    }
+    footer = footer.child(el().grow(1.0));
+    if let Some(label) = permissions {
+        footer = footer.child(
             text(label)
                 .label(format!("Permissions: {label}"))
                 .font(DETAILS)
                 .color(color.muted),
-        )
+        );
+    }
+    footer
 }
 
 pub(super) fn claude_details(

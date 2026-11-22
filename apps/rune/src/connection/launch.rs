@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
-use t3_rune::providers::codex::{ReasoningEffort, RuntimeMode};
+use t3_rune::providers::codex::{ReasoningEffort, ReasoningOptions, RuntimeMode, ServiceTier};
 
 use super::projection::ProjectRow;
 
@@ -45,17 +45,17 @@ impl ModelSelection {
     }
 
     pub(crate) fn codex_reasoning(effort: ReasoningEffort) -> Self {
-        Self::codex_with_reasoning(ReasoningEffort::MODEL_ID, effort, false)
+        Self::codex_with_reasoning(ReasoningEffort::MODEL_ID, effort, None)
     }
 
     pub(crate) fn codex_with_reasoning(
         model: &str,
         effort: ReasoningEffort,
-        standard_service_tier: bool,
+        service_tier: Option<ServiceTier>,
     ) -> Self {
         let mut options = vec![json!({"id":ReasoningEffort::OPTION_ID,"value":effort})];
-        if standard_service_tier {
-            options.push(json!({"id":"serviceTier","value":"default"}));
+        if let Some(tier) = service_tier {
+            options.push(json!({"id":ServiceTier::OPTION_ID,"value":tier.as_str()}));
         }
         Self {
             instance_id: DraftProvider::Codex.instance_id().to_owned(),
@@ -65,10 +65,19 @@ impl ModelSelection {
     }
 
     pub(crate) fn reasoning_effort(&self) -> Option<ReasoningEffort> {
+        self.codex_options().map(|options| options.effort)
+    }
+
+    pub(crate) fn service_tier(&self) -> Option<ServiceTier> {
+        self.codex_options()
+            .and_then(|options| options.service_tier)
+    }
+
+    fn codex_options(&self) -> Option<ReasoningOptions> {
         if self.instance_id != DraftProvider::Codex.instance_id() {
             return None;
         }
-        ReasoningEffort::from_options(&self.model, self.options.as_ref()?)
+        ReasoningOptions::parse(&self.model, self.options.as_ref()?)
     }
 }
 

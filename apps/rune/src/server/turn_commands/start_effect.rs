@@ -122,9 +122,7 @@ impl TurnCommands {
             .map(|choice| choice.effort)
             .or_else(|| super::codex_default_effort_override(&model))
             .map(|effort| effort.as_str().to_owned());
-        let standard_service_tier = selection
-            .reasoning
-            .is_some_and(|choice| choice.standard_service_tier);
+        let service_tier = selection.reasoning.and_then(|choice| choice.service_tier);
         let cwd = PathBuf::from(cwd);
 
         transaction.execute(
@@ -155,7 +153,7 @@ impl TurnCommands {
                 runtime_mode: projected_thread.runtime_mode,
                 interaction_mode: projected_thread.interaction_mode,
                 reasoning_effort,
-                standard_service_tier,
+                service_tier,
             },
         }))
     }
