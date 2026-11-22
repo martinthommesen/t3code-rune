@@ -2074,7 +2074,7 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
         {
             body = body.child(menu);
         } else if let Some(form) = &state.add_project {
-            body = body.child(project::dialog(form, palette));
+            body = body.child(project::dialog(form, palette, state.local_environment));
         } else if !palette_open
             && let Some(overlays) = sidebar::project_scope_overlay(state, palette, pane_size[1])
         {

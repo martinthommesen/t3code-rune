@@ -78,13 +78,16 @@ impl<'a> Absolute<'a> {
     }
 }
 
-pub(super) fn parent(path: &str) -> Option<String> {
-    let directory = if has_separator(path) {
+pub(super) fn browse_directory(path: &str) -> &str {
+    if has_separator(path) {
         path
     } else {
-        &path[..=last_separator(path)?]
-    };
-    let directory = normalize(directory);
+        last_separator(path).map_or(path, |index| &path[..=index])
+    }
+}
+
+pub(super) fn parent(path: &str) -> Option<String> {
+    let directory = normalize(browse_directory(path));
     if let Some(mut absolute) = Absolute::parse(directory) {
         absolute.segments.pop()?;
         return Some(if absolute.segments.is_empty() {

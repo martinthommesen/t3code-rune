@@ -11,6 +11,7 @@ mod folder;
 pub(super) mod folder_collision;
 mod git_url;
 mod home;
+mod native_picker;
 
 pub(super) use home::{ScratchRequest, empty_home};
 
@@ -18,6 +19,7 @@ pub(super) use home::{ScratchRequest, empty_home};
 pub(super) struct AddProject {
     path: TextEdit,
     pending: Option<String>,
+    native_folder_picker: Option<Uuid>,
     error: Option<String>,
     browse: Option<Browse>,
     step: ProjectStep,
@@ -532,7 +534,7 @@ impl State {
     }
 }
 
-pub(super) fn dialog(form: &AddProject, palette: Palette) -> El {
+pub(super) fn dialog(form: &AddProject, palette: Palette, local_environment: bool) -> El {
     match form.step {
         ProjectStep::Sources => return source_dialog(form.sources, palette),
         ProjectStep::Name => return name_dialog(form, palette),
@@ -540,7 +542,7 @@ pub(super) fn dialog(form: &AddProject, palette: Palette) -> El {
         ProjectStep::Folder => {}
     }
     if let Some(browse) = &form.browse {
-        return browse_dialog(form, browse, palette);
+        return browse_dialog(form, browse, palette, local_environment);
     }
     let busy = form.pending.is_some();
     let mut card = col()
@@ -728,8 +730,14 @@ fn project_dialog(contents: El, palette: Palette) -> El {
         )
 }
 
-fn browse_dialog(form: &AddProject, browse: &Browse, palette: Palette) -> El {
-    let busy = form.pending.is_some();
+fn browse_dialog(
+    form: &AddProject,
+    browse: &Browse,
+    palette: Palette,
+    local_environment: bool,
+) -> El {
+    let submitting = form.pending.is_some();
+    let busy = submitting || form.native_folder_picker.is_some();
     let typed_path = form.path.text.trim();
     let can_submit = !busy
         && !typed_path.is_empty()
@@ -810,7 +818,7 @@ fn browse_dialog(form: &AddProject, browse: &Browse, palette: Palette) -> El {
         .child(
             button(
                 "submit-project",
-                if busy {
+                if submitting {
                     "Adding…"
                 } else if will_create {
                     "Create & Add"
@@ -841,14 +849,21 @@ fn browse_dialog(form: &AddProject, browse: &Browse, palette: Palette) -> El {
                 })
                 .max_h(340.0),
         )
-        .child(button(
-            "cancel-project",
-            "Close",
-            palette,
-            false,
-            !busy,
-            |state, _| state.add_project = None,
-        ));
+        .child(
+            row()
+                .w_full()
+                .center_y()
+                .child(button(
+                    "cancel-project",
+                    "Close",
+                    palette,
+                    false,
+                    !busy,
+                    |state, _| state.add_project = None,
+                ))
+                .child(el().grow(1.0))
+                .children(native_picker::footer(form, palette, local_environment)),
+        );
     col()
         .absolute(0.0, 0.0)
         .w_full()
