@@ -54,11 +54,13 @@ impl State {
         }
         let term = &mut pane.screen.term;
         let modes = *term.mode();
-        if mouse::capture(modes, event.mods) {
+        let protocol = pane.screen.mouse_modes.protocol();
+        if mouse::capture(protocol, event.mods) {
             pane.mouse.reset_motion();
             let button = if rows > 0 { 64 } else { 65 };
-            let position = mouse::cell_at(pane, event.x, event.y);
-            if let Some((data, binary)) = mouse::encode(modes, button, false, position, event.mods)
+            let position = mouse::position_at(pane, event.x, event.y);
+            if let Some((data, binary)) =
+                mouse::encode(protocol, button, false, position, event.mods)
             {
                 self.write_terminal_input_at(attachment, data.repeat(wheel_steps(rows)), binary);
             }

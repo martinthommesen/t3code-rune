@@ -1,7 +1,10 @@
-use alacritty_terminal::{grid::Dimensions, term::TermMode};
+use alacritty_terminal::grid::Dimensions;
 use rune::{Drag, Mods, Phase, PointerButton, PointerEvent, Tx};
 
-use super::{CELL_PADDING, CELL_WIDTH, LINE_HEIGHT, Pane, State};
+use super::{
+    CELL_PADDING, CELL_WIDTH, LINE_HEIGHT, Pane, State,
+    mouse_modes::{Encoding, Protocol, Tracking},
+};
 
 type Report = (String, bool);
 
@@ -13,8 +16,8 @@ pub(super) struct Mouse {
 }
 
 impl Mouse {
-    pub(super) fn sync_mode(&mut self, modes: TermMode) {
-        let any_motion = modes.contains(TermMode::MOUSE_MOTION);
+    pub(super) fn sync_mode(&mut self, tracking: Tracking) {
+        let any_motion = tracking == Tracking::Motion;
         if std::mem::replace(&mut self.any_motion, any_motion) != any_motion {
             self.reset_motion();
         }
@@ -25,14 +28,14 @@ impl Mouse {
     }
 }
 
-pub(super) fn capture(modes: TermMode, mods: Mods) -> bool {
-    modes.intersects(TermMode::MOUSE_MODE) && !mods.shift && !mods.ctrl && !mods.logo && !mods.cmd
+pub(super) fn capture(modes: Protocol, mods: Mods) -> bool {
+    modes.tracking != Tracking::Disabled && !mods.shift && !mods.ctrl && !mods.logo && !mods.cmd
 }
 
 impl State {
     pub(super) fn terminal_mouse_captured(&mut self, attachment: u64, mods: Mods) -> bool {
         self.terminal_attachment_mut(attachment)
-            .is_some_and(|pane| capture(*pane.screen.term.mode(), mods))
+            .is_some_and(|pane| capture(pane.screen.mouse_modes.protocol(), mods))
     }
 
     pub(super) fn terminal_pointer_drag(&mut self, attachment: u64, drag: &Drag, tx: &mut Tx) {
@@ -49,7 +52,7 @@ impl State {
             return;
         };
         let mods = tx.mods();
-        let modes = *pane.screen.term.mode();
+        let modes = pane.screen.mouse_modes.protocol();
         let tracking = match drag.phase {
             Phase::Down => {
                 pane.mouse.pressed = capture(modes, mods).then_some(button);
@@ -73,10 +76,10 @@ impl State {
             }
             return;
         };
-        let position = cell_at(pane, drag.x, drag.y);
+        let position = position_at(pane, drag.x, drag.y);
         let report = match drag.phase {
             Phase::Down => encode(modes, button, false, position, mods),
-            Phase::Move if modes.intersects(TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION) => {
+            Phase::Move if matches!(modes.tracking, Tracking::Drag | Tracking::Motion) => {
                 motion(pane, modes, 32 + button, position, mods)
             }
             Phase::Move => None,
@@ -102,16 +105,16 @@ impl State {
         let Some(pane) = self.terminal_attachment_mut(attachment) else {
             return;
         };
-        let modes = *pane.screen.term.mode();
+        let modes = pane.screen.mouse_modes.protocol();
         let mods = tx.mods();
         if pane.mouse.pressed.is_some() {
             return;
         }
-        if !modes.contains(TermMode::MOUSE_MOTION) || !capture(modes, mods) {
+        if modes.tracking != Tracking::Motion || !capture(modes, mods) {
             pane.mouse.reset_motion();
             return;
         }
-        let position = cell_at(pane, event.x, event.y);
+        let position = position_at(pane, event.x, event.y);
         if let Some((data, binary)) = motion(pane, modes, 35, position, mods) {
             self.write_terminal_input_at(attachment, data, binary);
         }
@@ -184,9 +187,9 @@ pub(in crate::ui) fn primary_paste_enabled() -> bool {
 
 fn motion(
     pane: &mut Pane,
-    modes: TermMode,
+    modes: Protocol,
     button: u16,
-    position: [u16; 2],
+    position: Position,
     mods: Mods,
 ) -> Option<Report> {
     let report = encode(modes, button, false, position, mods)?;
@@ -197,35 +200,56 @@ fn motion(
     Some(report)
 }
 
-pub(super) fn cell_at(pane: &Pane, x: f32, y: f32) -> [u16; 2] {
+pub(super) struct Position {
+    cell: [u16; 2],
+    pixels: [i32; 2],
+}
+
+pub(super) fn position_at(pane: &Pane, x: f32, y: f32) -> Position {
     let term = &pane.screen.term;
-    let col = ((x - CELL_PADDING) / CELL_WIDTH).clamp(0.0, (term.columns() - 1) as f32) as u16;
-    let row =
-        ((y - CELL_PADDING) / LINE_HEIGHT).clamp(0.0, (term.screen_lines() - 1) as f32) as u16;
-    [col + 1, row + 1]
+    let x = x.max(0.0) - CELL_PADDING;
+    let y = y.max(0.0) - CELL_PADDING;
+    let col = (x / CELL_WIDTH).clamp(0.0, (term.columns() - 1) as f32) as u16;
+    let row = (y / LINE_HEIGHT).clamp(0.0, (term.screen_lines() - 1) as f32) as u16;
+    Position {
+        cell: [col + 1, row + 1],
+        pixels: [x.round() as i32, y.round() as i32],
+    }
 }
 
 pub(super) fn encode(
-    modes: TermMode,
+    modes: Protocol,
     mut button: u16,
     release: bool,
-    [col, row]: [u16; 2],
+    position: Position,
     mods: Mods,
 ) -> Option<Report> {
-    if !modes.intersects(TermMode::MOUSE_MODE) {
+    let x10 = modes.tracking == Tracking::X10;
+    if modes.tracking == Tracking::Disabled || x10 && (release || button > 2) {
         return None;
     }
-    let sgr = modes.contains(TermMode::SGR_MOUSE);
+    let sgr = matches!(modes.encoding, Encoding::Sgr | Encoding::Pixels);
     if !sgr && release {
         button = 3;
     }
-    button |=
-        (u16::from(mods.shift) << 2) | (u16::from(mods.alt) << 3) | (u16::from(mods.ctrl) << 4);
-    if sgr {
-        let suffix = if release { 'm' } else { 'M' };
-        return Some((format!("\x1b[<{button};{col};{row}{suffix}"), false));
+    if !x10 {
+        button |=
+            (u16::from(mods.shift) << 2) | (u16::from(mods.alt) << 3) | (u16::from(mods.ctrl) << 4);
     }
-    let utf8 = modes.contains(TermMode::UTF8_MOUSE);
+    let [col, row] = position.cell;
+    if sgr {
+        let [x, y] = if modes.encoding == Encoding::Pixels {
+            position.pixels
+        } else {
+            [i32::from(col), i32::from(row)]
+        };
+        let suffix = if release { 'm' } else { 'M' };
+        return Some((format!("\x1b[<{button};{x};{y}{suffix}"), false));
+    }
+    if modes.encoding == Encoding::Urxvt {
+        return Some((format!("\x1b[{};{col};{row}M", 32 + button), false));
+    }
+    let utf8 = modes.encoding == Encoding::Utf8;
     if !utf8 && (col > 223 || row > 223) {
         return None;
     }

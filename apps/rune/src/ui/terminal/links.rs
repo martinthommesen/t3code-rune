@@ -88,7 +88,7 @@ impl State {
             return;
         };
         pane.links.hovered = point.filter(|_| {
-            !pane.links.selecting && !mouse::capture(*pane.screen.term.mode(), tx.mods())
+            !pane.links.selecting && !mouse::capture(pane.screen.mouse_modes.protocol(), tx.mods())
         });
     }
 }

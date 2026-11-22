@@ -19,6 +19,7 @@ mod history;
 mod links;
 mod menu;
 mod mouse;
+mod mouse_modes;
 mod selection;
 mod tabs;
 mod view;
@@ -104,7 +105,8 @@ impl Pane {
             }
             TerminalUpdate::Output { data } => {
                 self.screen.process(data.as_bytes());
-                self.mouse.sync_mode(*self.screen.term.mode());
+                self.mouse
+                    .sync_mode(self.screen.mouse_modes.protocol().tracking);
             }
             TerminalUpdate::Activity {
                 cols,
@@ -150,7 +152,8 @@ impl Pane {
         self.mouse = mouse::Mouse::default();
         self.links = links::Links::default();
         self.screen.process(snapshot.history.as_bytes());
-        self.mouse.sync_mode(*self.screen.term.mode());
+        self.mouse
+            .sync_mode(self.screen.mouse_modes.protocol().tracking);
         self.screen.take_replies();
         self.status = snapshot.status;
         self.label = snapshot.label;
@@ -241,7 +244,8 @@ impl State {
                 continue;
             }
             pane.screen.finish_synchronized_update();
-            pane.mouse.sync_mode(*pane.screen.term.mode());
+            pane.mouse
+                .sync_mode(pane.screen.mouse_modes.protocol().tracking);
             let replies = pane.screen.take_replies();
             if !replies.is_empty()
                 && let Some(connection) = &self.connection
@@ -955,7 +959,7 @@ fn viewport(terminal: &Pane, active: bool, palette: Palette) -> El {
         .on_wheel(move |state: &mut State, event, _| state.terminal_wheel(attachment, event))
         .on_layout(move |state: &mut State, rect| state.resize_terminal_pane(attachment, rect))
         .child(output);
-    if terminal.screen.term.mode().intersects(TermMode::MOUSE_MODE) {
+    if terminal.screen.mouse_modes.protocol().tracking != mouse_modes::Tracking::Disabled {
         viewport =
             viewport.pointer_buttons([rune::PointerButton::Back, rune::PointerButton::Forward]);
     }

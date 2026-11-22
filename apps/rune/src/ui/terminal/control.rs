@@ -7,6 +7,8 @@ use alacritty_terminal::{
     vte::ansi,
 };
 
+use super::mouse_modes::MouseModes;
+
 const HISTORY_LIMIT: usize = 10_000;
 const REPLY_LIMIT: usize = 16_384;
 
@@ -27,6 +29,7 @@ impl EventListener for TerminalEvents {
 pub(super) struct TerminalScreen {
     pub(super) term: Term<TerminalEvents>,
     processor: ansi::Processor,
+    pub(super) mouse_modes: MouseModes,
     events: TerminalEvents,
 }
 
@@ -43,11 +46,13 @@ impl TerminalScreen {
             term,
             events,
             processor: ansi::Processor::new(),
+            mouse_modes: MouseModes::default(),
         }
     }
 
     pub(super) fn process(&mut self, bytes: &[u8]) {
         self.processor.advance(&mut self.term, bytes);
+        self.mouse_modes.process(bytes);
     }
 
     pub(super) fn resize(&mut self, rows: u16, cols: u16) {
@@ -62,8 +67,11 @@ impl TerminalScreen {
         self.processor.stop_sync(&mut self.term);
     }
 
-    pub(super) fn take_replies(&self) -> String {
-        std::mem::take(&mut *self.events.0.borrow_mut())
+    pub(super) fn take_replies(&mut self) -> String {
+        let mut replies = std::mem::take(&mut *self.events.0.borrow_mut());
+        let waiting = self.synchronized_until().is_some();
+        self.mouse_modes.rewrite_replies(&mut replies, waiting);
+        replies
     }
 }
 
@@ -158,5 +166,35 @@ mod tests {
         screen.finish_synchronized_update();
         assert!(screen.synchronized_until().is_none());
         assert_eq!(screen.term.grid()[Line(0)][Column(0)].c, 's');
+    }
+    #[test]
+    fn mouse_protocol_tracks_split_sequences_and_resets_any_format() {
+        use super::super::mouse_modes::{Encoding, Tracking};
+
+        let mut screen = TerminalScreen::new(16, 80);
+        screen.process(b"\x1b[?1000;10");
+        assert!(screen.mouse_modes.protocol().tracking == Tracking::Disabled);
+        screen.process(b"16h");
+        assert!(screen.mouse_modes.protocol().tracking == Tracking::Buttons);
+        assert!(screen.mouse_modes.protocol().encoding == Encoding::Pixels);
+        screen.process(b"\x1b[?1005l");
+        assert!(screen.mouse_modes.protocol().encoding == Encoding::Classic);
+    }
+
+    #[test]
+    fn mouse_mode_queries_keep_independent_flags_across_synchronization() {
+        let mut screen = TerminalScreen::new(16, 80);
+        screen.process(b"\x1b[?9;1000;1015;1016h\x1b[?9$p\x1b[?1000$p\x1b[?1015$p");
+        assert_eq!(
+            screen.take_replies(),
+            "\x1b[?9;1$y\x1b[?1000;1$y\x1b[?1015;1$y"
+        );
+        screen.process(b"\x1b[?2026h\x1b[?9;1015l\x1b[?9$p\x1b[?1015$p\x1b[?1016$p");
+        assert!(screen.take_replies().is_empty());
+        screen.finish_synchronized_update();
+        assert_eq!(
+            screen.take_replies(),
+            "\x1b[?9;2$y\x1b[?1015;2$y\x1b[?1016;1$y"
+        );
     }
 }
