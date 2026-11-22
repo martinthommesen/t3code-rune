@@ -102,6 +102,7 @@ impl TurnCommands {
                 run_ordinal: ordinal,
                 provider_thread: Some(provider),
                 text: "",
+                context: None,
                 model_selection: selection,
                 ordinal: Some(item_ordinal),
                 now: &now,

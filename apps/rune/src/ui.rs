@@ -220,6 +220,7 @@ impl Workspace {
 #[derive(Default)]
 struct Draft {
     edit: TextEdit,
+    terminal_excerpts: Vec<crate::composer_context::TerminalExcerpt>,
     pending: bool,
     failure: Option<String>,
     model_policy: Option<crate::connection::DraftModelPolicy>,
@@ -236,6 +237,30 @@ struct Draft {
 }
 
 impl Draft {
+    fn prompt(&self) -> (String, Option<crate::composer_context::MessageContext>) {
+        let mut cursor = 0;
+        let mut text = String::new();
+        let mut records = Vec::new();
+        for (range, id) in self.edit.pills() {
+            let Some(excerpt) = self
+                .terminal_excerpts
+                .iter()
+                .find(|excerpt| excerpt.context_id == id)
+            else {
+                continue;
+            };
+            text.push_str(&self.edit.text[cursor..range.start]);
+            text.push_str(&excerpt.reference());
+            cursor = range.end;
+            records.push(excerpt);
+        }
+        text.push_str(&self.edit.text[cursor..]);
+        (
+            text,
+            crate::composer_context::MessageContext::from_excerpts(records.into_iter()),
+        )
+    }
+
     fn selected_model(&self) -> Option<&crate::connection::ModelSelection> {
         self.model_choice
             .as_ref()
@@ -932,7 +957,8 @@ impl State {
         }
         draft.pending = true;
         draft.failure = None;
-        connection.send_prompt(id.clone(), draft.edit.text.clone());
+        let (text, context) = draft.prompt();
+        connection.send_prompt(id.clone(), text, context);
     }
 
     fn poll(&mut self, clock: f64, tx: &mut Tx) -> bool {
@@ -1267,6 +1293,7 @@ impl State {
                 if let Some(draft) = self.drafts.get_mut(&thread_id) {
                     draft.pending = false;
                     draft.edit.clear();
+                    draft.terminal_excerpts.clear();
                 }
             }
             Event::ThreadLaunched {
@@ -1888,6 +1915,12 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
     if !onboarding_open {
         if let Some(dialog) = modal {
             body = body.child(dialog);
+        } else if let Some(menu) = state
+            .terminal
+            .as_ref()
+            .and_then(|pane| terminal::terminal_menu(pane, [width, height]))
+        {
+            body = body.child(menu);
         } else if let Some(form) = &state.add_project {
             body = body.child(project::dialog(form, palette));
         } else if let Some(overlays) = sidebar::project_scope_overlay(state, palette, pane_size[1])
@@ -2610,18 +2643,21 @@ mod tests {
                         id: "agent-prompt".into(),
                         role: "user".into(),
                         text: "First line.\nSecond line.".into(),
+                        context: None,
                         created_by: Some("agent".into()),
                     },
                     Message {
                         id: "ordinary-prompt".into(),
                         role: "user".into(),
                         text: "Ordinary prompt".into(),
+                        context: None,
                         created_by: None,
                     },
                     Message {
                         id: "response".into(),
                         role: "assistant".into(),
                         text: response.into(),
+                        context: None,
                         created_by: Some("agent".into()),
                     },
                 ]

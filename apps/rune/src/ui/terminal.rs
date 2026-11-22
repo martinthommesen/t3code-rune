@@ -16,11 +16,13 @@ use super::{Palette, ProjectSelection, ProjectView, SMALL, State, conversation::
 
 mod control;
 mod history;
+mod menu;
 mod selection;
 mod tabs;
 mod view;
 
 use control::TerminalScreen;
+pub(super) use menu::view as terminal_menu;
 use tabs::SplitDirection;
 pub(super) use tabs::TabsByThread;
 
@@ -54,6 +56,7 @@ pub(super) struct Pane {
     message: Option<String>,
     received_snapshot: bool,
     close_prompt: Option<ClosePrompt>,
+    menu: Option<menu::Menu>,
     resize_preview: Option<f32>,
     wheel_remainder: f32,
     viewport_height: f32,
@@ -79,6 +82,7 @@ impl Pane {
             message: None,
             received_snapshot: false,
             close_prompt: None,
+            menu: None,
             resize_preview: None,
             wheel_remainder: 0.0,
             viewport_height: 0.0,
@@ -742,20 +746,27 @@ impl State {
 
     pub(super) fn paste_terminal(&mut self, text: &str, tx: &mut Tx) {
         if tx.focused() == Some(INPUT_KEY)
-            && let Some(terminal) = &self.terminal
+            && let Some(pane) = &self.terminal
         {
-            let data = if terminal
-                .screen
-                .term
-                .mode()
-                .contains(TermMode::BRACKETED_PASTE)
-            {
-                format!("\x1b[200~{text}\x1b[201~")
-            } else {
-                text.to_owned()
-            };
-            self.send_terminal_input(data);
+            self.paste_terminal_at(pane.attachment, text);
         }
+    }
+
+    fn paste_terminal_at(&self, attachment: u64, text: &str) {
+        let Some(pane) = self
+            .terminal
+            .iter()
+            .chain(&self.terminal_peers)
+            .find(|pane| pane.attachment == attachment)
+        else {
+            return;
+        };
+        let input = if pane.screen.term.mode().contains(TermMode::BRACKETED_PASTE) {
+            format!("\x1b[200~{text}\x1b[201~")
+        } else {
+            text.to_owned()
+        };
+        self.write_terminal_input_at(attachment, input, false);
     }
 
     pub(super) fn matches_terminal_toggle(&self, event: &KeyEvent, tx: &Tx) -> bool {
@@ -898,6 +909,9 @@ fn viewport(terminal: &Pane, active: bool, palette: Palette) -> El {
         })
         .focusable(active)
         .no_focus_ring()
+        .on_secondary_press(move |state: &mut State, point, tx| {
+            state.open_terminal_menu(attachment, point, tx);
+        })
         .on_drag(move |state: &mut State, drag, tx| {
             state.drag_terminal_selection(attachment, drag, tx)
         })

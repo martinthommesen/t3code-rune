@@ -329,6 +329,7 @@ enum Command {
     SendPrompt {
         thread_id: String,
         prompt: String,
+        context: Option<crate::composer_context::MessageContext>,
     },
     MutateQueue {
         thread_id: String,
@@ -633,10 +634,17 @@ impl Connection {
         let _ = self.commands.send(Command::CloseThread);
     }
 
-    pub(crate) fn send_prompt(&self, thread_id: String, prompt: String) {
-        let _ = self
-            .commands
-            .send(Command::SendPrompt { thread_id, prompt });
+    pub(crate) fn send_prompt(
+        &self,
+        thread_id: String,
+        prompt: String,
+        context: Option<crate::composer_context::MessageContext>,
+    ) {
+        let _ = self.commands.send(Command::SendPrompt {
+            thread_id,
+            prompt,
+            context,
+        });
     }
 
     pub(crate) fn mutate_queue(&self, thread_id: String, mutation: QueueMutation, operation: Uuid) {
@@ -2145,7 +2153,11 @@ impl Session {
                         .await?;
                 }
             }
-            Command::SendPrompt { thread_id, prompt } => {
+            Command::SendPrompt {
+                thread_id,
+                prompt,
+                context,
+            } => {
                 if !self.prompt_writes || prompt.trim().is_empty() {
                     let message = if !self.prompt_writes {
                         "This environment is read-only."
@@ -2163,7 +2175,7 @@ impl Session {
                         && self.thread.as_ref().is_some_and(|thread| {
                             thread.thread_id == thread_id && thread.reported_queue_worktree
                         });
-                    let payload = prompt_payload(&thread_id, &prompt, queue);
+                    let payload = prompt_payload(&thread_id, &prompt, queue, context.as_ref());
                     self.pending_prompts.insert(request_id.clone(), thread_id);
                     self.send_request(&request_id, "orchestration.dispatchCommand", payload)
                         .await?;
@@ -2984,7 +2996,12 @@ fn apply(
     Ok(changed)
 }
 
-fn prompt_payload(thread_id: &str, prompt: &str, queue: bool) -> Value {
+fn prompt_payload(
+    thread_id: &str,
+    prompt: &str,
+    queue: bool,
+    context: Option<&crate::composer_context::MessageContext>,
+) -> Value {
     let dispatch = if queue {
         "queue_after_active"
     } else {
@@ -3001,6 +3018,9 @@ fn prompt_payload(thread_id: &str, prompt: &str, queue: bool) -> Value {
         "attachments": [],
         "dispatchMode": { "type": dispatch },
     });
+    if let Some(context) = context {
+        payload["context"] = json!(context);
+    }
     if !queue {
         payload["deliveryIntent"] = json!("auto");
     }

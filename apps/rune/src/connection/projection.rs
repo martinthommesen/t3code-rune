@@ -253,6 +253,7 @@ pub(crate) struct Message {
     pub(crate) id: String,
     pub(crate) role: String,
     pub(crate) text: String,
+    pub(crate) context: Option<crate::composer_context::MessageContext>,
     #[serde(rename = "createdBy")]
     pub(crate) created_by: Option<String>,
 }
@@ -646,6 +647,9 @@ impl ThreadProjection {
                     if let Some(text) = entry.text {
                         message.text = text;
                     }
+                    if entry.context.is_some() {
+                        message.context = entry.context;
+                    }
                     Some(ConversationEntry::Message(message))
                 } else {
                     entry.into_message(role).map(ConversationEntry::Message)
@@ -693,6 +697,7 @@ enum RuntimeRequestItem {
 struct TimelineMessage {
     message_id: String,
     text: Option<String>,
+    context: Option<crate::composer_context::MessageContext>,
     created_by: Option<String>,
 }
 
@@ -702,6 +707,7 @@ impl TimelineMessage {
             id: self.message_id,
             role: role.into(),
             text: self.text?,
+            context: self.context,
             created_by: self.created_by,
         })
     }

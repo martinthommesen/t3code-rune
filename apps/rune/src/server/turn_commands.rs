@@ -62,6 +62,7 @@ pub(super) struct MessageDispatch {
     created_by: Actor,
     creation_source: CreationSource,
     text: String,
+    context: Option<crate::composer_context::MessageContext>,
     attachments: Vec<Value>,
     dispatch_mode: DispatchMode,
     delivery_intent: Option<DeliveryIntent>,
@@ -287,6 +288,7 @@ impl TurnCommands {
             created_by: Actor::User,
             creation_source: CreationSource::Web,
             text,
+            context,
             attachments,
             dispatch_mode: _,
             delivery_intent: None | Some(DeliveryIntent::Auto),
@@ -411,6 +413,7 @@ impl TurnCommands {
                 run_ordinal,
                 provider_thread,
                 text: &text,
+                context: context.as_ref(),
                 model_selection: thread.model_selection,
                 ordinal: Some(ordinal),
                 now: &now,
@@ -710,6 +713,7 @@ struct DispatchEvents<'a> {
     run_ordinal: i64,
     provider_thread: Option<Value>,
     text: &'a str,
+    context: Option<&'a crate::composer_context::MessageContext>,
     model_selection: Value,
     ordinal: Option<i64>,
     now: &'a str,
@@ -791,6 +795,7 @@ pub(super) fn append_preparing_dispatch(
             run_ordinal: FIRST_RUN_ORDINAL,
             provider_thread: None,
             text: dispatch.text,
+            context: None,
             model_selection: dispatch.model_selection,
             ordinal: Some(ordinal),
             now: dispatch.now,
@@ -813,6 +818,7 @@ fn append_dispatch(
         run_ordinal,
         provider_thread,
         text,
+        context,
         model_selection,
         ordinal,
         now,
@@ -883,6 +889,9 @@ fn append_dispatch(
         "createdAt": now,
         "updatedAt": now,
     });
+    if let Some(context) = context {
+        message["context"] = json!(context);
+    }
     let provider_thread = if matches!(start, DispatchStart::Queued { .. }) {
         None
     } else {
@@ -1102,7 +1111,7 @@ fn user_message_item(
     now: &str,
     intent: &str,
 ) -> Value {
-    json!({
+    let mut item = json!({
         "createdBy": message["createdBy"], "creationSource": message["creationSource"],
         "id": ids.user_turn_item_id, "threadId": message["threadId"], "runId": ids.run_id,
         "nodeId": ids.root_node_id, "providerThreadId": ids.provider_thread_id,
@@ -1111,7 +1120,11 @@ fn user_message_item(
         "completedAt": now, "updatedAt": now, "type": "user_message",
         "messageId": message["id"], "inputIntent": intent, "text": message["text"],
         "attachments": message["attachments"],
-    })
+    });
+    if let Some(context) = message.get("context") {
+        item["context"] = context.clone();
+    }
+    item
 }
 
 pub(super) fn record_projected_sequence(

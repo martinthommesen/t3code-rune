@@ -1,5 +1,7 @@
 use rune::color::hex;
-use rune::{Color, El, Icon, TextStyle, Tx, col, edit_access, el, icon, row, text, text_input};
+use rune::{
+    Color, El, Icon, PillStyle, TextStyle, Tx, col, edit_access, el, icon, row, text, text_input,
+};
 
 use crate::connection::{DraftProvider, ProviderMetadata, ProviderModel, Thread};
 
@@ -17,8 +19,21 @@ mod resume;
 pub(super) use draft_model_picker::Picker as DraftModelPicker;
 pub(super) use model_favorites::Favorites as ModelFavorites;
 
+pub(super) fn terminal_pill(ink: Color, palette: Palette) -> PillStyle {
+    PillStyle::new()
+        .icon(&TERMINAL_EXCERPT)
+        .bg(palette.line)
+        .fg(ink)
+}
+
 const FONT: TextStyle = TextStyle::new(14.0, 400.0).lh(22.75);
 const PROVIDER_UNAVAILABLE: &str = "Enable a provider in Settings to send a message";
+
+static TERMINAL_EXCERPT: Icon = Icon {
+    name: "terminal-excerpt",
+    view: 24.0,
+    body: r#"<path d="m4 6 6 6-6 6m9 0h7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
 
 static SEND_UP: Icon = Icon {
     name: "composer-send",
@@ -319,6 +334,13 @@ fn surface(
         )
         .color(colors.ink)
         .selection_color(palette.selected)
+        .pill_style(move |id| {
+            if id.starts_with("terminal_") {
+                terminal_pill(colors.ink, palette)
+            } else {
+                PillStyle::new()
+            }
+        })
         .disabled(draft.pending && draft.worktree_launch.is_none());
     let submit: fn(&mut State, &mut Tx);
     match target {

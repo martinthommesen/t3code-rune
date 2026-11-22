@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod client_settings;
+mod composer_context;
 mod connection;
 mod server;
 mod snooze;

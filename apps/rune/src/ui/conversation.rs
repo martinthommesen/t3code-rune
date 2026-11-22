@@ -379,6 +379,7 @@ pub(super) fn draft_prompt(thread_id: &str, prompt: &str, layout: Layout, palett
             id: format!("draft-{thread_id}"),
             role: "user".into(),
             text: prompt.to_owned(),
+            context: None,
             created_by: None,
         },
         layout.max_bubble_width(),
@@ -398,7 +399,13 @@ fn user_message(
     let expanded = conversation
         .is_some_and(|conversation| conversation.expanded_messages.contains(&message.id));
     let body = || {
-        text(&message.text)
+        let (display, pills) = message.context.as_ref().map_or_else(
+            || (message.text.clone(), Vec::new()),
+            |context| context.display_text(&message.text),
+        );
+        let style = super::composer::terminal_pill(colors.foreground, colors.fallbacks);
+        text(display)
+            .pills(pills.into_iter().map(|range| (range, style)))
             .key(format!("message-text-{}", message.id))
             .font(PROSE)
             .color(colors.foreground)

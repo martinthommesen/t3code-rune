@@ -88,6 +88,7 @@ impl TurnCommands {
             checkpoint_scope_id,
             run_ordinal,
             native_thread_id,
+            context,
         )) = transaction
             .query_row(
                 &format!("{SELECT_READY_START}{ROOT_SCOPE_MATCH}{START_ORIGIN}"),
@@ -104,6 +105,7 @@ impl TurnCommands {
                         row.get::<_, String>(7)?,
                         row.get::<_, i64>(8)?,
                         row.get::<_, Option<String>>(9)?,
+                        row.get::<_, Option<String>>(10)?,
                     ))
                 },
             )
@@ -140,7 +142,7 @@ impl TurnCommands {
             turn: TurnOptions {
                 cwd,
                 model,
-                text,
+                text: crate::composer_context::provider_text(text, context.as_deref()),
                 runtime_mode: projected_thread.runtime_mode,
                 interaction_mode: projected_thread.interaction_mode,
                 reasoning_effort: None,
@@ -156,7 +158,9 @@ const SELECT_READY_START: &str = "
            json_extract(CASE WHEN json_extract(run.payload_json, '$.manualContinuationOfRunId') IS NULL
                             THEN message.payload_json ELSE source_message.payload_json END, '$.text'),
            thread.project_id, scope.scope_id,
-           run.ordinal, json_extract(provider_thread.payload_json, '$.nativeThreadRef.nativeId')
+           run.ordinal, json_extract(provider_thread.payload_json, '$.nativeThreadRef.nativeId'),
+           json_extract(CASE WHEN json_extract(run.payload_json, '$.manualContinuationOfRunId') IS NULL
+                            THEN message.payload_json ELSE source_message.payload_json END, '$.context')
     FROM orchestration_v2_effect_outbox AS effect
     LEFT JOIN orchestration_command_receipts AS receipt
       ON receipt.command_id = effect.command_id AND receipt.aggregate_id = effect.thread_id

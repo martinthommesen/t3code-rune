@@ -88,6 +88,7 @@ impl TurnCommands {
             provider_thread_id,
             provider_session_id,
             session_id,
+            context,
         )) = transaction
             .query_row(READY, params![effect_id, now], |row| {
                 Ok((
@@ -103,6 +104,7 @@ impl TurnCommands {
                     row.get::<_, String>(9)?,
                     row.get::<_, String>(10)?,
                     row.get::<_, Option<String>>(11)?,
+                    row.get::<_, Option<String>>(12)?,
                 ))
             })
             .optional()?
@@ -155,7 +157,7 @@ impl TurnCommands {
             ordinal,
             model: model.into(),
             title: title.into(),
-            text,
+            text: crate::composer_context::provider_text(text, context.as_deref()),
             target,
             thread: projected,
             ids,
@@ -182,7 +184,8 @@ const READY: &str = "
     SELECT thread.thread_id, thread.project_id, thread.payload_json, run.ordinal, run.run_id,
            scope.scope_id, json_extract(scope.payload_json, '$.cwd'), message.message_id,
            json_extract(message.payload_json, '$.text'), provider.provider_thread_id,
-           provider.provider_session_id, json_extract(provider.payload_json, '$.nativeThreadRef.nativeId')
+           provider.provider_session_id, json_extract(provider.payload_json, '$.nativeThreadRef.nativeId'),
+           json_extract(message.payload_json, '$.context')
     FROM orchestration_v2_effect_outbox AS effect
     JOIN orchestration_command_receipts AS receipt
       ON receipt.command_id = effect.command_id AND receipt.aggregate_kind = 'thread'

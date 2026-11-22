@@ -190,7 +190,7 @@ async fn pairs_reads_sends_launches_and_recovers_without_replaying_mutations() {
     assert!(matches!(next_event(&connection, &mut wake_rx).await,
         Event::ThreadQuestions { thread_id, questions, can_respond: false }
         if thread_id == "thread" && questions.is_empty()));
-    connection.send_prompt("thread".into(), "  Preserve whitespace ".into());
+    connection.send_prompt("thread".into(), "  Preserve whitespace ".into(), None);
     assert!(
         matches!(next_event(&connection, &mut wake_rx).await, Event::PromptAccepted { thread_id } if thread_id == "thread")
     );
@@ -205,7 +205,7 @@ async fn pairs_reads_sends_launches_and_recovers_without_replaying_mutations() {
         Event::ThreadLaunched { project_id, thread_id }
             if project_id == "project" && Uuid::parse_str(&thread_id).is_ok()
     ));
-    connection.send_prompt("thread".into(), "Wait for confirmation".into());
+    connection.send_prompt("thread".into(), "Wait for confirmation".into(), None);
     connection.launch_thread(
         "project".into(),
         "Unconfirmed thread launch".into(),
@@ -445,7 +445,10 @@ fn draft_model_selection_uses_explicit_choice_and_effective_project_permissions(
         json!({"instanceId": "codex", "model": "gpt-5.5"})
     );
     draft.workspace = LaunchWorkspace::Root;
-    draft.model = Some(ModelSelection::plain(DraftProvider::Claude, "claude-sonnet-4-6"));
+    draft.model = Some(ModelSelection::plain(
+        DraftProvider::Claude,
+        "claude-sonnet-4-6",
+    ));
     settings["projectSettingsOverrides"]["project"]["providerInstances"] =
         json!({"claudeAgent": {"enabled": false}});
     assert!(launch::payload(settings.clone(), &project, &draft).is_err());

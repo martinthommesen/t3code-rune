@@ -157,6 +157,10 @@ impl Questions {
         };
     }
 
+    pub(super) fn has_active_question(&self) -> bool {
+        self.current().is_some()
+    }
+
     fn current(&self) -> Option<(&PendingQuestion, &QuestionDraft, &Question)> {
         let request = self.visible.first()?;
         let draft = self.drafts.get(&request.id)?;
