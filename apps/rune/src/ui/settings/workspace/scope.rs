@@ -47,7 +47,7 @@ impl Scope {
     }
 }
 
-fn projects(state: &State) -> &[Project] {
+pub(super) fn projects(state: &State) -> &[Project] {
     state
         .workspace
         .as_ref()
@@ -318,7 +318,7 @@ fn open(state: &mut State, tx: &mut Tx) {
         close(state, tx);
         return;
     }
-    state.settings.workspace.highlighted = None;
+    state.settings.workspace.close_popups();
     let scope = &state.settings.workspace.scope;
     let active = choices(state)
         .iter()
@@ -337,7 +337,7 @@ fn close(state: &mut State, tx: &mut Tx) {
     tx.return_focus(TRIGGER, tx.focus_visible());
 }
 
-fn choose(state: &mut State, id: Option<String>, tx: &mut Tx) {
+pub(super) fn choose(state: &mut State, id: Option<String>, tx: &mut Tx) {
     close(state, tx);
     let settings = &mut state.settings.workspace;
     settings.scope.id = id;

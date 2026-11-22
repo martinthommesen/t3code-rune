@@ -9,6 +9,7 @@ use t3_rune::providers::codex::RuntimeMode;
 
 use super::{CONTROL, DESCRIPTION, Palette, RESET, SECTION, State, error_text};
 
+mod inheritance;
 pub(super) mod keyboard;
 mod permissions;
 mod scope;
@@ -36,6 +37,7 @@ pub(super) struct Panel {
     pub(super) current: Option<WorkspaceSetting>,
     pub(super) highlighted: Option<WorkspaceMode>,
     permission_highlighted: Option<RuntimeMode>,
+    inheritance: Option<inheritance::Setting>,
     pub(super) branch_naming_highlighted: Option<BranchNamingMode>,
     pub(super) branch_naming_typeahead: keyboard::Typeahead,
     workspace_typeahead: keyboard::Typeahead,
@@ -82,6 +84,7 @@ impl Panel {
     pub(super) fn close_popups(&mut self) {
         self.highlighted = None;
         self.permission_highlighted = None;
+        self.inheritance = None;
         self.branch_naming_highlighted = None;
         self.branch_naming_typeahead.clear();
         self.workspace_typeahead.clear();
@@ -327,28 +330,12 @@ pub(super) fn page(state: &State, palette: Palette, width: f32) -> El {
     let mut title = row()
         .items_center()
         .gap(6.0)
-        .child(text("Workspace").font(CONTROL).color(palette.ink));
-    if project_scope {
-        let inherited = if settings.configured().is_some() {
-            "Overridden for this project".to_owned()
-        } else if settings
-            .current
-            .as_ref()
-            .is_some_and(|setting| setting.configured.is_some())
-        {
-            state
-                .workspace
-                .as_ref()
-                .map_or("Inherited from environment".to_owned(), |workspace| {
-                    format!("Inherited from {}", workspace.label)
-                })
-        } else if settings.scope.file_mode.is_some() {
-            "Inherited from the repository’s t3.json".to_owned()
-        } else {
-            "Built-in default".to_owned()
-        };
-        title = title.child(inheritance_marker(inherited, palette));
-    }
+        .child(text("Workspace").font(CONTROL).color(palette.ink))
+        .child(inheritance::marker(
+            state,
+            inheritance::Setting::Workspace,
+            palette,
+        ));
     if settings.configured().is_some() && (!project_scope || writable) {
         let reset = super::icon_button(
             "reset-default-workspace",
@@ -407,6 +394,7 @@ pub(super) fn page(state: &State, palette: Palette, width: f32) -> El {
                 .child(
                     layout
                         .key("new-threads-workspace")
+                        .hover_group()
                         .w_full()
                         .px(16.0)
                         .py(12.0)
@@ -438,6 +426,9 @@ pub(super) fn page(state: &State, palette: Palette, width: f32) -> El {
 }
 
 pub(super) fn overlay(state: &State, palette: Palette) -> Option<[El; 2]> {
+    if let Some(popup) = inheritance::overlay(state, palette) {
+        return Some(popup);
+    }
     if let Some(scope) = scope::overlay(state, palette) {
         return Some(scope);
     }
@@ -524,8 +515,7 @@ fn option_key(mode: WorkspaceMode) -> &'static str {
 
 fn open(state: &mut State, tx: &mut Tx) {
     if state.settings.workspace.writable(state) && state.settings.workspace.pending.is_none() {
-        state.settings.workspace.permission_highlighted = None;
-        state.settings.workspace.workspace_typeahead.clear();
+        state.settings.workspace.close_popups();
         state.settings.workspace.highlighted = state.settings.workspace.effective();
         tx.focus_when_shown(LIST, tx.focus_visible());
     }
@@ -554,8 +544,12 @@ fn choose(state: &mut State, mode: Option<WorkspaceMode>, tx: &mut Tx) {
 }
 
 fn trigger_input(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
-    if matches!(event.key, Key::Up | Key::Down) {
-        open(state, tx);
+    if matches!(event.key, Key::Up | Key::Down)
+        || event.key == Key::Enter && event.mods == rune::Mods::default()
+    {
+        if !tx.key_repeat() {
+            open(state, tx);
+        }
         return true;
     }
     if event.key == Key::Tab {
@@ -607,10 +601,8 @@ fn navigate(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
                 "close-client-settings"
             } else if panel.configured().is_some() {
                 "reset-default-workspace"
-            } else if permissions::writable(state) {
-                "default-permissions"
             } else {
-                "threads-project-scope"
+                inheritance::Setting::Workspace.key()
             };
             state.settings.workspace.highlighted = None;
             state.settings.workspace.workspace_typeahead.clear();

@@ -18,6 +18,18 @@ const DIRECTORY: &str = "worktreesDirectory";
 const BRANCH_NAMING: &str = "branchNamingMode";
 const PROJECT_OVERRIDES: &str = "projectSettingsOverrides";
 
+pub(super) enum Target {
+    Environment,
+    Project(String),
+    Projects(Vec<String>),
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum ResetWorkspaceOverride {
+    Mode,
+    Permissions,
+}
+
 pub(super) enum Edit {
     Mode(Option<WorkspaceMode>),
     StartFromRemote(Option<bool>),
@@ -151,6 +163,7 @@ pub(crate) struct WorkspaceSetting {
     pub(crate) permission: PermissionSetting,
     pub(crate) worktree_location: Option<WorktreeLocation>,
     pub(crate) branch_naming: BranchNamingSetting,
+    pub(crate) override_order: Vec<String>,
     pub(crate) projects: HashMap<String, WorkspaceMode>,
     pub(crate) writable: bool,
     pub(crate) managed_by: Option<String>,
@@ -224,6 +237,7 @@ impl Subscription {
         }
         current.map(|(configured, settings)| WorkspaceSetting {
             configured,
+            override_order: self.overrides.keys().cloned().collect(),
             worktree_location: self.directory_supported.then(|| WorktreeLocation {
                 path: settings[DIRECTORY].as_str().unwrap_or("").to_owned(),
                 writable: self.can_write && self.directory_managed_by.is_none(),
@@ -288,25 +302,35 @@ impl Subscription {
         })
     }
 
-    fn patch(&self, project_id: Option<&str>, edit: Edit) -> Value {
-        let (key, value) = edit.property(project_id.is_some());
-        let Some(project_id) = project_id else {
-            return json!({key: value});
+    fn patch(&self, target: &Target, edit: Edit) -> Value {
+        let projects = match target {
+            Target::Environment => {
+                let (key, value) = edit.property(false);
+                return json!({key: value});
+            }
+            Target::Project(id) => std::slice::from_ref(id),
+            Target::Projects(ids) => ids.as_slice(),
         };
-        let mut project = self
-            .overrides
-            .get(project_id)
-            .and_then(Value::as_object)
-            .cloned()
-            .unwrap_or_default();
-        if value.is_null() {
-            project.remove(key);
-        } else {
-            project.insert(key.to_owned(), value);
-        }
-        // An empty object drops a genuinely empty entry while the server preserves opaque
-        // fields which the client projection cannot see.
-        json!({PROJECT_OVERRIDES: {project_id: project}})
+        let (key, value) = edit.property(true);
+        let updates = projects
+            .iter()
+            .map(|id| {
+                let mut project = self
+                    .overrides
+                    .get(id)
+                    .and_then(Value::as_object)
+                    .cloned()
+                    .unwrap_or_default();
+                if value.is_null() {
+                    project.remove(key);
+                } else {
+                    project.insert(key.to_owned(), value.clone());
+                }
+                // The server preserves private fields when all public fields have been removed.
+                (id.clone(), Value::Object(project))
+            })
+            .collect::<Map<_, _>>();
+        json!({PROJECT_OVERRIDES: updates})
     }
 }
 
@@ -371,11 +395,33 @@ impl Connection {
         self.update_workspace_setting(project_id, Edit::BranchNaming(mode))
     }
 
+    pub(crate) fn reset_workspace_overrides(
+        &self,
+        projects: Vec<String>,
+        setting: ResetWorkspaceOverride,
+    ) -> Option<Uuid> {
+        if projects.is_empty() {
+            return None;
+        }
+        let edit = match setting {
+            ResetWorkspaceOverride::Mode => Edit::Mode(None),
+            ResetWorkspaceOverride::Permissions => Edit::Permissions(None),
+        };
+        self.send_workspace_setting(Target::Projects(projects), edit)
+    }
+
     fn update_workspace_setting(&self, project_id: Option<String>, edit: Edit) -> Option<Uuid> {
+        self.send_workspace_setting(
+            project_id.map_or(Target::Environment, Target::Project),
+            edit,
+        )
+    }
+
+    fn send_workspace_setting(&self, target: Target, edit: Edit) -> Option<Uuid> {
         let operation = Uuid::new_v4();
         self.commands
             .send(Command::UpdateWorkspaceSetting {
-                project_id,
+                target,
                 edit,
                 operation,
             })
@@ -398,7 +444,7 @@ impl Connection {
 impl Session {
     pub(super) async fn save_workspace_setting(
         &mut self,
-        project_id: Option<String>,
+        target: Target,
         edit: Edit,
         operation: Uuid,
         events: &EventSender<impl Fn()>,
@@ -411,23 +457,26 @@ impl Session {
             Edit::WorktreesDirectory(_) => &settings.directory_managed_by,
             Edit::BranchNaming(_) => &settings.branch_naming_managed_by,
         };
+        let environment = matches!(target, Target::Environment);
+        let missing_project = match &target {
+            Target::Environment => false,
+            Target::Project(id) => self.shell.project(id).is_none(),
+            Target::Projects(ids) => ids.iter().any(|id| self.shell.project(id).is_none()),
+        };
         let denied = if matches!(edit, Edit::WorktreesDirectory(_))
-            && (project_id.is_some() || !settings.directory_supported)
+            && (!environment || !settings.directory_supported)
         {
             Some("Worktree location is unavailable for this scope.".into())
         } else if let Some(organization) = managed_by {
             Some(format!("Managed by {organization}."))
         } else if !settings.can_write {
             Some("This connection lacks permission to change environment settings.".into())
-        } else if project_id
-            .as_deref()
-            .is_some_and(|id| self.shell.project(id).is_none())
-        {
+        } else if missing_project {
             Some("The selected project is unavailable.".into())
         } else if settings.pending.is_some() {
             Some("The setting change is already being saved.".into())
         } else if let Edit::Permissions(mode) = &edit {
-            let mode = mode.or_else(|| project_id.is_none().then_some(RuntimeMode::FullAccess));
+            let mode = mode.or_else(|| environment.then_some(RuntimeMode::FullAccess));
             mode.and_then(|mode| settings.permission_policy.denial(mode))
         } else {
             None
@@ -437,7 +486,7 @@ impl Session {
             return Ok(());
         }
 
-        let patch = settings.patch(project_id.as_deref(), edit);
+        let patch = settings.patch(&target, edit);
         let id = self.allocate_id();
         self.workspace_settings.pending = Some(Pending {
             request: id.clone(),
@@ -563,6 +612,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn clears_the_same_override_in_two_projects_with_one_patch() {
+        let mut subscription = Subscription::new(true);
+        let current = subscription
+            .apply(&[json!({
+                "version": 1,
+                "type": "snapshot",
+                "config": {"settings": {PROJECT_OVERRIDES: {
+                    "second": {KEY: "worktree", "defaultAutoPull": true},
+                    "first": {KEY: "local", PERMISSIONS: "auto"},
+                    "third": {KEY: "worktree"}
+                }}}
+            })])
+            .unwrap();
+        assert_eq!(current.override_order, ["second", "first", "third"]);
+        let target = Target::Projects(vec!["second".into(), "first".into()]);
+        assert_eq!(
+            subscription.patch(&target, Edit::Mode(None)),
+            json!({
+                PROJECT_OVERRIDES: {
+                    "second": {"defaultAutoPull": true},
+                    "first": {PERMISSIONS: "auto"}
+                }
+            })
+        );
+    }
+
+    #[test]
     fn reads_raw_workspace_value_from_snapshots_and_ordered_live_changes() {
         let mut subscription = Subscription::new(true);
         let initial = subscription
@@ -600,15 +676,18 @@ mod tests {
         assert_eq!(current.configured, Some(WorkspaceMode::Worktree));
         assert_eq!(current.projects["a"], WorkspaceMode::Local);
         assert_eq!(
-            subscription.patch(Some("a"), Edit::Mode(Some(WorkspaceMode::Worktree))),
+            subscription.patch(
+                &Target::Project("a".into()),
+                Edit::Mode(Some(WorkspaceMode::Worktree))
+            ),
             json!({PROJECT_OVERRIDES:{"a":{KEY:"worktree","defaultAutoPull":true}}})
         );
         assert_eq!(
-            subscription.patch(Some("a"), Edit::Mode(None)),
+            subscription.patch(&Target::Project("a".into()), Edit::Mode(None)),
             json!({PROJECT_OVERRIDES:{"a":{"defaultAutoPull":true}}})
         );
         assert_eq!(
-            subscription.patch(Some("b"), Edit::Mode(None)),
+            subscription.patch(&Target::Project("b".into()), Edit::Mode(None)),
             json!({PROJECT_OVERRIDES:{"b":{}}})
         );
     }
@@ -630,15 +709,18 @@ mod tests {
         assert!(current.origin.projects["a"]);
         assert!(!current.origin.projects["b"]);
         assert_eq!(
-            subscription.patch(None, Edit::StartFromRemote(None)),
+            subscription.patch(&Target::Environment, Edit::StartFromRemote(None)),
             json!({ORIGIN:true})
         );
         assert_eq!(
-            subscription.patch(Some("a"), Edit::StartFromRemote(None)),
+            subscription.patch(&Target::Project("a".into()), Edit::StartFromRemote(None)),
             json!({PROJECT_OVERRIDES:{"a":{"defaultAutoPull":true}}})
         );
         assert_eq!(
-            subscription.patch(Some("a"), Edit::StartFromRemote(Some(false))),
+            subscription.patch(
+                &Target::Project("a".into()),
+                Edit::StartFromRemote(Some(false))
+            ),
             json!({PROJECT_OVERRIDES:{"a":{ORIGIN:false,"defaultAutoPull":true}}})
         );
         assert!(
@@ -673,13 +755,13 @@ mod tests {
             Some("Example limits threads to Auto-accept edits.".into())
         );
         assert_eq!(
-            state.patch(Some("fixture"), Edit::Permissions(None)),
+            state.patch(&Target::Project("fixture".into()), Edit::Permissions(None)),
             json!({"projectSettingsOverrides":{
                 "fixture":{"defaultAutoPull":true}
             }})
         );
         assert_eq!(
-            state.patch(None, Edit::Permissions(None)),
+            state.patch(&Target::Environment, Edit::Permissions(None)),
             json!({"defaultRuntimeMode":"full-access"})
         );
     }

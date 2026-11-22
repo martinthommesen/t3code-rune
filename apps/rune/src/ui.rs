@@ -1112,7 +1112,7 @@ impl State {
                 {
                     connection.load_draft_preferences(id.clone());
                 }
-                self.set_workspace_configuration(settings);
+                self.set_workspace_configuration(settings.map(|snapshot| *snapshot));
             }
             Event::WorkspaceProjectFile { operation, mode } => {
                 self.set_workspace_project_file(operation, mode);

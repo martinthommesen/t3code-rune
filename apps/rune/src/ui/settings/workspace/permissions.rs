@@ -6,8 +6,8 @@ use crate::connection::PermissionSetting;
 use t3_rune::providers::codex::RuntimeMode;
 
 use super::{
-    CHEVRON, CONTROL, DESCRIPTION, ITEM, Palette, RESET, State, inheritance_marker, keyboard,
-    start_write, surface,
+    CHEVRON, CONTROL, DESCRIPTION, ITEM, Palette, RESET, State, inheritance, keyboard, start_write,
+    surface,
 };
 
 const TRIGGER: &str = "default-permissions";
@@ -170,50 +170,34 @@ pub(super) fn setting_row(state: &State, palette: Palette, width: f32) -> El {
     let mut title = row()
         .items_center()
         .gap(6.0)
-        .child(text("Permissions").font(CONTROL).color(palette.ink));
-    if let Some(current) = &current {
-        if project_scope {
-            let selected = current.project_mode.is_some();
-            let inherited = if selected {
-                "Overridden for this project".to_owned()
+        .child(text("Permissions").font(CONTROL).color(palette.ink))
+        .child(inheritance::marker(
+            state,
+            inheritance::Setting::Permissions,
+            palette,
+        ));
+    if let Some(current) = &current
+        && writable
+        && current.may_reset(project_scope)
+    {
+        let reset = super::super::icon_button(
+            "reset-default-permissions",
+            if project_scope {
+                "Reset Permissions to default"
             } else {
-                state.workspace.as_ref().map_or_else(
-                    || "Inherited from environment".to_owned(),
-                    |workspace| format!("Inherited from {}", workspace.label),
-                )
-            };
-            let marker = Palette {
-                muted: if selected {
-                    palette.accent
-                } else {
-                    palette.muted
-                },
-                ..palette
-            };
-            title = title.child(inheritance_marker(inherited, marker));
+                "Reset default permissions to default"
+            },
+            &RESET,
+            12.0,
+            20.0,
+            palette,
+            |state, tx| choose(state, None, tx),
+        );
+        title = title.child(if project_scope {
+            reset.help("Reset to inherited value")
         } else {
-            title = title.child(el().size(20.0, 20.0).a11y_hidden());
-        }
-        if writable && current.may_reset(project_scope) {
-            let reset = super::super::icon_button(
-                "reset-default-permissions",
-                if project_scope {
-                    "Reset Permissions to default"
-                } else {
-                    "Reset default permissions to default"
-                },
-                &RESET,
-                12.0,
-                20.0,
-                palette,
-                |state, tx| choose(state, None, tx),
-            );
-            title = title.child(if project_scope {
-                reset.help("Reset to inherited value")
-            } else {
-                reset
-            });
-        }
+            reset
+        });
     }
     let content = col().grow(1.0).min_w(0.0).gap(4.0).child(title).child(
         text(if project_scope {
@@ -232,6 +216,7 @@ pub(super) fn setting_row(state: &State, palette: Palette, width: f32) -> El {
     };
     layout
         .key("new-threads-permissions")
+        .hover_group()
         .w_full()
         .px(16.0)
         .py(12.0)
@@ -328,8 +313,7 @@ fn open(state: &mut State, tx: &mut Tx) {
         return;
     }
     let mode = current.mode();
-    state.settings.workspace.highlighted = None;
-    state.settings.workspace.permission_typeahead.clear();
+    state.settings.workspace.close_popups();
     state.settings.workspace.permission_highlighted = Some(mode);
     tx.focus_when_shown(LIST, tx.focus_visible());
 }
@@ -358,13 +342,19 @@ fn choose(state: &mut State, mode: Option<RuntimeMode>, tx: &mut Tx) {
     start_write(&mut state.settings.workspace, operation);
 }
 
-pub(super) fn writable(state: &State) -> bool {
-    selection(state).is_some_and(|current| current.writable)
+pub(super) fn resettable(state: &State) -> bool {
+    selection(state).is_some_and(|current| {
+        current.writable && current.may_reset(state.settings.workspace.project_selected())
+    })
 }
 
 fn trigger_input(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
-    if matches!(event.key, Key::Up | Key::Down) {
-        open(state, tx);
+    if matches!(event.key, Key::Up | Key::Down)
+        || event.key == Key::Enter && event.mods == rune::Mods::default()
+    {
+        if !tx.key_repeat() {
+            open(state, tx);
+        }
         return true;
     }
     if event.key == Key::Tab {
@@ -419,21 +409,12 @@ fn navigate(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
     match event.key {
         Key::Escape => close(state, tx),
         Key::Tab => {
-            let panel = &state.settings.workspace;
-            let target = if event.mods.shift {
-                if selection(state)
-                    .is_some_and(|current| current.may_reset(panel.project_selected()))
-                {
-                    "reset-default-permissions"
-                } else {
-                    "threads-project-scope"
-                }
-            } else if !panel.writable(state) {
-                "close-client-settings"
-            } else if panel.configured().is_some() {
-                "reset-default-workspace"
+            let target = if !event.mods.shift {
+                inheritance::Setting::Workspace.key()
+            } else if resettable(state) {
+                "reset-default-permissions"
             } else {
-                "default-workspace"
+                inheritance::Setting::Permissions.key()
             };
             state.settings.workspace.permission_highlighted = None;
             state.settings.workspace.permission_typeahead.clear();

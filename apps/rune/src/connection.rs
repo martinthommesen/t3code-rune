@@ -75,7 +75,7 @@ pub(crate) use terminal::{
 };
 pub(crate) use workspace_retry::WorkspaceRetry;
 pub(crate) use workspace_settings::{
-    BranchNamingMode, PermissionSetting, WorkspaceSetting, WorktreeLocation,
+    BranchNamingMode, PermissionSetting, ResetWorkspaceOverride, WorkspaceSetting, WorktreeLocation,
 };
 pub(crate) use worktree_setup::WorktreeSetup;
 
@@ -155,7 +155,7 @@ pub(crate) enum Event {
     },
     Providers(ProviderCatalog),
     ProviderCatalogUnavailable,
-    WorkspaceConfiguration(Option<WorkspaceSetting>),
+    WorkspaceConfiguration(Option<Box<WorkspaceSetting>>),
     WorkspaceProjectFile {
         operation: Uuid,
         mode: Option<WorkspaceMode>,
@@ -317,7 +317,7 @@ enum Command {
         operation: Uuid,
     },
     UpdateWorkspaceSetting {
-        project_id: Option<String>,
+        target: workspace_settings::Target,
         edit: workspace_settings::Edit,
         operation: Uuid,
     },
@@ -1771,11 +1771,11 @@ impl Session {
                     .await?;
             }
             Command::UpdateWorkspaceSetting {
-                project_id,
+                target,
                 edit,
                 operation,
             } => {
-                self.save_workspace_setting(project_id, edit, operation, events)
+                self.save_workspace_setting(target, edit, operation, events)
                     .await?;
             }
             Command::EditKeybinding { edit, operation } => {
@@ -2543,7 +2543,7 @@ impl Session {
                         });
                     }
                     if let Some(settings) = self.workspace_settings.apply(&values) {
-                        events.send(Event::WorkspaceConfiguration(Some(settings)));
+                        events.send(Event::WorkspaceConfiguration(Some(Box::new(settings))));
                     }
                     if let Some(bindings) =
                         Keybindings::config_events(&values, self.keybindings_writable)
