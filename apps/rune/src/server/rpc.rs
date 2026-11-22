@@ -216,6 +216,58 @@ pub(super) async fn serve(
                 }
             }
             ClientMessage::Request { id, tag, payload }
+                if matches!(
+                    tag.as_str(),
+                    "server.upsertKeybinding" | "server.removeKeybinding"
+                ) && local.is_some() =>
+            {
+                match server_config::KeybindingEdit::decode(
+                    &payload,
+                    tag == "server.removeKeybinding",
+                ) {
+                    Err(message) => Ok(defect(id, message)),
+                    Ok(_) if !permissions.settings_write => Ok(failure(
+                        id,
+                        json!({
+                            "_tag": "EnvironmentAuthorizationError",
+                            "requiredScope": "orchestration:operate",
+                            "requiredPermission": "settings:write",
+                            "message": "The authenticated token is missing required scope: settings:write."
+                        }),
+                    )),
+                    Ok(_) if operation_requests.contains_key(&id) => Ok(failure(
+                        id,
+                        RpcError::InvalidRequest {
+                            message: "Request ID is already in use.",
+                        },
+                    )),
+                    Ok(edit) => {
+                        let local = Arc::clone(local.as_ref().expect("local operations"));
+                        let request_id = id.clone();
+                        let task = operations.spawn(async move {
+                            let path = local.settings.path().with_file_name("keybindings.json");
+                            let result = tokio::task::spawn_blocking(move || {
+                                local.config.keybindings.update(&path, edit)
+                            })
+                            .await;
+                            let response = match result {
+                                Ok(Ok(value)) => success(id.clone(), value),
+                                Ok(Err(error)) => failure(id.clone(), error),
+                                Err(_) => failure(
+                                    id.clone(),
+                                    RpcError::InvalidRequest {
+                                        message: "Could not change the environment keybindings.",
+                                    },
+                                ),
+                            };
+                            (id, response)
+                        });
+                        operation_requests.insert(request_id, task);
+                        continue;
+                    }
+                }
+            }
+            ClientMessage::Request { id, tag, payload }
                 if tag == "projects.searchEntries" && local.is_some() =>
             {
                 use super::workspace_search::Input;

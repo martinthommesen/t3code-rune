@@ -9,6 +9,8 @@ use super::{Environment, environment_description, turn_commands::timestamp};
 mod keybindings;
 mod providers;
 
+pub(super) use keybindings::edit::Edit as KeybindingEdit;
+
 const FLAGS: &[&str] = &[
     "environmentThemes",
     "usageLimitSources",
@@ -22,6 +24,7 @@ const FLAGS: &[&str] = &[
 pub(super) struct Host {
     cwd: PathBuf,
     probe: Mutex<()>,
+    pub(super) keybindings: keybindings::edit::Edits,
 }
 
 impl Host {
@@ -29,6 +32,7 @@ impl Host {
         Self {
             cwd,
             probe: Mutex::new(()),
+            keybindings: keybindings::edit::Edits::default(),
         }
     }
 }

@@ -5,7 +5,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use serde_json::{Map, Value};
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::mpsc::UnboundedReceiver;
+
+use super::config_updates::Subscribers;
 
 mod client;
 mod disk;
@@ -20,6 +22,10 @@ pub(super) use providers::{ClaudeInstance, CodexInstance, CodexInstanceError, En
 
 const DEFAULTS: &str = include_str!("settings/defaults.json");
 
+pub(super) fn write_document(path: &std::path::Path, contents: &[u8]) -> io::Result<()> {
+    disk::write(path, contents)
+}
+
 #[derive(Clone)]
 pub(super) struct SettingsFile {
     path: PathBuf,
@@ -29,7 +35,7 @@ pub(super) struct SettingsFile {
 #[derive(Default)]
 struct Changes {
     writes: Mutex<()>,
-    subscribers: Mutex<Vec<UnboundedSender<Arc<Value>>>>,
+    subscribers: Subscribers,
 }
 
 pub(super) struct SettingsSnapshot {
@@ -76,15 +82,7 @@ impl SettingsFile {
     }
 
     pub(super) fn subscribe_changes(&self) -> UnboundedReceiver<Arc<Value>> {
-        let (send, receiver) = unbounded_channel();
-        let mut subscribers = self
-            .shared
-            .subscribers
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        subscribers.retain(|sender| !sender.is_closed());
-        subscribers.push(send);
-        receiver
+        self.shared.subscribers.subscribe()
     }
 
     pub(super) fn update(&self, patch: Patch) -> Result<Value, Value> {
@@ -106,12 +104,7 @@ impl SettingsFile {
         disk::write(&self.path, contents.as_bytes())
             .map_err(|error| self.error("write-file", &error.to_string()))?;
         let settings = next.for_client();
-        let changed = Arc::new(settings.clone());
-        self.shared
-            .subscribers
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .retain(|subscriber| subscriber.send(Arc::clone(&changed)).is_ok());
+        self.shared.subscribers.publish(&settings);
         Ok(settings)
     }
 

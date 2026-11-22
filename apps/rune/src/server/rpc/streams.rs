@@ -97,7 +97,8 @@ impl Streams {
             .local
             .as_ref()
             .expect("local config subscription");
-        let mut changes = local.settings.subscribe_changes();
+        let mut settings_changes = local.settings.subscribe_changes();
+        let mut keybinding_changes = local.config.keybindings.subscribe();
         let worker = tokio::spawn(async move {
             let (frame, done) = match server_config::snapshot(&environment).await {
                 Ok(snapshot) => (chunk(request.clone(), snapshot), false),
@@ -116,13 +117,17 @@ impl Streams {
             {
                 return;
             }
-            while let Some(settings) = changes.recv().await {
-                let frame = chunk(
-                    request.clone(),
-                    json!({
-                        "version":1, "type":"settingsUpdated", "payload": {"settings": &*settings},
+            loop {
+                let event = tokio::select! {
+                    Some(settings) = settings_changes.recv() => json!({
+                        "version": 1, "type": "settingsUpdated", "payload": {"settings": &*settings},
                     }),
-                );
+                    Some(bindings) = keybinding_changes.recv() => json!({
+                        "version": 1, "type": "keybindingsUpdated", "payload": &*bindings,
+                    }),
+                    else => break,
+                };
+                let frame = chunk(request.clone(), event);
                 if send
                     .send(Update {
                         id: request.clone(),

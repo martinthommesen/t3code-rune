@@ -6,6 +6,8 @@ use std::sync::OnceLock;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+pub(in crate::server) mod edit;
+
 const MAX_RULES: usize = 256;
 const MAX_WHEN_DEPTH: usize = 64;
 const INVALID_RULE: &str = "SchemaError: Invalid keybinding rule";
@@ -51,6 +53,10 @@ fn stock() -> &'static Asset {
 }
 
 pub(super) fn initial(path: &Path) -> Result<(Value, Value), Value> {
+    resolved(path, true)
+}
+
+fn resolved(path: &Path, sync_defaults: bool) -> Result<(Value, Value), Value> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(defaults(vec![])),
@@ -81,7 +87,7 @@ pub(super) fn initial(path: &Path) -> Result<(Value, Value), Value> {
         }
     }
 
-    if issues.is_empty() {
+    if sync_defaults && issues.is_empty() {
         backfill(path, &mut custom);
     }
     let custom = tail(custom.into_iter().map(|rule| rule.resolved).collect());
@@ -171,6 +177,19 @@ fn background_rule(key: &str, when: &str) -> Rule {
 }
 
 fn compile(raw: &Value) -> Result<Rule, String> {
+    let (key, command, when) = decode_fields(raw)?;
+    let shortcut = shortcut(key).ok_or(INVALID_RULE)?;
+    let mut resolved = json!({"command": command, "shortcut": shortcut});
+    if let Some(when) = when {
+        resolved["whenAst"] = expression(when).ok_or(INVALID_RULE)?;
+    }
+    Ok(Rule {
+        resolved,
+        when: when.map(str::to_owned),
+    })
+}
+
+fn decode_fields(raw: &Value) -> Result<(&str, &str, Option<&str>), String> {
     let fields = raw.as_object().ok_or("SchemaError: Expected object")?;
     let key = string_field(fields.get("key"), "key", 64, false)?;
     let command = fields
@@ -184,15 +203,7 @@ fn compile(raw: &Value) -> Result<Rule, String> {
         .get("when")
         .map(|value| string_field(Some(value), "when", 256, true))
         .transpose()?;
-    let shortcut = shortcut(key).ok_or(INVALID_RULE)?;
-    let mut resolved = json!({"command": command, "shortcut": shortcut});
-    if let Some(when) = when {
-        resolved["whenAst"] = expression(when).ok_or(INVALID_RULE)?;
-    }
-    Ok(Rule {
-        resolved,
-        when: when.map(str::to_owned),
-    })
+    Ok((key, command, when))
 }
 
 fn valid_command(command: &str) -> bool {
