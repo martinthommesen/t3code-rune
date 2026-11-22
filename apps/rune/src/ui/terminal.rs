@@ -1,3 +1,11 @@
+use std::time::Instant;
+
+use alacritty_terminal::{
+    grid::Dimensions,
+    index::{Column, Line, Point},
+    term::{TermMode, cell::Flags, color::Colors},
+    vte::ansi::{Color as TerminalColor, CursorShape, NamedColor},
+};
 use rune::{Color, Drag, El, Family, Key, KeyEvent, Phase, Span, TextStyle, Tx, col, el, text};
 
 use crate::connection::{
@@ -7,10 +15,11 @@ use crate::connection::{
 use super::{Palette, ProjectSelection, ProjectView, SMALL, State, conversation::Layout};
 
 mod control;
+mod history;
 mod tabs;
 mod view;
 
-use control::TerminalControl;
+use control::TerminalScreen;
 use tabs::SplitDirection;
 pub(super) use tabs::TabsByThread;
 
@@ -35,7 +44,7 @@ pub(super) struct Pane {
     pub(super) attachment: u64,
     pub(super) thread_id: String,
     terminal_id: String,
-    screen: vt100::Parser<TerminalControl>,
+    screen: TerminalScreen,
     requested_grid: (u16, u16),
     status: TerminalStatus,
     label: String,
@@ -45,6 +54,8 @@ pub(super) struct Pane {
     received_snapshot: bool,
     close_prompt: Option<ClosePrompt>,
     resize_preview: Option<f32>,
+    wheel_remainder: f32,
+    viewport_height: f32,
 }
 
 struct ClosePrompt {
@@ -58,12 +69,7 @@ impl Pane {
             attachment,
             thread_id,
             terminal_id,
-            screen: vt100::Parser::new_with_callbacks(
-                DEFAULT_ROWS,
-                DEFAULT_COLS,
-                2048,
-                TerminalControl::default(),
-            ),
+            screen: TerminalScreen::new(DEFAULT_ROWS, DEFAULT_COLS),
             requested_grid: (DEFAULT_COLS, DEFAULT_ROWS),
             status: TerminalStatus::Starting,
             label: "Shell".into(),
@@ -73,6 +79,8 @@ impl Pane {
             received_snapshot: false,
             close_prompt: None,
             resize_preview: None,
+            wheel_remainder: 0.0,
+            viewport_height: 0.0,
         }
     }
 
@@ -91,9 +99,7 @@ impl Pane {
                 self.label = label;
                 self.has_running_subprocess = has_running_subprocess;
                 if let (Some(rows), Some(cols)) = (rows, cols) {
-                    self.screen
-                        .screen_mut()
-                        .set_size(rows.clamp(1, 64), cols.clamp(1, 500));
+                    self.screen.resize(rows, cols);
                 }
             }
             TerminalUpdate::Exited {
@@ -122,14 +128,11 @@ impl Pane {
     fn snapshot(&mut self, snapshot: TerminalSnapshot) {
         self.received_snapshot = true;
         let (cols, rows) = self.requested_grid;
-        self.screen = vt100::Parser::new_with_callbacks(
-            snapshot.rows.unwrap_or(rows).clamp(1, 64),
-            snapshot.cols.unwrap_or(cols).clamp(1, 500),
-            2048,
-            TerminalControl::default(),
-        );
+        self.screen =
+            TerminalScreen::new(snapshot.rows.unwrap_or(rows), snapshot.cols.unwrap_or(cols));
+        self.wheel_remainder = 0.0;
         self.screen.process(snapshot.history.as_bytes());
-        self.screen.callbacks_mut().take_replies();
+        self.screen.take_replies();
         self.status = snapshot.status;
         self.label = snapshot.label;
         self.message = snapshot.error.or_else(|| {
@@ -173,7 +176,7 @@ impl State {
         {
             if std::mem::replace(&mut terminal.focused, focused) != focused
                 && terminal.status == TerminalStatus::Running
-                && terminal.screen.callbacks().focus_reporting
+                && terminal.screen.term.mode().contains(TermMode::FOCUS_IN_OUT)
                 && can_report
                 && let Some(connection) = &self.connection
             {
@@ -199,12 +202,35 @@ impl State {
             return;
         };
         terminal.apply(update);
-        let replies = terminal.screen.callbacks_mut().take_replies();
+        let replies = terminal.screen.take_replies();
         if !replies.is_empty()
             && let Some(connection) = &self.connection
         {
             connection.write_terminal(attachment, replies, false, true);
         }
+    }
+
+    pub(super) fn poll_terminal_output(&mut self, tx: &mut Tx) -> bool {
+        let now = Instant::now();
+        let mut changed = false;
+        for pane in self.terminal.iter_mut().chain(&mut self.terminal_peers) {
+            let Some(deadline) = pane.screen.synchronized_until() else {
+                continue;
+            };
+            if deadline > now {
+                tx.wake_after(deadline - now);
+                continue;
+            }
+            pane.screen.finish_synchronized_update();
+            let replies = pane.screen.take_replies();
+            if !replies.is_empty()
+                && let Some(connection) = &self.connection
+            {
+                connection.write_terminal(pane.attachment, replies, false, true);
+            }
+            changed = true;
+        }
+        changed
     }
 
     pub(super) fn fail_terminal_attachment(&mut self, attachment: u64, message: String) {
@@ -425,7 +451,7 @@ impl State {
         if let Some(connection) = &self.connection {
             if terminal.focused
                 && terminal.status == TerminalStatus::Running
-                && terminal.screen.callbacks().focus_reporting
+                && terminal.screen.term.mode().contains(TermMode::FOCUS_IN_OUT)
                 && self
                     .workspace
                     .as_ref()
@@ -669,6 +695,7 @@ impl State {
         let Some(terminal) = self.terminal_attachment_mut(attachment) else {
             return;
         };
+        terminal.viewport_height = height;
         let content_width = width - 2.0 * CELL_PADDING;
         let content_height = height - 2.0 * CELL_PADDING;
         let grid = (
@@ -684,13 +711,20 @@ impl State {
     }
 
     fn send_terminal_input(&self, input: String) -> bool {
-        let Some(terminal) = self
-            .terminal
+        self.terminal
             .as_ref()
-            .filter(|terminal| terminal.status == TerminalStatus::Running)
-        else {
+            .is_some_and(|pane| self.write_terminal_input_at(pane.attachment, input, false))
+    }
+
+    fn write_terminal_input_at(&self, attachment: u64, input: String, binary: bool) -> bool {
+        if !self
+            .terminal
+            .iter()
+            .chain(&self.terminal_peers)
+            .any(|pane| pane.attachment == attachment && pane.status == TerminalStatus::Running)
+        {
             return false;
-        };
+        }
         let Some(connection) = &self.connection else {
             return false;
         };
@@ -701,7 +735,7 @@ impl State {
         {
             return false;
         }
-        connection.write_terminal(terminal.attachment, input, false, false);
+        connection.write_terminal(attachment, input, binary, false);
         true
     }
 
@@ -709,7 +743,12 @@ impl State {
         if tx.focused() == Some(INPUT_KEY)
             && let Some(terminal) = &self.terminal
         {
-            let data = if terminal.screen.screen().bracketed_paste() {
+            let data = if terminal
+                .screen
+                .term
+                .mode()
+                .contains(TermMode::BRACKETED_PASTE)
+            {
                 format!("\x1b[200~{text}\x1b[201~")
             } else {
                 text.to_owned()
@@ -762,6 +801,7 @@ impl State {
             Some("terminal.new") => self.new_terminal_tab(tx),
             Some("terminal.split") => self.split_terminal(SplitDirection::Horizontal, tx),
             Some("terminal.splitVertical") => self.split_terminal(SplitDirection::Vertical, tx),
+            Some("sidebar.toggle") => return false,
             Some("terminal.close") => {
                 if !tx.key_repeat() {
                     self.request_selected_terminal_close(tx);
@@ -771,7 +811,12 @@ impl State {
                 let Some(terminal) = &self.terminal else {
                     return false;
                 };
-                let application = terminal.screen.screen().application_cursor();
+                let application = terminal.screen.term.mode().contains(TermMode::APP_CURSOR);
+                if let Some(action) = history::input_key(event)
+                    && self.scroll_history(terminal.attachment, action)
+                {
+                    return true;
+                }
                 return key_input(event, application)
                     .is_some_and(|input| self.send_terminal_input(input));
             }
@@ -838,7 +883,8 @@ fn viewport(terminal: &Pane, active: bool, palette: Palette) -> El {
     } else if terminal.status == TerminalStatus::Starting {
         output = output.child(text("Opening terminal…").font(SMALL).color(palette.muted));
     }
-    el().key(key)
+    let mut viewport = el()
+        .key(key)
         .role("group")
         .label("Terminal input")
         .w_full()
@@ -851,66 +897,80 @@ fn viewport(terminal: &Pane, active: bool, palette: Palette) -> El {
         })
         .focusable(active)
         .on_key(State::terminal_key)
+        .on_wheel(move |state: &mut State, event, _| state.terminal_wheel(attachment, event))
         .on_layout(move |state: &mut State, rect| state.resize_terminal_pane(attachment, rect))
-        .child(output)
+        .child(output);
+    if let Some(scrollbar) = history::scrollbar(terminal, palette) {
+        viewport = viewport.child(scrollbar);
+    }
+    viewport
 }
 
 fn screen_text(terminal: &Pane, palette: Palette) -> (String, Vec<Span>) {
-    let screen = terminal.screen.screen();
-    let (rows, cols) = screen.size();
+    let term = &terminal.screen.term;
+    let grid = term.grid();
+    let content = term.renderable_content();
+    let cursor = (terminal.status == TerminalStatus::Running
+        && content.display_offset == 0
+        && content.cursor.shape != CursorShape::Hidden)
+        .then_some(content.cursor.point);
+    let rows = grid.screen_lines();
+    let cols = grid.columns();
     let mut contents = String::new();
     let mut spans = Vec::new();
-    let cursor = (terminal.status == TerminalStatus::Running && !screen.hide_cursor())
-        .then(|| screen.cursor_position());
     for row in 0..rows {
+        let line = Line(row as i32 - content.display_offset as i32);
         let end = (0..cols).rev().find(|&col| {
-            cursor == Some((row, col))
-                || screen.cell(row, col).is_some_and(|cell| {
-                    cell.has_contents() || cell.bgcolor() != vt100::Color::Default || cell.inverse()
-                })
+            let cell = &grid[line][Column(col)];
+            cursor == Some(Point::new(line, Column(col)))
+                || cell.c != ' '
+                || cell.bg != TerminalColor::Named(NamedColor::Background)
+                || cell.flags.contains(Flags::INVERSE)
         });
         if let Some(end) = end {
             for col in 0..=end {
-                let Some(cell) = screen
-                    .cell(row, col)
-                    .filter(|cell| !cell.is_wide_continuation())
-                else {
+                let cell = &grid[line][Column(col)];
+                let flags = cell.flags;
+                if flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
                     continue;
-                };
+                }
                 let start = contents.len();
-                contents.push_str(if cell.has_contents() {
-                    cell.contents()
+                if flags.contains(Flags::HIDDEN) {
+                    contents.push(' ');
+                    if flags.contains(Flags::WIDE_CHAR) {
+                        contents.push(' ');
+                    }
                 } else {
-                    " "
-                });
-                let invert = cell.inverse() ^ (cursor == Some((row, col)));
-                let mut fg = color(cell.fgcolor(), palette.ink);
-                let mut bg = color(cell.bgcolor(), palette.canvas);
+                    contents.push(cell.c);
+                    contents.extend(cell.zerowidth().unwrap_or_default());
+                }
+                let invert = flags.contains(Flags::INVERSE)
+                    ^ (cursor == Some(Point::new(line, Column(col))));
+                let mut fg = color(cell.fg, content.colors, palette.ink);
+                let mut bg = color(cell.bg, content.colors, palette.canvas);
                 if invert {
                     std::mem::swap(&mut fg, &mut bg);
                 }
                 if fg != palette.ink
                     || bg != palette.canvas
-                    || cell.bold()
-                    || cell.dim()
-                    || cell.italic()
-                    || cell.underline()
+                    || flags.intersects(Flags::BOLD_ITALIC | Flags::DIM | Flags::ALL_UNDERLINES)
                 {
-                    let mut span = Span::new(start, contents.len()).color(if cell.dim() {
-                        fg.mix(bg, 0.4)
-                    } else {
-                        fg
-                    });
+                    let mut span =
+                        Span::new(start, contents.len()).color(if flags.contains(Flags::DIM) {
+                            fg.mix(bg, 0.4)
+                        } else {
+                            fg
+                        });
                     if bg != palette.canvas {
                         span = span.bg(bg, 0.0);
                     }
-                    if cell.bold() {
+                    if flags.contains(Flags::BOLD) {
                         span = span.bold();
                     }
-                    if cell.italic() {
+                    if flags.contains(Flags::ITALIC) {
                         span = span.italic();
                     }
-                    if cell.underline() {
+                    if flags.intersects(Flags::ALL_UNDERLINES) {
                         span = span.underline(fg);
                     }
                     spans.push(span);
@@ -924,8 +984,8 @@ fn screen_text(terminal: &Pane, palette: Palette) -> (String, Vec<Span>) {
     (contents, spans)
 }
 
-fn color(value: vt100::Color, default: Color) -> Color {
-    const BASE: [(u8, u8, u8); 16] = [
+fn color(value: TerminalColor, colors: &Colors, default: Color) -> Color {
+    const BASE: [(usize, usize, usize); 16] = [
         (0, 0, 0),
         (205, 0, 0),
         (0, 128, 0),
@@ -943,20 +1003,31 @@ fn color(value: vt100::Color, default: Color) -> Color {
         (0, 255, 255),
         (255, 255, 255),
     ];
-    let (r, g, b) = match value {
-        vt100::Color::Default => return default,
-        vt100::Color::Rgb(r, g, b) => (r, g, b),
-        vt100::Color::Idx(index @ 0..=15) => BASE[index as usize],
-        vt100::Color::Idx(index @ 16..=231) => {
+    let index = match value {
+        TerminalColor::Named(name) => name as usize,
+        TerminalColor::Indexed(index) => usize::from(index),
+        TerminalColor::Spec(rgb) => return terminal_rgb(rgb.r, rgb.g, rgb.b),
+    };
+    if let Some(rgb) = colors[index] {
+        return terminal_rgb(rgb.r, rgb.g, rgb.b);
+    }
+    let (r, g, b) = match index {
+        0..=15 => BASE[index],
+        16..=231 => {
             let n = index - 16;
             let level = |n| if n == 0 { 0 } else { 55 + n * 40 };
             (level(n / 36), level(n / 6 % 6), level(n % 6))
         }
-        vt100::Color::Idx(index) => {
+        232..=255 => {
             let grey = 8 + (index - 232) * 10;
             (grey, grey, grey)
         }
+        _ => return default,
     };
+    terminal_rgb(r as u8, g as u8, b as u8)
+}
+
+fn terminal_rgb(r: u8, g: u8, b: u8) -> Color {
     let decode = |value| rune::color::srgb_decode(f32::from(value) / 255.0);
     Color {
         r: decode(r),

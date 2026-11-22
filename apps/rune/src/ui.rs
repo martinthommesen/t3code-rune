@@ -930,6 +930,7 @@ impl State {
             self.apply_event(event, tx);
             changed = true;
         }
+        changed |= self.poll_terminal_output(tx);
         changed |= self.restore_terminal_for_selection(tx);
         if let Some(workspace) = &mut self.workspace {
             changed |= workspace.favicons.poll();
