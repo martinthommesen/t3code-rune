@@ -49,7 +49,7 @@ pub(crate) struct ReasoningLevels {
 }
 
 impl ProviderModel {
-    fn reasoning_descriptor(&self) -> Option<&Value> {
+    pub(super) fn reasoning_descriptor(&self) -> Option<&Value> {
         self.capabilities.as_ref()?["optionDescriptors"]
             .as_array()?
             .iter()

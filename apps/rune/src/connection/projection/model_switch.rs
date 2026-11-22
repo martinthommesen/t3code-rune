@@ -17,8 +17,14 @@ impl ModelSwitch {
 
     pub(crate) fn label(&self, catalog: Option<&ProviderCatalog>) -> Option<String> {
         let provider = catalog.and_then(|catalog| catalog.get("codex"));
-        let from = provider.and_then(|provider| provider.model(self.from.model()));
-        let to = provider.and_then(|provider| provider.model(self.to.model()));
+        let lookup = |selection: &ModelSelection| {
+            provider?
+                .models()
+                .iter()
+                .find(|model| model.slug == selection.model())
+        };
+        let from = lookup(&self.from);
+        let to = lookup(&self.to);
         let model_changed = self.from.model() != self.to.model();
         let effort = resolved_effort(&self.from, from)
             .zip(resolved_effort(&self.to, to))
@@ -51,7 +57,17 @@ fn resolved_effort<'a>(
     model: Option<&'a ProviderModel>,
 ) -> Option<(&'a str, &'a str)> {
     if let Some(effort) = selection.reasoning_effort() {
-        Some((effort.as_str(), effort.label()))
+        let value = effort.as_str();
+        let label = if let Some(model) = model {
+            model.reasoning_descriptor()?;
+            model
+                .reported_reasoning_options()
+                .find_map(|(id, label)| (id == value).then_some(label))
+                .unwrap_or(value)
+        } else {
+            value
+        };
+        Some((value, label))
     } else {
         model?.default_reasoning()
     }
@@ -75,17 +91,30 @@ mod tests {
             "from":{"instanceId":"codex","model":"gpt-5.4","options":[{"id":"reasoningEffort","value":"high"}]},
             "to":{"instanceId":"codex","model":"gpt-5.6-sol"},
         })).unwrap();
-        let catalog: ProviderCatalog = serde_json::from_value(json!({
-            "codex":{"instanceId":"codex","driver":"codex","models":[
-                {"slug":"gpt-5.4","name":"GPT-5.4"},
+        let mut provider_status = json!({
+            "codex":{"instanceId":"codex","driver":"codex","enabled":false,"models":[
+                {"slug":"gpt-5.4","name":"GPT-5.4","capabilities":{"optionDescriptors":[
+                    {"id":"reasoningEffort","type":"select","currentValue":"medium","options":[
+                        {"id":"low","label":"Low"},{"id":"medium","label":"Medium","isDefault":true},
+                        {"id":"high","label":"High"},{"id":"xhigh","label":"Extra High"}
+                    ]}
+                ]}},
                 {"slug":"gpt-5.6-sol","name":"GPT-5.6-Sol","capabilities":{"optionDescriptors":[
                     {"id":"reasoningEffort","type":"select","currentValue":"low","options":[{"id":"low","label":"Low"}]}
                 ]}},
             ]},
-        })).unwrap();
+        });
+        let catalog: ProviderCatalog = serde_json::from_value(provider_status.clone()).unwrap();
+        assert!(!catalog["codex"].selectable(false));
         assert_eq!(
             switch.label(Some(&catalog)).as_deref(),
             Some("GPT-5.4 High → 5.6 Sol Low")
+        );
+        provider_status["codex"]["models"][0]["capabilities"] = serde_json::Value::Null;
+        let catalog: ProviderCatalog = serde_json::from_value(provider_status).unwrap();
+        assert_eq!(
+            switch.label(Some(&catalog)).as_deref(),
+            Some("GPT-5.4 → 5.6 Sol")
         );
     }
 }

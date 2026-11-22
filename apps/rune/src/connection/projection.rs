@@ -949,7 +949,7 @@ mod tests {
                 .unwrap()
                 .label(None)
                 .as_deref(),
-            Some("High → Low")
+            Some("high → low")
         );
         assert!(
             conversation
