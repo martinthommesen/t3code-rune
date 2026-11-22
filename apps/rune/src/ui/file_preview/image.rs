@@ -55,6 +55,7 @@ enum Contents {
     Decoding(Raster),
     Ready(Raster),
     Failed,
+    Invalid,
 }
 
 #[derive(Clone)]
@@ -99,7 +100,7 @@ impl PreviewImage {
         self.contents = match (outcome, cache) {
             (AssetOutcome::Image(Source::Png(source)), Some(cache)) => {
                 let Some(clipboard) = ClipboardImage::from_png(source.clone()) else {
-                    self.contents = Contents::Failed;
+                    self.contents = Contents::Invalid;
                     return;
                 };
                 Contents::Decoding(Raster {
@@ -122,6 +123,7 @@ impl PreviewImage {
                     clipboard: animation.clipboard,
                 })
             }
+            (AssetOutcome::InvalidImage, _) => Contents::Invalid,
             _ => Contents::Failed,
         }
     }
@@ -165,7 +167,7 @@ impl State {
         image.contents = if raster.picture.size().is_some() {
             Contents::Ready(raster.clone())
         } else {
-            Contents::Failed
+            Contents::Invalid
         };
         true
     }
@@ -232,11 +234,17 @@ pub(super) fn view(
         .min_h(0.0);
     let Some(raster) = image.ready() else {
         return surface.center().child(match image.contents {
-            Contents::Failed => text("Unable to load workspace image.")
+            Contents::Failed | Contents::Invalid => {
+                text(if matches!(image.contents, Contents::Invalid) {
+                    "Unable to load image."
+                } else {
+                    "Unable to load workspace image."
+                })
                 .role("alert")
                 .font(ERROR)
                 .color(colors.error)
-                .align(Align::Center),
+                .align(Align::Center)
+            }
             _ => text("Loading image…")
                 .role("status")
                 .font(CRUMB)

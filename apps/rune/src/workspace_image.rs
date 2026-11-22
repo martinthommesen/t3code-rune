@@ -30,6 +30,8 @@ pub(crate) fn mime_type(path: &str) -> Option<&'static str> {
         Some("image/png")
     } else if extension.eq_ignore_ascii_case("jpeg") || extension.eq_ignore_ascii_case("jpg") {
         Some("image/jpeg")
+    } else if extension.eq_ignore_ascii_case("bmp") {
+        Some("image/bmp")
     } else if extension.eq_ignore_ascii_case("gif") {
         Some("image/gif")
     } else if extension.eq_ignore_ascii_case("webp") {
@@ -49,6 +51,15 @@ impl Source {
                 .await
                 .ok()?
                 .map(Self::Decoded);
+        }
+        if bytes.starts_with(b"BM") {
+            return tokio::task::spawn_blocking(move || {
+                let decoder = image::codecs::bmp::BmpDecoder::new(Cursor::new(bytes)).ok()?;
+                decode_still(decoder)
+            })
+            .await
+            .ok()?
+            .map(Self::Decoded);
         }
         if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
             return tokio::task::spawn_blocking(move || decode_gif(bytes))
@@ -74,8 +85,7 @@ fn limit_image(decoder: &mut impl ImageDecoder) -> Option<()> {
 }
 
 fn decode_jpeg(bytes: &[u8]) -> Option<Raster> {
-    let mut decoder = image::codecs::jpeg::JpegDecoder::new(Cursor::new(bytes)).ok()?;
-    limit_image(&mut decoder)?;
+    let decoder = image::codecs::jpeg::JpegDecoder::new(Cursor::new(bytes)).ok()?;
     decode_still(decoder)
 }
 
@@ -88,10 +98,10 @@ fn decode_gif(bytes: Vec<u8>) -> Option<Source> {
 
 fn decode_webp(bytes: Vec<u8>) -> Option<Source> {
     let mut decoder = image::codecs::webp::WebPDecoder::new(Cursor::new(&bytes)).ok()?;
-    limit_image(&mut decoder)?;
     if !decoder.has_animation() {
         return decode_still(decoder).map(Source::Decoded);
     }
+    limit_image(&mut decoder)?;
     decoder.set_background_color(Rgba([0, 0, 0, 0])).ok()?;
     let frame = decoder.into_frames().next()?.ok()?.into_buffer();
     Some(animation(bytes, frame))
@@ -106,6 +116,7 @@ fn animation(bytes: Vec<u8>, frame: RgbaImage) -> Source {
 }
 
 fn decode_still(mut decoder: impl ImageDecoder) -> Option<Raster> {
+    limit_image(&mut decoder)?;
     let orientation = decoder
         .orientation()
         .unwrap_or(image::metadata::Orientation::NoTransforms);

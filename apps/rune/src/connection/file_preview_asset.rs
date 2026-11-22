@@ -54,7 +54,7 @@ impl Downloads {
         let client = self.client.clone();
         let task = tokio::spawn(async move {
             let result = match purpose {
-                AssetPurpose::ShowImage => image(client, url).await.map(AssetOutcome::Image),
+                AssetPurpose::ShowImage => image(client, url).await,
                 _ => download(client, url).await.map(AssetOutcome::Prepared),
             };
             result.unwrap_or_else(|| {
@@ -82,7 +82,7 @@ async fn open(client: Client, url: Url) -> Option<Response> {
     (response.status() == StatusCode::OK).then_some(response)
 }
 
-async fn image(client: Client, url: Url) -> Option<Source> {
+async fn image(client: Client, url: Url) -> Option<AssetOutcome> {
     let mut response = open(client, url).await?;
     let mut source = Vec::new();
     let limit = rune::clipboard::MAX_IMAGE_BYTES;
@@ -92,7 +92,11 @@ async fn image(client: Client, url: Url) -> Option<Source> {
         }
         source.extend(bytes);
     }
-    Source::read(source).await
+    Some(
+        Source::read(source)
+            .await
+            .map_or(AssetOutcome::InvalidImage, AssetOutcome::Image),
+    )
 }
 
 async fn download(client: Client, url: Url) -> Option<File> {

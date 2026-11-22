@@ -69,6 +69,7 @@ pub(crate) enum AssetOutcome {
     Available,
     Prepared(File),
     Image(Source),
+    InvalidImage,
     Failed(String),
 }
 
