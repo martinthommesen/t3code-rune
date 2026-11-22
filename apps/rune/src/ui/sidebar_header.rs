@@ -281,6 +281,16 @@ pub(super) fn shortcut(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool
         return false;
     }
     match command {
+        Some("terminal.toggle")
+            if state
+                .workspace
+                .as_ref()
+                .is_some_and(|workspace| workspace.terminal)
+                && !super::file_preview::expanded_is_open(state) =>
+        {
+            state.toggle_terminal(tx);
+            return true;
+        }
         Some("sidebar.toggle") if !(control && terminal_focus) => {
             if !tx.key_repeat() {
                 state.toggle_sidebar();

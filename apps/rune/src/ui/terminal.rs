@@ -820,7 +820,10 @@ impl State {
 
     fn terminal_key(&mut self, event: &KeyEvent, tx: &mut Tx) -> bool {
         match self.resolve_shortcut(event, tx) {
-            Some("terminal.toggle") => self.detach_terminal_pane(),
+            Some("terminal.toggle") => {
+                self.toggle_terminal(tx);
+                tx.blur();
+            }
             Some("terminal.new") => self.new_terminal_tab(tx),
             Some("terminal.split") => self.split_terminal(SplitDirection::Horizontal, tx),
             Some("terminal.splitVertical") => self.split_terminal(SplitDirection::Vertical, tx),

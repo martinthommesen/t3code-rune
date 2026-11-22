@@ -1,6 +1,8 @@
 mod binary;
 mod image;
 
+pub(super) use image::expanded_is_open;
+
 use std::borrow::Cow;
 use std::sync::Arc;
 

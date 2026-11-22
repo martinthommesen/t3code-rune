@@ -138,6 +138,12 @@ pub(super) fn supports(path: &str) -> bool {
     workspace_image::mime_type(path).is_some()
 }
 
+pub(in crate::ui) fn expanded_is_open(state: &State) -> bool {
+    state.file_preview.as_ref().is_some_and(
+        |preview| matches!(&preview.load, Load::Image(image) if image.expanded.is_some()),
+    )
+}
+
 impl State {
     fn preview_image_mut(&mut self) -> Option<&mut PreviewImage> {
         match &mut self.file_preview.as_mut()?.load {
