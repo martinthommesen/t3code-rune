@@ -16,7 +16,7 @@ use super::{CodexAppServer, CodexClient, CodexError, CodexLaunch, RequestId, Rpc
 
 pub use events::{
     ApprovalKind, ApprovalRequest, AssistantPhase, CodexSessionEvent, InputOption, InputQuestion,
-    ReasoningStream, ToolItem, ToolLifecycle, TurnEvent, UserInputRequest,
+    ReasoningStream, ToolItem, ToolLifecycle, TurnEvent, UserInputRequest, WebSearchUpdate,
 };
 
 pub use usage::{

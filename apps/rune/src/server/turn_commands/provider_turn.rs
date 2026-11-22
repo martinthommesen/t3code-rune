@@ -24,31 +24,32 @@ pub(in crate::server) enum NativeTurnUpdate<'a> {
 }
 
 impl TurnCommands {
-    pub(in crate::server) fn is_interrupted_native_turn(
+    pub(in crate::server) fn native_turn_status(
         &self,
         app_thread_id: &str,
         key: &TurnKey,
-    ) -> Result<bool, TurnCommandError> {
+    ) -> Result<Option<String>, TurnCommandError> {
         let connection = self.connect()?;
-        Ok(connection.query_row(
-            "SELECT EXISTS (
-                SELECT 1 FROM orchestration_v2_projection_provider_turns AS turn
+        Ok(connection
+            .query_row(
+                "SELECT turn.status FROM orchestration_v2_projection_provider_turns AS turn
                 JOIN orchestration_v2_projection_provider_threads AS provider_thread
                   ON provider_thread.provider_thread_id = turn.provider_thread_id
                      AND provider_thread.thread_id = turn.thread_id
                 WHERE turn.thread_id = ?1 AND turn.provider_turn_id = ?2
-                  AND turn.status = 'interrupted' AND provider_thread.driver = 'codex'
+                  AND provider_thread.driver = 'codex'
                   AND json_extract(provider_thread.payload_json, '$.nativeThreadRef.nativeId') = ?3
                   AND json_extract(turn.payload_json, '$.nativeTurnRef.nativeId') = ?4
-            )",
-            params![
-                app_thread_id,
-                provider_turn_id(key),
-                key.thread_id.as_str(),
-                key.turn_id.as_str()
-            ],
-            |row| row.get(0),
-        )?)
+            ",
+                params![
+                    app_thread_id,
+                    provider_turn_id(key),
+                    key.thread_id.as_str(),
+                    key.turn_id.as_str()
+                ],
+                |row| row.get(0),
+            )
+            .optional()?)
     }
 
     pub(in crate::server) fn record_provider_turn(

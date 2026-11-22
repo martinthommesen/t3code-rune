@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -67,6 +68,7 @@ pub enum TurnEvent {
         item: ToolItem,
         lifecycle: ToolLifecycle,
     },
+    WebSearch(WebSearchUpdate),
     ToolOutputDelta {
         item_id: String,
         delta: String,
@@ -112,6 +114,14 @@ pub struct ToolItem {
     pub payload: Value,
     pub started_at_ms: Option<i64>,
     pub completed_at_ms: Option<i64>,
+}
+
+#[derive(Debug)]
+pub struct WebSearchUpdate {
+    pub item_id: String,
+    pub lifecycle: ToolLifecycle,
+    pub started_at_ms: Option<i64>,
+    pub patterns: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -231,6 +241,59 @@ struct ReasoningParts {
     summary: Vec<String>,
     #[serde(default)]
     content: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct WebSearchFields {
+    query: Option<String>,
+    action: Option<WebSearchAction>,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum WebSearchAction {
+    Search {
+        queries: Option<Vec<String>>,
+        query: Option<String>,
+    },
+    OpenPage {
+        url: Option<String>,
+    },
+    FindInPage {
+        pattern: Option<String>,
+        url: Option<String>,
+    },
+    Other,
+}
+
+impl WebSearchFields {
+    fn patterns(&self) -> Vec<String> {
+        let mut candidates = Vec::new();
+        match &self.action {
+            Some(WebSearchAction::Search { queries, query }) => {
+                candidates.extend(queries.iter().flatten().map(String::as_str));
+                candidates.extend(query.as_deref());
+            }
+            Some(WebSearchAction::OpenPage { url }) => candidates.extend(url.as_deref()),
+            Some(WebSearchAction::FindInPage { pattern, url }) => {
+                candidates.extend(pattern.as_deref());
+                candidates.extend(url.as_deref());
+            }
+            None | Some(WebSearchAction::Other) => {}
+        }
+        candidates.extend(self.query.as_deref());
+        let mut seen = HashSet::new();
+        candidates
+            .into_iter()
+            .map(|text| {
+                text.trim_matches(|ch: char| {
+                    ch == '\u{feff}' || (ch.is_whitespace() && ch != '\u{85}')
+                })
+            })
+            .filter(|text| !text.is_empty() && seen.insert(*text))
+            .map(str::to_owned)
+            .collect()
+    }
 }
 
 #[derive(Deserialize)]
@@ -462,11 +525,22 @@ fn item_event(
                 content: parts.content,
             }
         }
+        "webSearch" => {
+            let fields = WebSearchFields::deserialize(item)
+                .map_err(|error| invalid(method, error.to_string()))?;
+            TurnEvent::WebSearch(WebSearchUpdate {
+                item_id: field("id")?.to_owned(),
+                lifecycle,
+                started_at_ms: notification
+                    .started_at_ms
+                    .filter(|_| lifecycle == ToolLifecycle::Started),
+                patterns: fields.patterns(),
+            })
+        }
         "commandExecution"
         | "fileChange"
         | "mcpToolCall"
         | "dynamicToolCall"
-        | "webSearch"
         | "subAgentActivity"
         | "collabAgentToolCall" => TurnEvent::ToolChanged {
             item: ToolItem {

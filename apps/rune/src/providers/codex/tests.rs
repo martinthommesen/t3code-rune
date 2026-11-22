@@ -61,6 +61,54 @@ fn translates_recorded_user_input_and_keeps_question_identity() {
     );
 }
 
+#[test]
+fn normalizes_web_search_actions_in_provider_order() {
+    for (action, query, expected) in [
+        (Value::Null, " \u{feff} ", vec![]),
+        (
+            json!({"type":"search", "queries":[" \u{feff}alpha ", "beta", "alpha"], "query":"beta"}),
+            "\u{85}gamma\u{85}",
+            vec!["alpha", "beta", "\u{85}gamma\u{85}"],
+        ),
+        (
+            json!({"type":"openPage", "url":" example.test "}),
+            " fallback ",
+            vec!["example.test", "fallback"],
+        ),
+        (
+            json!({"type":"findInPage", "pattern":" topic ", "url":"example.test"}),
+            "topic",
+            vec!["topic", "example.test"],
+        ),
+        (json!({"type":"other"}), "fallback", vec!["fallback"]),
+    ] {
+        let event = events::decode(
+            CodexEvent::Notification {
+                method: "item/completed".into(),
+                params: Some(
+                    json!({"threadId":"native-thread", "turnId":"native-turn", "item":{
+                        "type":"webSearch", "id":"native-search", "action":action, "query":query,
+                        "results":[{"title":"The provider result body"}],
+                    }}),
+                ),
+            },
+            Uuid::nil(),
+        )
+        .unwrap()
+        .unwrap();
+        let CodexSessionEvent::Turn {
+            event: TurnEvent::WebSearch(search),
+            ..
+        } = event
+        else {
+            panic!("expected a web search item");
+        };
+        assert_eq!(search.lifecycle, ToolLifecycle::Completed);
+        assert_eq!(search.item_id, "native-search");
+        assert_eq!(search.patterns, expected);
+    }
+}
+
 #[cfg(unix)]
 mod subprocess {
     use std::{collections::HashMap, fs};

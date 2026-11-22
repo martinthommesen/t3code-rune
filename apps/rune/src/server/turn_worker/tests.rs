@@ -1097,6 +1097,187 @@ set -eu
     }
 
     #[tokio::test]
+    async fn records_completed_web_search_patterns_without_raw_results() {
+        replay_web_search(false).await;
+    }
+
+    #[tokio::test]
+    async fn stops_a_web_search_and_ignores_its_late_result_during_the_next_turn() {
+        replay_web_search(true).await;
+    }
+
+    async fn replay_web_search(stop_search: bool) {
+        const SEARCH: &str = include_str!(
+            "../../../../server/src/orchestration-v2/testkit/fixtures/web_search/codex_transcript.ndjson"
+        );
+        const STOP: &str = include_str!(
+            "../../../../server/src/orchestration-v2/testkit/fixtures/turn_interrupt/codex_transcript.ndjson"
+        );
+        let frames = |source: &str| {
+            source
+                .lines()
+                .map(|line| serde_json::from_str::<Value>(line).unwrap())
+                .collect::<Vec<_>>()
+        };
+        let search = frames(SEARCH);
+        let stop = frames(STOP);
+        let (search_start, started) = search
+            .iter()
+            .enumerate()
+            .find(|(_, row)| {
+                row["type"] == "emit_inbound"
+                    && row["label"] == "item/started"
+                    && row["frame"]["params"]["item"]["type"] == "webSearch"
+            })
+            .unwrap();
+        let completed = search
+            .iter()
+            .find(|row| {
+                row["type"] == "emit_inbound"
+                    && row["label"] == "item/completed"
+                    && row["frame"]["params"]["item"]["type"] == "webSearch"
+            })
+            .unwrap();
+        let search_params = &started["frame"]["params"];
+        let mut script = "#!/bin/sh\nset -eu\n".to_owned();
+        for stage in [
+            vec![replay_reply(&search, "initialize", 1)],
+            vec![],
+            vec![replay_reply(&search, "thread/start", 2)],
+            vec![replay_reply(&search, "thread/name/set", 3)],
+            vec![replay_reply(&search, "config/read", 4)],
+        ] {
+            append_request(&mut script, &stage);
+        }
+        let end = if stop_search {
+            search_start + 1
+        } else {
+            search.len()
+        };
+        let notifications = search
+            .iter()
+            .take(end)
+            .skip_while(|row| row["label"] != "turn/start")
+            .filter(|row| row["type"] == "emit_inbound" && row["frame"].get("id").is_none())
+            .map(|row| row["frame"].clone());
+        let turn = std::iter::once(replay_reply(&search, "turn/start", 5))
+            .chain(notifications)
+            .collect::<Vec<_>>();
+        append_request(&mut script, &turn);
+        if stop_search {
+            let mut terminal = stop
+                .iter()
+                .find(|row| row["label"] == "turn/completed")
+                .unwrap()["frame"]
+                .clone();
+            terminal["params"]["threadId"] = search_params["threadId"].clone();
+            terminal["params"]["turn"]["id"] = search_params["turnId"].clone();
+            append_request(
+                &mut script,
+                &[replay_reply(&stop, "turn/interrupt", 6), terminal],
+            );
+            append_request(
+                &mut script,
+                &[completed["frame"].clone(), reply("config/read", 7)],
+            );
+            let after = frames(CODEX);
+            let final_turn = std::iter::once(reply("turn/start", 8))
+                .chain(
+                    after
+                        .iter()
+                        .filter(|row| {
+                            row["type"] == "emit_inbound"
+                                && row["frame"]["params"].get("threadId").is_some()
+                        })
+                        .map(|row| {
+                            let mut frame = row["frame"].clone();
+                            frame["params"]["threadId"] = search_params["threadId"].clone();
+                            frame
+                        }),
+                )
+                .collect::<Vec<_>>();
+            append_request(&mut script, &final_turn);
+        }
+        script.push_str("while IFS= read -r request; do :; done\n");
+
+        let fixture = Fixture::new();
+        let commands = fixture.commands();
+        let mut dispatch = command_payload();
+        dispatch["text"] = replay_prompt(&search).into();
+        commands
+            .dispatch(serde_json::from_value(dispatch).unwrap())
+            .unwrap();
+        let (changes, _) = broadcast::channel(32);
+        let worker = TurnWorker::spawn(
+            commands.clone(),
+            settings_for_script(&fixture, &script),
+            changes,
+        );
+        let connection = fixture.connection();
+        if stop_search {
+            wait_for_item(&connection, "web_search", "running").await;
+            assert!(commands.can_stop_thread(THREAD).unwrap());
+            commands
+                .stop_thread(
+                    serde_json::from_value(json!({
+                        "type": "thread.stop", "commandId": "stop-web-search", "threadId": THREAD,
+                    }))
+                    .unwrap(),
+                )
+                .unwrap();
+            worker.sender().wake();
+            wait_for_item(&connection, "checkpoint", "completed").await;
+            let mut next = command_payload();
+            next["commandId"] = "after-web-search".into();
+            next["messageId"] = "message:after-web-search".into();
+            commands
+                .dispatch(serde_json::from_value(next).unwrap())
+                .unwrap();
+            worker.sender().wake();
+        }
+        wait_for_run(&fixture, "completed").await;
+        worker.shutdown().await.unwrap();
+        let items: Vec<Value> = connection.prepare(
+            "SELECT payload_json FROM orchestration_events WHERE stream_id = ?1 AND event_type = 'turn-item.updated'
+               AND json_extract(payload_json, '$.type') = 'web_search' ORDER BY sequence",
+        ).unwrap().query_map([THREAD], |row| row.get::<_, String>(0)).unwrap()
+            .map(|row| serde_json::from_str(&row.unwrap()).unwrap()).collect();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["status"], "running");
+        assert_eq!(
+            items[1]["status"],
+            if stop_search {
+                "interrupted"
+            } else {
+                "completed"
+            }
+        );
+        for item in &items {
+            assert_eq!(
+                item["nativeItemRef"]["nativeId"],
+                search_params["item"]["id"]
+            );
+            assert_eq!(item["startedAt"], items[0]["startedAt"]);
+            assert!(item.get("results").is_none());
+        }
+        assert!(items[0].get("patterns").is_none());
+        if stop_search {
+            assert!(items[1].get("patterns").is_none());
+        } else {
+            assert_eq!(
+                items[1]["patterns"],
+                json!([completed["frame"]["params"]["item"]["query"]])
+            );
+        }
+        let wire = fs::read_to_string(fixture.directory.join("requests.ndjson")).unwrap();
+        assert_eq!(
+            wire.matches("turn/interrupt").count(),
+            usize::from(stop_search)
+        );
+        assert!(!wire.contains("backgroundTerminals/terminate"));
+    }
+
+    #[tokio::test]
     async fn interrupts_a_running_command_and_terminates_its_captured_background_terminal() {
         replay_running_command_stop(false).await;
     }

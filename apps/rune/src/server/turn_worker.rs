@@ -769,14 +769,14 @@ impl Worker {
                     } else {
                         None
                     };
-                    if let Some(closed) = self.commands.close_native_commands(
+                    if let Some(closed) = self.commands.close_native_tools(
                         thread_id,
                         &claim.run_id,
                         &key,
                         status,
                         completed_at,
                     )? {
-                        for item_id in closed.item_ids {
+                        for item_id in closed.command_item_ids {
                             queue.command_output.finish(thread_id, &item_id);
                         }
                         self.publish(thread_id, closed.sequence);
@@ -916,6 +916,13 @@ impl Worker {
                     queue
                         .command_output
                         .append(thread_id, &command_item_id(&item_id), &delta);
+                }
+                TurnEvent::WebSearch(update) => {
+                    self.publish_optional(
+                        thread_id,
+                        self.commands
+                            .record_web_search(thread_id, &claim.run_id, &key, update)?,
+                    );
                 }
                 TurnEvent::ToolChanged { .. } => {
                     let _ = client.interrupt_turn(&key).await;
@@ -1137,9 +1144,21 @@ fn turn_event(
         } if key.thread_id == expected.thread_id => Ok(None),
         CodexSessionEvent::Turn { key, event }
             if key.thread_id == expected.thread_id
-                && (matches!(&event, TurnEvent::ToolOutputDelta { .. })
-                    || matches!(&event, TurnEvent::ToolChanged { item, .. } if item.kind == "commandExecution"))
-                && commands.is_interrupted_native_turn(app_thread_id, &key)? =>
+                && match &event {
+                    TurnEvent::WebSearch(_) => matches!(
+                        commands.native_turn_status(app_thread_id, &key)?.as_deref(),
+                        Some("interrupted" | "completed" | "cancelled" | "failed"),
+                    ),
+                    TurnEvent::ToolOutputDelta { .. } => {
+                        commands.native_turn_status(app_thread_id, &key)?.as_deref()
+                            == Some("interrupted")
+                    }
+                    TurnEvent::ToolChanged { item, .. } if item.kind == "commandExecution" => {
+                        commands.native_turn_status(app_thread_id, &key)?.as_deref()
+                            == Some("interrupted")
+                    }
+                    _ => false,
+                } =>
         {
             Ok(None)
         }

@@ -1,7 +1,9 @@
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
-use t3_rune::providers::codex::{ApprovalRequest, SettlementStatus, ToolItem, TurnKey};
+use t3_rune::providers::codex::{
+    ApprovalRequest, SettlementStatus, ToolItem, ToolLifecycle, TurnKey, WebSearchUpdate,
+};
 use time::OffsetDateTime;
 
 use super::provider_turn::{provider_turn_id, terminal_status};
@@ -204,23 +206,20 @@ pub(in crate::server) fn command_item_id(native_item_id: &str) -> String {
     )
 }
 
-pub(in crate::server) struct ClosedCommands {
+pub(in crate::server) struct ClosedTools {
     pub(in crate::server) sequence: i64,
-    pub(in crate::server) item_ids: Vec<String>,
+    pub(in crate::server) command_item_ids: Vec<String>,
 }
 
 impl TurnCommands {
-    pub(in crate::server) fn close_native_commands(
+    pub(in crate::server) fn close_native_tools(
         &self,
         thread_id: &str,
         run_id: &str,
         key: &TurnKey,
         status: SettlementStatus,
         completed_at: Option<OffsetDateTime>,
-    ) -> Result<Option<ClosedCommands>, TurnCommandError> {
-        if status == SettlementStatus::Completed {
-            return Ok(None);
-        }
+    ) -> Result<Option<ClosedTools>, TurnCommandError> {
         let status = terminal_status(status);
         let turn_id = provider_turn_id(key);
         let mut connection = self.connect()?;
@@ -245,38 +244,48 @@ impl TurnCommands {
         let closed_at = timestamp(completed_at.unwrap_or_else(OffsetDateTime::now_utc));
         let items = {
             let mut select = transaction.prepare(
-                "SELECT item.turn_item_id, node.node_id, item.payload_json, node.payload_json
+                "SELECT item.turn_item_id, node.node_id, item.payload_json, node.payload_json, item.type
                  FROM orchestration_v2_projection_turn_items AS item
                  JOIN orchestration_v2_projection_nodes AS node ON node.node_id = item.node_id
                    AND node.thread_id = item.thread_id AND node.run_id = item.run_id
                  WHERE item.thread_id = ?1 AND item.run_id = ?2 AND item.provider_turn_id = ?3
-                   AND item.type = 'command_execution' AND item.status = 'running'
-                 ORDER BY item.ordinal",
+                   AND item.status = 'running'
+                   AND (item.type = 'web_search' OR (?4 <> 'completed' AND item.type = 'command_execution'))
+                 ORDER BY item.type, item.ordinal",
             )?;
             select
-                .query_map(params![thread_id, run_id, turn_id], |row| {
+                .query_map(params![thread_id, run_id, turn_id, status], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
                         row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
                     ))
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?
         };
         let stream = ThreadEventStream::provider(&transaction, thread_id, &session_id);
         let mut sequence = None;
-        let mut item_ids = Vec::with_capacity(items.len());
-        for (item_id, node_id, item, node) in items {
+        let mut command_item_ids = Vec::new();
+        for (item_id, node_id, item, node, kind) in items {
             let mut item: Map<String, Value> = serde_json::from_str(&item)?;
             let mut node: Map<String, Value> = serde_json::from_str(&node)?;
+            let tool_status = if kind == "web_search" && status == "completed" {
+                "cancelled"
+            } else {
+                status
+            };
             for object in [&mut item, &mut node] {
-                object.insert("status".into(), json!(status));
+                object.insert("status".into(), json!(tool_status));
                 object.insert("completedAt".into(), json!(closed_at));
             }
             item.insert("updatedAt".into(), json!(closed_at));
-            item.remove("exitCode");
-            item.remove("completionWake");
+            if kind == "command_execution" {
+                item.remove("exitCode");
+                item.remove("completionWake");
+                command_item_ids.push(item_id);
+            }
             let metadata = json!({"runId":run_id,"nodeId":node_id,"driver":"codex","providerInstanceId":CODEX_INSTANCE});
             stream.append("node.updated", &closed_at, &metadata, &Value::Object(node))?;
             sequence = Some(stream.append(
@@ -285,14 +294,16 @@ impl TurnCommands {
                 &metadata,
                 &Value::Object(item),
             )?);
-            item_ids.push(item_id);
         }
         let Some(sequence) = sequence else {
             return Ok(None);
         };
         record_projected_sequence(&transaction, sequence, &closed_at)?;
         transaction.commit()?;
-        Ok(Some(ClosedCommands { sequence, item_ids }))
+        Ok(Some(ClosedTools {
+            sequence,
+            command_item_ids,
+        }))
     }
 
     pub(in crate::server) fn record_native_tool(
@@ -305,6 +316,51 @@ impl TurnCommands {
         let Some(details) = tool_details(item)? else {
             return Ok(None);
         };
+        self.record_tool(
+            thread_id,
+            run_id,
+            key,
+            &item.id,
+            item.started_at_ms,
+            details,
+        )
+    }
+
+    pub(in crate::server) fn record_web_search(
+        &self,
+        thread_id: &str,
+        run_id: &str,
+        key: &TurnKey,
+        update: WebSearchUpdate,
+    ) -> Result<Option<i64>, TurnCommandError> {
+        let status = match update.lifecycle {
+            ToolLifecycle::Started => NativeStatus::InProgress,
+            ToolLifecycle::Completed => NativeStatus::Completed,
+        };
+        let mut fields = Map::new();
+        fields.insert("type".into(), json!("web_search"));
+        if !update.patterns.is_empty() {
+            fields.insert("patterns".into(), json!(update.patterns));
+        }
+        self.record_tool(
+            thread_id,
+            run_id,
+            key,
+            &update.item_id,
+            update.started_at_ms,
+            ToolDetails { status, fields },
+        )
+    }
+
+    fn record_tool(
+        &self,
+        thread_id: &str,
+        run_id: &str,
+        key: &TurnKey,
+        native_item_id: &str,
+        started_at_ms: Option<i64>,
+        details: ToolDetails,
+    ) -> Result<Option<i64>, TurnCommandError> {
         let turn_id = provider_turn_id(key);
         let mut connection = self.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -334,9 +390,9 @@ impl TurnCommands {
         };
         let node_id = format!(
             "node:provider:codex:native-item:{}",
-            encode_id_part(&item.id)
+            encode_id_part(native_item_id)
         );
-        let item_id = command_item_id(&item.id);
+        let item_id = command_item_id(native_item_id);
         let existing = transaction.query_row(
             "SELECT ordinal, status, json_extract(payload_json, '$.startedAt')
              FROM orchestration_v2_projection_turn_items WHERE thread_id = ?1 AND turn_item_id = ?2",
@@ -349,7 +405,7 @@ impl TurnCommands {
             Some((ordinal, _, started_at)) => (ordinal, started_at.unwrap_or_else(|| now.clone())),
             None => (
                 allocate_turn_item_in_run(&transaction, thread_id, &item_id, run_ordinal)?,
-                item.started_at_ms
+                started_at_ms
                     .and_then(|value| {
                         OffsetDateTime::from_unix_timestamp_nanos(i128::from(value) * 1_000_000)
                             .ok()
@@ -360,7 +416,8 @@ impl TurnCommands {
         };
         let status = details.status.projected();
         let completed_at = (status != "running").then_some(now.as_str());
-        let native_ref = json!({ "driver": "codex", "nativeId": item.id, "strength": "strong" });
+        let native_ref =
+            json!({ "driver": "codex", "nativeId": native_item_id, "strength": "strong" });
         let metadata = json!({
             "runId": run_id,
             "nodeId": node_id,

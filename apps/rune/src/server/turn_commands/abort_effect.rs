@@ -224,7 +224,7 @@ impl TurnCommands {
         let items = collect(
             &transaction,
             "SELECT node_id, payload_json FROM orchestration_v2_projection_turn_items
-             WHERE run_id = ?1 AND type IN ('assistant_message', 'command_execution', 'approval_request', 'user_input_request')
+             WHERE run_id = ?1 AND type IN ('assistant_message', 'command_execution', 'web_search', 'approval_request', 'user_input_request')
                AND status IN ('pending', 'running', 'waiting') ORDER BY ordinal",
             &state.run_id,
         )?;
