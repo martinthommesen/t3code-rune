@@ -11,6 +11,7 @@ use super::config_updates::Subscribers;
 
 mod client;
 mod disk;
+mod favorites;
 mod jsonc;
 mod patch;
 mod project_overrides;

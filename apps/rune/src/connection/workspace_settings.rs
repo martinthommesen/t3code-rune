@@ -16,6 +16,7 @@ const ORIGIN: &str = "newWorktreesStartFromOrigin";
 const PERMISSIONS: &str = "defaultRuntimeMode";
 const DIRECTORY: &str = "worktreesDirectory";
 const BRANCH_NAMING: &str = "branchNamingMode";
+const FAVORITES: &str = "favorites";
 const PROJECT_OVERRIDES: &str = "projectSettingsOverrides";
 
 pub(super) enum Target {
@@ -37,6 +38,10 @@ pub(super) enum Edit {
     WorktreesDirectory(String),
     BranchNaming(Option<BranchNamingMode>),
     BranchText(BranchTextField, Option<String>),
+    ModelFavorite {
+        model: ModelFavorite,
+        favorite: bool,
+    },
 }
 
 impl Edit {
@@ -56,6 +61,10 @@ impl Edit {
             Self::BranchText(field, Some(value)) => (field.key(), json!(value)),
             Self::BranchText(field, None) if project_scope => (field.key(), Value::Null),
             Self::BranchText(field, None) => (field.key(), json!(field.default_value())),
+            Self::ModelFavorite { model, favorite } => (
+                "setModelFavorites",
+                json!([{"provider":model.provider,"model":model.model,"favorite":favorite}]),
+            ),
         }
     }
 }
@@ -207,6 +216,18 @@ pub(crate) struct BranchNamingSetting {
     pub(crate) managed_by: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub(crate) struct ModelFavorite {
+    pub(crate) provider: String,
+    pub(crate) model: String,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct FavoriteSetting {
+    pub(crate) models: Vec<ModelFavorite>,
+    pub(crate) writable: bool,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct WorkspaceSetting {
     pub(crate) configured: Option<WorkspaceMode>,
@@ -214,6 +235,7 @@ pub(crate) struct WorkspaceSetting {
     pub(crate) permission: PermissionSetting,
     pub(crate) worktree_location: Option<WorktreeLocation>,
     pub(crate) branch_naming: BranchNamingSetting,
+    pub(crate) favorites: FavoriteSetting,
     pub(crate) override_order: Vec<String>,
     pub(crate) projects: HashMap<String, WorkspaceMode>,
     pub(crate) writable: bool,
@@ -229,6 +251,7 @@ pub(super) struct Subscription {
     directory_managed_by: Option<String>,
     branch_naming_managed_by: Option<String>,
     branch_text_managed_by: [Option<String>; 2],
+    favorites_managed_by: Option<String>,
     pending: Option<Pending>,
     overrides: Map<String, Value>,
     pending_file: Option<Pending>,
@@ -251,6 +274,7 @@ impl Subscription {
             directory_managed_by: None,
             branch_naming_managed_by: None,
             branch_text_managed_by: [None, None],
+            favorites_managed_by: None,
             pending: None,
             overrides: Map::new(),
             pending_file: None,
@@ -276,6 +300,7 @@ impl Subscription {
                         managed_by(&config["managedPolicy"], BRANCH_NAMING);
                     self.branch_text_managed_by = BranchTextField::ALL
                         .map(|field| managed_by(&config["managedPolicy"], field.key()));
+                    self.favorites_managed_by = managed_by(&config["managedPolicy"], FAVORITES);
 
                     &config["settings"]
                 }
@@ -292,6 +317,10 @@ impl Subscription {
         }
         current.map(|(configured, settings)| WorkspaceSetting {
             configured,
+            favorites: FavoriteSetting {
+                models: Vec::<ModelFavorite>::deserialize(&settings[FAVORITES]).unwrap_or_default(),
+                writable: self.can_write && self.favorites_managed_by.is_none(),
+            },
             override_order: self.overrides.keys().cloned().collect(),
             worktree_location: self.directory_supported.then(|| WorktreeLocation {
                 path: settings[DIRECTORY].as_str().unwrap_or("").to_owned(),
@@ -497,6 +526,14 @@ impl Connection {
         self.send_workspace_setting(Target::Projects(projects), edit)
     }
 
+    pub(crate) fn update_model_favorite(
+        &self,
+        model: ModelFavorite,
+        favorite: bool,
+    ) -> Option<Uuid> {
+        self.send_workspace_setting(Target::Environment, Edit::ModelFavorite { model, favorite })
+    }
+
     fn update_workspace_setting(&self, project_id: Option<String>, edit: Edit) -> Option<Uuid> {
         self.send_workspace_setting(
             project_id.map_or(Target::Environment, Target::Project),
@@ -544,6 +581,7 @@ impl Session {
             Edit::WorktreesDirectory(_) => &settings.directory_managed_by,
             Edit::BranchNaming(_) => &settings.branch_naming_managed_by,
             Edit::BranchText(field, _) => &settings.branch_text_managed_by[field.index()],
+            Edit::ModelFavorite { .. } => &settings.favorites_managed_by,
         };
         let environment = matches!(target, Target::Environment);
         let missing_project = match &target {
@@ -724,6 +762,42 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn model_favorites_read_live_settings_and_send_a_desired_state_edit() {
+        let model = ModelFavorite {
+            provider: "claudeAgent".into(),
+            model: "claude-sonnet-4-6".into(),
+        };
+        let mut subscription = Subscription::new(true);
+        let settings = subscription
+            .apply(&[json!({
+                "version": 1, "type": "snapshot",
+                "config":{"settings":{"favorites":[]}},
+            })])
+            .unwrap();
+        assert!(settings.favorites.writable && settings.favorites.models.is_empty());
+        assert_eq!(
+            subscription.patch(
+                &Target::Environment,
+                Edit::ModelFavorite {
+                    model: model.clone(),
+                    favorite: true
+                }
+            ),
+            json!({"setModelFavorites":[{"provider":"claudeAgent","model":"claude-sonnet-4-6","favorite":true}]})
+        );
+        let settings = subscription.apply(&[json!({
+            "version": 1, "type": "settingsUpdated",
+            "payload":{"settings":{"favorites":[{"provider":"claudeAgent","model":"claude-sonnet-4-6"}]}},
+        })]).unwrap();
+        assert_eq!(settings.favorites.models, [model]);
+        let settings = subscription.apply(&[json!({
+            "version": 1, "type": "snapshot",
+            "config":{"settings":{"favorites":[]},"managedPolicy":{"organization":"Managed","lockedSettings":["favorites"]}},
+        })]).unwrap();
+        assert!(!settings.favorites.writable);
     }
 
     #[test]

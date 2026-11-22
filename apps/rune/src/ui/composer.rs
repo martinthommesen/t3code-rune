@@ -10,10 +10,12 @@ use super::worktree_setup;
 use super::{Draft, Palette, Project, SMALL, State, Workspace, button, error_text};
 
 mod draft_model_picker;
+mod model_favorites;
 mod model_picker;
 mod resume;
 
 pub(super) use draft_model_picker::Picker as DraftModelPicker;
+pub(super) use model_favorites::Favorites as ModelFavorites;
 
 const FONT: TextStyle = TextStyle::new(14.0, 400.0).lh(22.75);
 const PROVIDER_UNAVAILABLE: &str = "Enable a provider in Settings to send a message";

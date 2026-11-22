@@ -121,6 +121,7 @@ struct Workspace {
     reconnecting: bool,
     shell: Option<Shell>,
     providers: Option<ProviderCatalog>,
+    model_favorites: composer::ModelFavorites,
     selection: Option<ProjectSelection>,
 }
 
@@ -1037,6 +1038,7 @@ impl State {
                     reconnecting: false,
                     shell: None,
                     providers: None,
+                    model_favorites: composer::ModelFavorites::default(),
                     selection: None,
                 });
             }
@@ -1101,6 +1103,11 @@ impl State {
             }
             Event::ProviderCatalogUnavailable => self.onboarding.finish_refresh(),
             Event::WorkspaceConfiguration(settings) => {
+                if let Some(workspace) = &mut self.workspace {
+                    workspace
+                        .model_favorites
+                        .apply(settings.as_ref().map(|value| value.favorites.clone()));
+                }
                 if settings.is_some()
                     && let Some(ProjectSelection {
                         id,
@@ -1119,6 +1126,9 @@ impl State {
                 self.set_workspace_project_file(operation, mode);
             }
             Event::WorkspaceSettingSettled { operation, result } => {
+                if let Some(workspace) = &mut self.workspace {
+                    workspace.model_favorites.settle(operation, &result);
+                }
                 self.settle_workspace_setting(operation, result);
             }
             Event::ProjectEditSettled {

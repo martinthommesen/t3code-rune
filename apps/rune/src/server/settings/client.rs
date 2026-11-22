@@ -4,8 +4,8 @@ use crate::snooze;
 
 use super::providers::{ProviderInstance, driver_default};
 use super::{
-    Fields, nonblank, project_overrides as overrides, project_scripts, secret_slug, slug, text,
-    trim, worktree_location_history,
+    Fields, favorites, nonblank, project_overrides as overrides, project_scripts, secret_slug,
+    slug, text, trim, worktree_location_history,
 };
 
 const MODEL_SELECTIONS: &[&str] = &[
@@ -62,6 +62,12 @@ pub(super) fn project(
     let fields = public
         .as_object_mut()
         .expect("settings defaults are an object");
+    if let Some(favorites) = favorites::read(raw.get(favorites::KEY).unwrap_or(&Value::Null))
+        .ok()
+        .flatten()
+    {
+        fields.insert(favorites::KEY.to_owned(), json!(favorites));
+    }
     copy_toggles(fields, raw, TOGGLES);
     copy_model_selections(fields, raw);
     copy_literal(fields, raw, "defaultRuntimeMode", RUNTIME_MODES);

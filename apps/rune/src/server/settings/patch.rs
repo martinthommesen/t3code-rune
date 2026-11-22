@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 
 use crate::snooze;
 
-use super::{Fields, project_overrides::ProjectPatch, text, worktree_location_history};
+use super::{Fields, favorites, project_overrides::ProjectPatch, text, worktree_location_history};
 
 const RUNTIME_MODES: &str =
     "Expected \"approval-required\" | \"auto-accept-edits\" | \"auto\" | \"full-access\"";
@@ -12,6 +12,7 @@ const RUNTIME_MODES: &str =
 pub(in crate::server) struct Patch {
     fields: Fields,
     projects: Option<ProjectPatch>,
+    favorites: Option<Vec<favorites::Change>>,
     settings: bool,
     providers: bool,
     access: bool,
@@ -30,6 +31,7 @@ impl Patch {
         let mut patch = Self {
             fields: Fields::new(),
             projects: None,
+            favorites: None,
             settings: false,
             providers: false,
             access: false,
@@ -64,6 +66,10 @@ impl Patch {
             if key == snooze::KEY {
                 let presets = snooze::decode(value, r#"["patch"]["snoozePresets"]"#)?;
                 patch.fields.insert(key.to_owned(), json!(presets));
+                continue;
+            }
+            if key == favorites::DELTA_KEY {
+                patch.favorites = Some(favorites::decode_changes(value)?);
                 continue;
             }
             if let Some(expected) = invalid_value(key, value) {
@@ -116,6 +122,9 @@ impl Patch {
     pub(super) fn apply(self, stored: &mut Fields, defaults: &Value) -> Result<(), String> {
         if let Some(projects) = self.projects {
             projects.apply(stored)?;
+        }
+        if let Some(changes) = self.favorites {
+            favorites::apply(stored, changes)?;
         }
         for (key, value) in self.fields {
             if key == "worktreesDirectory" {
