@@ -329,7 +329,9 @@ pub(super) fn overlay(state: &State, palette: Palette, width: f32, height: f32) 
     if let Some(picker) = picker {
         overlay = overlay.child(picker);
     }
-    if let Some(items) = workspace::overlay(state, palette) {
+    if let Some(items) =
+        workspace::overlay(state, palette).or_else(|| worktrees::overlay(state, palette))
+    {
         overlay = overlay.children(items);
     }
     Some(overlay)

@@ -5,24 +5,24 @@ use rune::{Key, KeyEvent};
 const RESET_AFTER: Duration = Duration::from_millis(750);
 
 #[derive(Default)]
-pub(super) struct Typeahead {
+pub(in crate::ui::settings) struct Typeahead {
     query: String,
     last_input: Option<Instant>,
     anchor: usize,
     last_match: Option<usize>,
 }
 
-pub(super) enum Input {
+pub(in crate::ui::settings) enum Input {
     Other,
     Typed(Option<usize>),
 }
 
 impl Typeahead {
-    pub(super) fn clear(&mut self) {
+    pub(in crate::ui::settings) fn clear(&mut self) {
         *self = Self::default();
     }
 
-    pub(super) fn input(
+    pub(in crate::ui::settings) fn input(
         &mut self,
         event: &KeyEvent,
         selected: usize,
@@ -40,7 +40,7 @@ impl Typeahead {
         Input::Typed(self.find(character, selected, labels, Instant::now()))
     }
 
-    pub(super) fn typing(&self) -> bool {
+    pub(in crate::ui::settings) fn typing(&self) -> bool {
         !self.query.is_empty()
             && self
                 .last_input
@@ -83,7 +83,7 @@ impl Typeahead {
     }
 }
 
-pub(super) fn arrow_index(key: &Key, index: usize, count: usize) -> Option<usize> {
+pub(in crate::ui::settings) fn arrow_index(key: &Key, index: usize, count: usize) -> Option<usize> {
     let end = count.checked_sub(1)?;
     match key {
         Key::Home => Some(0),

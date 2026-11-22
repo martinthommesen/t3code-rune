@@ -38,6 +38,7 @@ const RUNTIME_MODES: &[&str] = &[
     "auto",
     "full-access",
 ];
+const BRANCH_NAMING_MODES: &[&str] = &["static", "semantic", "custom"];
 const THREAD_ENV_MODES: &[&str] = &["local", "worktree"];
 const IDLE_MODES: &[&str] = &["onReturn", "beforeCacheExpires", "off"];
 const TEXT_GENERATION_DEFAULTS: &[(&str, &str)] = &[
@@ -63,6 +64,7 @@ pub(super) fn project(
     copy_model_selections(fields, raw);
     copy_literal(fields, raw, "defaultRuntimeMode", RUNTIME_MODES);
     copy_literal(fields, raw, "defaultThreadEnvMode", THREAD_ENV_MODES);
+    copy_branch_naming(fields, raw);
     copy_streaming_mode(fields, raw);
     for key in [
         "worktreesDirectory",
@@ -181,6 +183,7 @@ fn project_overrides(public: &mut Fields, raw: &Fields) -> Option<()> {
                 );
             }
             copy_streaming_mode(&mut fields, value);
+            copy_branch_naming(&mut fields, value);
             if let Some(cleanup) = value.get("worktreeCleanup") {
                 fields.insert("worktreeCleanup".to_owned(), worktree_cleanup(cleanup)?);
             }
@@ -374,6 +377,15 @@ fn copy_literal(target: &mut Fields, raw: &Fields, key: &str, values: &[&str]) {
 
 fn literal<'a>(value: &'a Value, allowed: &[&str]) -> Option<&'a str> {
     value.as_str().filter(|value| allowed.contains(value))
+}
+
+fn copy_branch_naming(fields: &mut Fields, raw: &Fields) {
+    copy_literal(fields, raw, "branchNamingMode", BRANCH_NAMING_MODES);
+    for key in ["branchNamePrefix", "branchNameInstructions"] {
+        if let Some(value) = raw.get(key).and_then(text) {
+            fields.insert(key.to_owned(), value.into());
+        }
+    }
 }
 
 fn copy_streaming_mode(target: &mut Fields, raw: &Fields) {

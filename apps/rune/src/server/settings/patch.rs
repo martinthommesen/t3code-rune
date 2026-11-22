@@ -161,12 +161,20 @@ fn supported(key: &str) -> bool {
             | "defaultThreadEnvMode"
             | "newWorktreesStartFromOrigin"
             | "worktreesDirectory"
+            | "branchNamingMode"
     )
 }
 
 pub(super) fn invalid_value(key: &str, value: &Value) -> Option<&'static str> {
     match key {
-        "worktreesDirectory" if !value.is_string() => Some("Expected string"),
+        "worktreesDirectory" | "branchNamePrefix" | "branchNameInstructions"
+            if !value.is_string() =>
+        {
+            Some("Expected string")
+        }
+        "branchNamingMode" if !matches!(value.as_str(), Some("static" | "semantic" | "custom")) => {
+            Some("Expected \"static\" | \"semantic\" | \"custom\"")
+        }
         "continueThreadsAfterServerUpdate"
         | "defaultAutoPull"
         | "newWorktreesStartFromOrigin"

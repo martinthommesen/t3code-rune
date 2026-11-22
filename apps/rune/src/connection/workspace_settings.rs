@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tokio::time::Instant;
 use uuid::Uuid;
@@ -15,6 +15,7 @@ const KEY: &str = "defaultThreadEnvMode";
 const ORIGIN: &str = "newWorktreesStartFromOrigin";
 const PERMISSIONS: &str = "defaultRuntimeMode";
 const DIRECTORY: &str = "worktreesDirectory";
+const BRANCH_NAMING: &str = "branchNamingMode";
 const PROJECT_OVERRIDES: &str = "projectSettingsOverrides";
 
 pub(super) enum Edit {
@@ -22,6 +23,7 @@ pub(super) enum Edit {
     StartFromRemote(Option<bool>),
     Permissions(Option<RuntimeMode>),
     WorktreesDirectory(String),
+    BranchNaming(Option<BranchNamingMode>),
 }
 
 impl Edit {
@@ -35,6 +37,9 @@ impl Edit {
             Self::Permissions(None) if project_scope => (PERMISSIONS, Value::Null),
             Self::Permissions(None) => (PERMISSIONS, json!(RuntimeMode::FullAccess)),
             Self::WorktreesDirectory(path) => (DIRECTORY, json!(path)),
+            Self::BranchNaming(Some(mode)) => (BRANCH_NAMING, json!(mode)),
+            Self::BranchNaming(None) if project_scope => (BRANCH_NAMING, Value::Null),
+            Self::BranchNaming(None) => (BRANCH_NAMING, json!(BranchNamingMode::Static)),
         }
     }
 }
@@ -122,12 +127,30 @@ pub(crate) struct WorktreeLocation {
     pub(crate) managed_by: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum BranchNamingMode {
+    #[default]
+    Static,
+    Semantic,
+    Custom,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct BranchNamingSetting {
+    pub(crate) configured: BranchNamingMode,
+    pub(crate) projects: HashMap<String, BranchNamingMode>,
+    pub(crate) writable: bool,
+    pub(crate) managed_by: Option<String>,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct WorkspaceSetting {
     pub(crate) configured: Option<WorkspaceMode>,
     pub(crate) origin: OriginSetting,
     pub(crate) permission: PermissionSetting,
     pub(crate) worktree_location: Option<WorktreeLocation>,
+    pub(crate) branch_naming: BranchNamingSetting,
     pub(crate) projects: HashMap<String, WorkspaceMode>,
     pub(crate) writable: bool,
     pub(crate) managed_by: Option<String>,
@@ -140,6 +163,7 @@ pub(super) struct Subscription {
     permission_policy: PermissionPolicy,
     directory_supported: bool,
     directory_managed_by: Option<String>,
+    branch_naming_managed_by: Option<String>,
     pending: Option<Pending>,
     overrides: Map<String, Value>,
     pending_file: Option<Pending>,
@@ -160,6 +184,7 @@ impl Subscription {
             permission_policy: PermissionPolicy::default(),
             directory_supported: false,
             directory_managed_by: None,
+            branch_naming_managed_by: None,
             pending: None,
             overrides: Map::new(),
             pending_file: None,
@@ -181,6 +206,8 @@ impl Subscription {
                     self.directory_supported =
                         config["environment"]["capabilities"][DIRECTORY].as_bool() == Some(true);
                     self.directory_managed_by = managed_by(&config["managedPolicy"], DIRECTORY);
+                    self.branch_naming_managed_by =
+                        managed_by(&config["managedPolicy"], BRANCH_NAMING);
 
                     &config["settings"]
                 }
@@ -192,25 +219,34 @@ impl Subscription {
                     .as_object()
                     .cloned()
                     .unwrap_or_default();
-                current = Some((
-                    mode,
-                    settings[ORIGIN].as_bool().unwrap_or(true),
-                    RuntimeMode::deserialize(&settings[PERMISSIONS])
-                        .unwrap_or(RuntimeMode::FullAccess),
-                    settings[DIRECTORY].as_str().unwrap_or(""),
-                ));
+                current = Some((mode, settings));
             }
         }
-        current.map(|(configured, origin, permissions, path)| WorkspaceSetting {
+        current.map(|(configured, settings)| WorkspaceSetting {
             configured,
             worktree_location: self.directory_supported.then(|| WorktreeLocation {
-                path: path.to_owned(),
+                path: settings[DIRECTORY].as_str().unwrap_or("").to_owned(),
                 writable: self.can_write && self.directory_managed_by.is_none(),
                 managed_by: self.directory_managed_by.clone(),
             }),
 
+            branch_naming: BranchNamingSetting {
+                configured: BranchNamingMode::deserialize(&settings[BRANCH_NAMING])
+                    .unwrap_or_default(),
+                projects: self
+                    .overrides
+                    .iter()
+                    .filter_map(|(id, project)| {
+                        BranchNamingMode::deserialize(&project[BRANCH_NAMING])
+                            .ok()
+                            .map(|mode| (id.clone(), mode))
+                    })
+                    .collect(),
+                writable: self.can_write && self.branch_naming_managed_by.is_none(),
+                managed_by: self.branch_naming_managed_by.clone(),
+            },
             origin: OriginSetting {
-                enabled: origin,
+                enabled: settings[ORIGIN].as_bool().unwrap_or(true),
                 projects: self
                     .overrides
                     .iter()
@@ -224,7 +260,8 @@ impl Subscription {
                 managed_by: self.origin_managed_by.clone(),
             },
             permission: PermissionSetting {
-                environment: permissions,
+                environment: RuntimeMode::deserialize(&settings[PERMISSIONS])
+                    .unwrap_or(RuntimeMode::FullAccess),
                 projects: self
                     .overrides
                     .iter()
@@ -326,6 +363,14 @@ impl Connection {
         self.update_workspace_setting(None, Edit::WorktreesDirectory(path))
     }
 
+    pub(crate) fn update_branch_naming_mode(
+        &self,
+        project_id: Option<String>,
+        mode: Option<BranchNamingMode>,
+    ) -> Option<Uuid> {
+        self.update_workspace_setting(project_id, Edit::BranchNaming(mode))
+    }
+
     fn update_workspace_setting(&self, project_id: Option<String>, edit: Edit) -> Option<Uuid> {
         let operation = Uuid::new_v4();
         self.commands
@@ -364,6 +409,7 @@ impl Session {
             Edit::StartFromRemote(_) => &settings.origin_managed_by,
             Edit::Permissions(_) => &settings.permission_policy.managed_by,
             Edit::WorktreesDirectory(_) => &settings.directory_managed_by,
+            Edit::BranchNaming(_) => &settings.branch_naming_managed_by,
         };
         let denied = if matches!(edit, Edit::WorktreesDirectory(_))
             && (project_id.is_some() || !settings.directory_supported)

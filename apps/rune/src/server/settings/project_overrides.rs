@@ -359,6 +359,9 @@ fn supported(key: &str) -> bool {
             | "reviewGuideModelSelection"
             | "continueThreadsAfterServerUpdate"
             | "responseStreamingMode"
+            | "branchNamingMode"
+            | "branchNamePrefix"
+            | "branchNameInstructions"
             | "providerInstances"
     )
 }
@@ -383,6 +386,11 @@ fn decode_value(key: &str, value: &Value, path: &str) -> Result<Value, String> {
     }
     if let Some(error) = patch::invalid_value(key, value) {
         return Err(expected(error, path));
+    }
+    if matches!(key, "branchNamePrefix" | "branchNameInstructions") {
+        return Ok(super::text(value)
+            .expect("decoded branch naming text")
+            .into());
     }
     Ok(value.clone())
 }

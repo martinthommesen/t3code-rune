@@ -4,12 +4,12 @@ use rune::{
 };
 use uuid::Uuid;
 
-use crate::connection::{WorkspaceMode, WorkspaceSetting, WorktreeLocation};
+use crate::connection::{BranchNamingMode, WorkspaceMode, WorkspaceSetting, WorktreeLocation};
 use t3_rune::providers::codex::RuntimeMode;
 
 use super::{CONTROL, DESCRIPTION, Palette, RESET, SECTION, State, error_text};
 
-mod keyboard;
+pub(super) mod keyboard;
 mod permissions;
 mod scope;
 
@@ -17,9 +17,9 @@ const WIDTH: f32 = 160.0;
 const TRIGGER: &str = "default-workspace";
 const OPTIONS: [WorkspaceMode; 2] = [WorkspaceMode::Local, WorkspaceMode::Worktree];
 const LIST: &str = "default-workspace-options";
-const ITEM: TextStyle = TextStyle::new(14.0, 400.0).lh(20.0);
+pub(super) const ITEM: TextStyle = TextStyle::new(14.0, 400.0).lh(20.0);
 
-static CHEVRON: Icon = Icon {
+pub(super) static CHEVRON: Icon = Icon {
     name: "default-workspace-chevron",
     view: 24.0,
     body: r#"<path d="m6 9 6 6 6-6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>"#,
@@ -36,11 +36,20 @@ pub(super) struct Panel {
     pub(super) current: Option<WorkspaceSetting>,
     pub(super) highlighted: Option<WorkspaceMode>,
     permission_highlighted: Option<RuntimeMode>,
+    pub(super) branch_naming_highlighted: Option<BranchNamingMode>,
+    pub(super) branch_naming_typeahead: keyboard::Typeahead,
     workspace_typeahead: keyboard::Typeahead,
     permission_typeahead: keyboard::Typeahead,
     scope: scope::Scope,
     pending: Option<Uuid>,
     error: Option<String>,
+}
+
+pub(super) struct BranchNamingView<'a> {
+    pub(super) mode: BranchNamingMode,
+    pub(super) may_reset: bool,
+    pub(super) writable: bool,
+    pub(super) managed_by: Option<&'a str>,
 }
 
 pub(super) struct OriginView<'a> {
@@ -73,6 +82,8 @@ impl Panel {
     pub(super) fn close_popups(&mut self) {
         self.highlighted = None;
         self.permission_highlighted = None;
+        self.branch_naming_highlighted = None;
+        self.branch_naming_typeahead.clear();
         self.workspace_typeahead.clear();
         self.permission_typeahead.clear();
         self.scope.close();
@@ -122,6 +133,30 @@ impl Panel {
 
     pub(super) fn error(&self) -> Option<&str> {
         self.error.as_deref()
+    }
+
+    pub(super) fn branch_naming_view(&self, state: &State) -> Option<BranchNamingView<'_>> {
+        let settings = &self.current.as_ref()?.branch_naming;
+        let project_mode = self
+            .scope
+            .id
+            .as_ref()
+            .and_then(|id| settings.projects.get(id))
+            .copied();
+        Some(BranchNamingView {
+            mode: project_mode.unwrap_or(settings.configured),
+            may_reset: if self.project_selected() {
+                project_mode.is_some()
+            } else {
+                settings.configured != BranchNamingMode::Static
+            },
+            writable: self.scoped_writable(state, settings.writable),
+            managed_by: settings.managed_by.as_deref(),
+        })
+    }
+
+    pub(super) fn writes_pending(&self) -> bool {
+        self.pending.is_some()
     }
 
     pub(super) fn origin_view(&self, state: &State) -> Option<OriginView<'_>> {
@@ -179,6 +214,22 @@ pub(super) fn inheritance_marker(label: String, palette: Palette) -> El {
 
 pub(super) fn scope_header(state: &State, palette: Palette) -> El {
     scope::view(state, palette)
+}
+
+pub(super) fn save_branch_naming(state: &mut State, mode: Option<BranchNamingMode>) {
+    let panel = &state.settings.workspace;
+    if panel.pending.is_some()
+        || !panel
+            .branch_naming_view(state)
+            .is_some_and(|settings| settings.writable)
+    {
+        return;
+    }
+    let operation = state
+        .connection
+        .as_ref()
+        .and_then(|connection| connection.update_branch_naming_mode(panel.scope.id.clone(), mode));
+    start_write(&mut state.settings.workspace, operation);
 }
 
 pub(super) fn save_origin(state: &mut State, enabled: Option<bool>) {
@@ -453,7 +504,7 @@ pub(super) fn overlay(state: &State, palette: Palette) -> Option<[El; 2]> {
     Some([outside, panel])
 }
 
-fn surface(palette: Palette, light: &str, dark: &str) -> Color {
+pub(super) fn surface(palette: Palette, light: &str, dark: &str) -> Color {
     rune::color::hex(if palette.dark { dark } else { light }).expect("static settings palette")
 }
 

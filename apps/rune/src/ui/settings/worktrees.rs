@@ -6,8 +6,10 @@ use super::{
     workspace,
 };
 
+mod branches;
 mod location;
 
+pub(super) use branches::overlay;
 pub(super) use location::LocationPanel;
 pub(in crate::ui) use location::poll as poll_location;
 
@@ -140,7 +142,8 @@ pub(super) fn page(state: &State, palette: Palette, width: f32, large: bool) -> 
                 .max_w(800.0)
                 .gap(22.0)
                 .child(workspace::scope_header(state, palette))
-                .child(section),
+                .child(section)
+                .child(branches::section(state, palette, width)),
         )
 }
 
