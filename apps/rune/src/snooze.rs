@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+mod schedule;
+pub(crate) use schedule::{Unit, Wake, resolve};
+
 pub(crate) const MAX_OPTIONS: usize = 8;
 pub(crate) const MAX_MINUTES: u16 = 30 * 24 * 60;
 pub(crate) const KEY: &str = "snoozePresets";
@@ -112,4 +115,13 @@ pub(crate) fn valid_time(value: &str) -> bool {
 
 fn failure(message: &str, path: &str) -> String {
     format!("{message}\n  at {path}")
+}
+
+pub(crate) fn defaults() -> &'static [Preset] {
+    static OPTIONS: std::sync::OnceLock<Vec<Preset>> = std::sync::OnceLock::new();
+    OPTIONS.get_or_init(|| {
+        let settings: Value = serde_json::from_str(include_str!("server/settings/defaults.json"))
+            .expect("built-in server settings");
+        decode(&settings[KEY], KEY).expect("built-in snooze options")
+    })
 }

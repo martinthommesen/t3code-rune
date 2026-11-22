@@ -31,6 +31,7 @@ macro_rules! glyph {
 mod archive;
 mod keybindings;
 pub(super) use archive::settle as settle_archive_action;
+pub(super) use workspace::snooze::poll as poll_snooze_options;
 pub(super) use worktrees::{poll_branch_fields, poll_location as poll_worktree_location};
 
 static GEAR: Icon = glyph!(
@@ -184,6 +185,11 @@ impl State {
                 .as_ref()
                 .and_then(|settings| settings.worktree_location.as_ref()),
         );
+        self.settings.workspace.snooze.apply(
+            setting
+                .as_ref()
+                .and_then(|settings| settings.snooze.as_ref()),
+        );
         self.settings.workspace.current = setting;
     }
 
@@ -197,6 +203,10 @@ impl State {
             .settle_reset(operation, result.is_ok());
         self.settings
             .branch_fields
+            .settle(operation, result.is_ok());
+        self.settings
+            .workspace
+            .snooze
             .settle(operation, result.is_ok());
         self.settings.workspace.settle(operation, result);
     }

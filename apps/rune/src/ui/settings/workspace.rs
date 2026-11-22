@@ -15,6 +15,7 @@ mod inheritance;
 pub(super) mod keyboard;
 mod permissions;
 mod scope;
+pub(super) mod snooze;
 
 const WIDTH: f32 = 160.0;
 const TRIGGER: &str = "default-workspace";
@@ -45,6 +46,7 @@ pub(super) struct Panel {
     workspace_typeahead: keyboard::Typeahead,
     permission_typeahead: keyboard::Typeahead,
     scope: scope::Scope,
+    pub(super) snooze: snooze::Panel,
     pending: Option<Uuid>,
     error: Option<String>,
 }
@@ -81,6 +83,7 @@ impl Panel {
 
     pub(super) fn disconnect(&mut self) {
         self.current = None;
+        self.snooze.apply(None);
         self.close_popups();
     }
 
@@ -100,6 +103,7 @@ impl Panel {
         self.workspace_typeahead.clear();
         self.permission_typeahead.clear();
         self.scope.close();
+        self.snooze.close_menu();
     }
 
     pub(super) fn apply_project_file(&mut self, operation: Uuid, mode: Option<WorkspaceMode>) {
@@ -474,13 +478,17 @@ pub(super) fn page(state: &State, palette: Palette, width: f32) -> El {
                 .max_w(800.0)
                 .gap(22.0)
                 .child(scope::view(state, palette))
-                .child(section),
+                .child(section)
+                .children(snooze::section(state, palette, width)),
         )
 }
 
 pub(super) fn overlay(state: &State, palette: Palette) -> Option<[El; 2]> {
     if let Some(popup) = inheritance::overlay(state, palette) {
         return Some(popup);
+    }
+    if let Some(options) = snooze::overlay(state, palette) {
+        return Some(options);
     }
     if let Some(scope) = scope::overlay(state, palette) {
         return Some(scope);
@@ -651,7 +659,11 @@ fn navigate(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
         Key::Tab => {
             let panel = &state.settings.workspace;
             let target = if !event.mods.shift {
-                "close-client-settings"
+                if !panel.project_selected() && snooze::setting(state).is_some() {
+                    inheritance::Setting::Snooze.key()
+                } else {
+                    "close-client-settings"
+                }
             } else if panel.configured().is_some() {
                 "reset-default-workspace"
             } else {

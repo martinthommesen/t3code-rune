@@ -4,12 +4,17 @@ use rune::{
 use t3_rune::providers::codex::RuntimeMode;
 
 use crate::connection::{Project, ResetWorkspaceOverride, WorkspaceSetting};
+use crate::snooze;
 
 use super::super::archive::press;
 use super::{DESCRIPTION, ITEM, LAYERS, Palette, State, scope, start_write, surface};
 
 const POPUP: &str = "thread-setting-inheritance-popup";
 const RESET: &str = "reset-thread-setting-project-overrides";
+const OPTIONS_COUNT: [&str; 9] = [
+    "0 items", "1 item", "2 items", "3 items", "4 items", "5 items", "6 items", "7 items",
+    "8 items",
+];
 const CHECK: Icon = Icon {
     name: "thread-setting-inheritance-check",
     view: 24.0,
@@ -20,6 +25,7 @@ const CHECK: Icon = Icon {
 pub(super) enum Setting {
     Permissions,
     Workspace,
+    Snooze,
 }
 
 impl Setting {
@@ -27,6 +33,7 @@ impl Setting {
         match self {
             Self::Permissions => "default-permissions-inheritance",
             Self::Workspace => "default-workspace-inheritance",
+            Self::Snooze => "snooze-options-inheritance",
         }
     }
 
@@ -34,6 +41,7 @@ impl Setting {
         match self {
             Self::Permissions => "default-permissions",
             Self::Workspace => "default-workspace",
+            Self::Snooze => super::snooze::ADD,
         }
     }
 
@@ -41,6 +49,7 @@ impl Setting {
         match self {
             Self::Permissions => "reset-default-permissions",
             Self::Workspace => "reset-default-workspace",
+            Self::Snooze => "reset-snooze-options",
         }
     }
 
@@ -53,6 +62,7 @@ impl Setting {
                 .copied()
                 .map(permission),
             Self::Workspace => settings.projects.get(id).copied().map(super::label),
+            Self::Snooze => None,
         }
     }
 
@@ -63,6 +73,11 @@ impl Setting {
                 (mode != RuntimeMode::FullAccess).then(|| permission(mode))
             }
             Self::Workspace => settings.configured.map(super::label),
+            Self::Snooze => settings
+                .snooze
+                .as_ref()
+                .filter(|setting| setting.presets != snooze::defaults())
+                .map(|setting| OPTIONS_COUNT[setting.presets.len()]),
         }
     }
 
@@ -70,6 +85,7 @@ impl Setting {
         match self {
             Self::Permissions => permission(RuntimeMode::FullAccess),
             Self::Workspace => super::label(crate::connection::WorkspaceMode::Local),
+            Self::Snooze => OPTIONS_COUNT[snooze::defaults().len()],
         }
     }
 }
@@ -135,6 +151,9 @@ impl Inheritance<'_> {
 fn resolve_inheritance(state: &State, setting: Setting) -> Option<Inheritance<'_>> {
     let panel = &state.settings.workspace;
     let current = panel.current.as_ref()?;
+    if setting == Setting::Snooze && (panel.project_selected() || current.snooze.is_none()) {
+        return None;
+    }
     let machine = state.workspace.as_ref()?.label.as_str();
     let environment = setting.environment_value(current);
     let project = panel
@@ -187,6 +206,10 @@ fn resolve_inheritance(state: &State, setting: Setting) -> Option<Inheritance<'_
     let writable = match setting {
         Setting::Permissions => current.permission.writable,
         Setting::Workspace => current.writable,
+        Setting::Snooze => current
+            .snooze
+            .as_ref()
+            .is_some_and(|setting| setting.writable),
     };
     Some(Inheritance {
         machine,
@@ -453,13 +476,18 @@ fn tab(state: &mut State, setting: Setting, backwards: bool, tx: &mut Tx) -> boo
     } else if match setting {
         Setting::Permissions => super::permissions::resettable(state),
         Setting::Workspace => panel.configured().is_some() && panel.writable(state),
+        Setting::Snooze => super::snooze::can_reset(state),
     } {
         setting.reset()
     } else {
         setting.control()
     };
     close(state, setting, tx);
-    tx.focus(target, true);
+    if target == super::snooze::ADD {
+        super::snooze::focus_editor(state, tx);
+    } else {
+        tx.focus(target, true);
+    }
     true
 }
 
@@ -476,6 +504,7 @@ fn clear(state: &mut State, setting: Setting, tx: &mut Tx) {
     let setting = match setting {
         Setting::Permissions => ResetWorkspaceOverride::Permissions,
         Setting::Workspace => ResetWorkspaceOverride::Mode,
+        Setting::Snooze => return,
     };
     let operation = state
         .connection

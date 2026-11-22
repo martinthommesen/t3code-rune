@@ -7,6 +7,8 @@ use uuid::Uuid;
 
 use t3_rune::providers::codex::RuntimeMode;
 
+use crate::snooze::{self, Preset};
+
 use super::{
     Command, Connection, Event, EventSender, REQUEST_TIMEOUT, Session, SessionStop, WorkspaceMode,
 };
@@ -38,6 +40,7 @@ pub(super) enum Edit {
     WorktreesDirectory(String),
     BranchNaming(Option<BranchNamingMode>),
     BranchText(BranchTextField, Option<String>),
+    SnoozePresets(Vec<Preset>),
     ModelFavorite {
         model: ModelFavorite,
         favorite: bool,
@@ -61,6 +64,7 @@ impl Edit {
             Self::BranchText(field, Some(value)) => (field.key(), json!(value)),
             Self::BranchText(field, None) if project_scope => (field.key(), Value::Null),
             Self::BranchText(field, None) => (field.key(), json!(field.default_value())),
+            Self::SnoozePresets(presets) => (snooze::KEY, json!(presets)),
             Self::ModelFavorite { model, favorite } => (
                 "setModelFavorites",
                 json!([{"provider":model.provider,"model":model.model,"favorite":favorite}]),
@@ -229,12 +233,21 @@ pub(crate) struct FavoriteSetting {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+pub(crate) struct SnoozeSetting {
+    pub(crate) presets: Vec<Preset>,
+    pub(crate) twenty_four_hour: bool,
+    pub(crate) writable: bool,
+    pub(crate) managed_by: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct WorkspaceSetting {
     pub(crate) configured: Option<WorkspaceMode>,
     pub(crate) origin: OriginSetting,
     pub(crate) permission: PermissionSetting,
     pub(crate) worktree_location: Option<WorktreeLocation>,
     pub(crate) branch_naming: BranchNamingSetting,
+    pub(crate) snooze: Option<SnoozeSetting>,
     pub(crate) favorites: FavoriteSetting,
     pub(crate) override_order: Vec<String>,
     pub(crate) projects: HashMap<String, WorkspaceMode>,
@@ -250,6 +263,7 @@ pub(super) struct Subscription {
     directory_supported: bool,
     directory_managed_by: Option<String>,
     branch_naming_managed_by: Option<String>,
+    snooze_managed_by: Option<String>,
     branch_text_managed_by: [Option<String>; 2],
     favorites_managed_by: Option<String>,
     pending: Option<Pending>,
@@ -273,6 +287,7 @@ impl Subscription {
             directory_supported: false,
             directory_managed_by: None,
             branch_naming_managed_by: None,
+            snooze_managed_by: None,
             branch_text_managed_by: [None, None],
             favorites_managed_by: None,
             pending: None,
@@ -298,6 +313,7 @@ impl Subscription {
                     self.directory_managed_by = managed_by(&config["managedPolicy"], DIRECTORY);
                     self.branch_naming_managed_by =
                         managed_by(&config["managedPolicy"], BRANCH_NAMING);
+                    self.snooze_managed_by = managed_by(&config["managedPolicy"], snooze::KEY);
                     self.branch_text_managed_by = BranchTextField::ALL
                         .map(|field| managed_by(&config["managedPolicy"], field.key()));
                     self.favorites_managed_by = managed_by(&config["managedPolicy"], FAVORITES);
@@ -322,6 +338,14 @@ impl Subscription {
                 writable: self.can_write && self.favorites_managed_by.is_none(),
             },
             override_order: self.overrides.keys().cloned().collect(),
+            snooze: snooze::decode(&settings[snooze::KEY], snooze::KEY)
+                .ok()
+                .map(|presets| SnoozeSetting {
+                    presets,
+                    twenty_four_hour: settings["timestampFormat"] == "24-hour",
+                    writable: self.can_write && self.snooze_managed_by.is_none(),
+                    managed_by: self.snooze_managed_by.clone(),
+                }),
             worktree_location: self.directory_supported.then(|| WorktreeLocation {
                 path: settings[DIRECTORY].as_str().unwrap_or("").to_owned(),
                 writable: self.can_write && self.directory_managed_by.is_none(),
@@ -511,6 +535,10 @@ impl Connection {
         self.update_workspace_setting(project_id, Edit::BranchText(field, value))
     }
 
+    pub(crate) fn update_snooze_presets(&self, presets: Vec<Preset>) -> Option<Uuid> {
+        self.update_workspace_setting(None, Edit::SnoozePresets(presets))
+    }
+
     pub(crate) fn reset_workspace_overrides(
         &self,
         projects: Vec<String>,
@@ -581,6 +609,7 @@ impl Session {
             Edit::WorktreesDirectory(_) => &settings.directory_managed_by,
             Edit::BranchNaming(_) => &settings.branch_naming_managed_by,
             Edit::BranchText(field, _) => &settings.branch_text_managed_by[field.index()],
+            Edit::SnoozePresets(_) => &settings.snooze_managed_by,
             Edit::ModelFavorite { .. } => &settings.favorites_managed_by,
         };
         let environment = matches!(target, Target::Environment);
