@@ -198,20 +198,21 @@ pub(super) fn save_origin(state: &mut State, enabled: Option<bool>) {
     start_write(&mut state.settings.workspace, operation);
 }
 
-pub(super) fn save_worktree_location(state: &mut State, path: String) {
+pub(super) fn save_worktree_location(state: &mut State, path: String) -> Option<Uuid> {
     let panel = &state.settings.workspace;
     if !panel.can_edit_worktree_location(state)
         || panel
             .worktree_location()
             .is_some_and(|setting| setting.path == path)
     {
-        return;
+        return None;
     }
     let operation = state
         .connection
         .as_ref()
         .and_then(|connection| connection.update_worktree_location(path));
     start_write(&mut state.settings.workspace, operation);
+    operation
 }
 
 fn start_write(panel: &mut Panel, operation: Option<Uuid>) {

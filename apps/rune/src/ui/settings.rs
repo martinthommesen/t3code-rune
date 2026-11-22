@@ -190,6 +190,9 @@ impl State {
         operation: uuid::Uuid,
         result: Result<(), String>,
     ) {
+        self.settings
+            .worktree_location
+            .settle_reset(operation, result.is_ok());
         self.settings.workspace.settle(operation, result);
     }
 

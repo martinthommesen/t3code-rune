@@ -7,6 +7,7 @@ use super::workspace;
 
 mod path_input;
 
+const ROW: &str = "worktree-location-row";
 const INPUT: &str = "worktree-location";
 const RESET_LOCATION: &str = "reset-worktree-location";
 const LABEL: &str = "Worktree location";
@@ -22,18 +23,34 @@ pub(in crate::ui::settings) struct LocationPanel {
     draft: TextEdit,
     previous: String,
     edited: bool,
+    pending_reset: Option<uuid::Uuid>,
 }
 
 impl LocationPanel {
     pub(in crate::ui::settings) fn update(&mut self, setting: Option<&WorktreeLocation>) {
         let saved = setting.map(|setting| setting.path.as_str());
+        if saved.is_none() {
+            self.pending_reset = None;
+        }
         if self.saved.as_deref() == saved {
             return;
         }
         self.saved = saved.map(str::to_owned);
-        let value = saved.unwrap_or_default();
-        self.draft.replace_text(value);
-        self.previous = value.to_owned();
+        self.replace_draft(saved.unwrap_or_default().to_owned());
+    }
+
+    pub(in crate::ui::settings) fn settle_reset(&mut self, operation: uuid::Uuid, saved: bool) {
+        if self.pending_reset == Some(operation) {
+            self.pending_reset = None;
+            if !saved {
+                self.replace_draft(self.saved.clone().unwrap_or_default());
+            }
+        }
+    }
+
+    fn replace_draft(&mut self, value: String) {
+        self.draft.replace_text(&value);
+        self.previous = value;
         self.edited = false;
     }
 
@@ -61,7 +78,7 @@ pub(in crate::ui) fn poll(state: &mut State, tx: &mut Tx) -> bool {
         .text
         .trim_matches(path_input::whitespace)
         .to_owned();
-    workspace::save_worktree_location(state, path);
+    let _ = workspace::save_worktree_location(state, path);
     true
 }
 
@@ -136,7 +153,10 @@ pub(super) fn view(state: &State, palette: Palette, width: f32) -> Option<El> {
     };
     Some(
         content
-            .key("worktree-location-row")
+            .key(ROW)
+            .focusable(true)
+            .tab_index(-1)
+            .no_focus_ring()
             .w_full()
             .px(16.0)
             .py(12.0),
@@ -144,7 +164,10 @@ pub(super) fn view(state: &State, palette: Palette, width: f32) -> Option<El> {
 }
 
 fn reset(state: &mut State, tx: &mut Tx) {
-    state.settings.worktree_location.edited = false;
-    workspace::save_worktree_location(state, String::new());
-    tx.focus(INPUT, tx.focus_visible());
+    if let Some(operation) = workspace::save_worktree_location(state, String::new()) {
+        let panel = &mut state.settings.worktree_location;
+        panel.pending_reset = Some(operation);
+        panel.replace_draft(String::new());
+        tx.focus(ROW, tx.focus_visible());
+    }
 }
