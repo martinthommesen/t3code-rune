@@ -40,6 +40,8 @@ impl State {
             PointerButton::Primary => 0,
             PointerButton::Middle => 1,
             PointerButton::Secondary => 2,
+            PointerButton::Back => 64,
+            PointerButton::Forward => 65,
             _ => return,
         };
         let primary_paste = self.terminal_primary_paste;

@@ -952,6 +952,10 @@ fn viewport(terminal: &Pane, active: bool, palette: Palette) -> El {
         .on_wheel(move |state: &mut State, event, _| state.terminal_wheel(attachment, event))
         .on_layout(move |state: &mut State, rect| state.resize_terminal_pane(attachment, rect))
         .child(output);
+    if terminal.screen.term.mode().intersects(TermMode::MOUSE_MODE) {
+        viewport =
+            viewport.pointer_buttons([rune::PointerButton::Back, rune::PointerButton::Forward]);
+    }
     if let Some(scrollbar) = history::scrollbar(terminal, palette) {
         viewport = viewport.child(scrollbar);
     }
