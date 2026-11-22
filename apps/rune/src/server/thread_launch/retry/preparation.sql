@@ -30,7 +30,9 @@ WHERE run.thread_id=?1 AND run.run_id=?2 AND run.status=?3
   AND provider.driver='codex' AND provider.status='not_loaded'
   AND thread.archived_at IS NULL AND thread.deleted_at IS NULL
   AND project.deleted_at IS NULL
-  AND json_extract(thread.payload_json,'$.worktreePath') IS NULL
+  AND (json_extract(thread.payload_json,'$.worktreePath') IS NULL OR
+       (json_type(thread.payload_json,'$.worktreePath')='text'
+        AND json_type(thread.payload_json,'$.branch')='text'))
   AND json_extract(run.payload_json,'$.workspacePreparation.type')='worktree'
   AND message.role='user'
   AND COALESCE(json_array_length(message.payload_json,'$.attachments'),0)=0

@@ -89,7 +89,7 @@ struct Snapshot {
     base_ref: String,
     worktree_path: Option<PathBuf>,
     setup_script: Option<ScriptInfo>,
-    stages: [Stage; 5],
+    stages: Vec<Stage>,
     error: Option<String>,
     sequence: u64,
 }
@@ -156,6 +156,43 @@ impl Progress {
         branch: Option<&str>,
         base_ref: &str,
     ) -> Self {
+        Self::begin_with_stages(
+            database,
+            thread_id,
+            branch,
+            base_ref,
+            &[
+                StageId::Fetch,
+                StageId::Checkout,
+                StageId::Submodules,
+                StageId::SetupScript,
+                StageId::Agent,
+            ],
+        )
+    }
+
+    pub(super) fn begin_reused(
+        database: &Path,
+        thread_id: &str,
+        branch: Option<&str>,
+        base_ref: &str,
+    ) -> Self {
+        Self::begin_with_stages(
+            database,
+            thread_id,
+            branch,
+            base_ref,
+            &[StageId::SetupScript, StageId::Agent],
+        )
+    }
+
+    fn begin_with_stages(
+        database: &Path,
+        thread_id: &str,
+        branch: Option<&str>,
+        base_ref: &str,
+        stages: &[StageId],
+    ) -> Self {
         let channel = channel(database, thread_id);
         let mut generation = 0;
         channel.send_modify(|state| {
@@ -170,14 +207,7 @@ impl Progress {
                 base_ref: base_ref.to_owned(),
                 worktree_path: None,
                 setup_script: None,
-                stages: [
-                    StageId::Fetch,
-                    StageId::Checkout,
-                    StageId::Submodules,
-                    StageId::SetupScript,
-                    StageId::Agent,
-                ]
-                .map(Stage::empty),
+                stages: stages.iter().copied().map(Stage::empty).collect(),
                 error: None,
                 sequence: state
                     .snapshot

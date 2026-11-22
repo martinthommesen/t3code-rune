@@ -167,12 +167,13 @@ impl WorktreePreparation {
         let mut automatic_branch = false;
         if let Some(checkout) = pending.checkout.take() {
             let strategy = match &checkout {
-                PendingCheckout::FinalizeBinding { requested, .. } => requested,
-                PendingCheckout::Provision { .. } => &pending.strategy,
+                PendingCheckout::FinalizeBinding { requested, .. } => Some(requested),
+                PendingCheckout::Provision { .. } => Some(&pending.strategy),
+                PendingCheckout::ReuseBinding { .. } => None,
             };
-            if let WorkspaceStrategy::Worktree {
+            if let Some(WorkspaceStrategy::Worktree {
                 base_ref, branch, ..
-            } = strategy
+            }) = strategy
             {
                 self.progress = Some(Progress::begin(
                     &self.plan.database,
@@ -183,6 +184,19 @@ impl WorktreePreparation {
             }
             self.reservation.begin_checkout();
             match checkout {
+                PendingCheckout::ReuseBinding { base_ref } => {
+                    let branch = self
+                        .plan
+                        .reused_worktree
+                        .as_ref()
+                        .map(|worktree| worktree.branch.0.as_str());
+                    self.progress = Some(Progress::begin_reused(
+                        &self.plan.database,
+                        &self.commit.thread_id,
+                        branch,
+                        &base_ref.0,
+                    ));
+                }
                 PendingCheckout::FinalizeBinding {
                     requested,
                     path,
@@ -252,12 +266,14 @@ impl WorktreePreparation {
             .as_str()
             .map(str::to_owned);
         let release_run = preparation.release_command.is_some();
-        self.write(
-            "update-thread",
-            move |plan, commit| release::record_workspace(plan, commit, &preparation),
-            false,
-        )
-        .await?;
+        if self.plan.reused_worktree.is_none() {
+            self.write(
+                "update-thread",
+                move |plan, commit| release::record_workspace(plan, commit, &preparation),
+                false,
+            )
+            .await?;
+        }
         self.workspace_recorded = true;
         self.check_cancelled()?;
         if setup_path.is_some() {

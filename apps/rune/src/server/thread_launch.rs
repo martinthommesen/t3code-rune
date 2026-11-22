@@ -210,6 +210,19 @@ pub(super) struct PreparedLaunch {
     branch: Option<String>,
     initial_message_id: Option<String>,
     had_launch_receipt: bool,
+    reused_worktree: Option<WorktreeBinding>,
+}
+
+struct WorktreeBinding {
+    path: Trimmed,
+    branch: Trimmed,
+}
+
+impl WorktreeBinding {
+    fn matches(&self, thread: &state::Thread) -> bool {
+        thread.worktree_path.as_deref() == Some(Path::new(&self.path.0))
+            && thread.branch.as_deref() == Some(self.branch.0.as_str())
+    }
 }
 
 pub(super) struct DispatchCommit {
@@ -252,6 +265,9 @@ enum PendingCheckout {
         requested: WorkspaceStrategy,
         path: PathBuf,
         original_branch: String,
+    },
+    ReuseBinding {
+        base_ref: Trimmed,
     },
 }
 
@@ -417,6 +433,7 @@ pub(super) async fn prepare(
         branch,
         initial_message_id,
         had_launch_receipt,
+        reused_worktree: None,
     })
 }
 
@@ -712,7 +729,24 @@ impl PreparedLaunch {
             })?;
 
         let mut checkout = None;
-        if matches!(strategy, WorkspaceStrategy::Worktree { .. })
+        if let Some(reused) = &self.reused_worktree
+            && let WorkspaceStrategy::Worktree { base_ref, .. } = &strategy
+        {
+            let current = state::thread(&snapshot, &commit.thread_id)
+                .map_err(|cause| self.input.fail(operation, cause))?;
+            if !current.is_some_and(|thread| thread.active && reused.matches(&thread)) {
+                return Err(self
+                    .input
+                    .fail(operation, "The recorded worktree changed before setup."));
+            }
+            checkout = Some(PendingCheckout::ReuseBinding {
+                base_ref: base_ref.clone(),
+            });
+            strategy = WorkspaceStrategy::ExistingWorktree {
+                worktree_path: reused.path.clone(),
+                branch: Some(reused.branch.clone()),
+            };
+        } else if matches!(strategy, WorkspaceStrategy::Worktree { .. })
             && state::receipt(&snapshot, &format!("{}:workspace", self.input.command_id.0))
                 .map_err(|cause| self.input.fail(operation, cause))?
                 .is_some_and(|receipt| receipt.accepted && receipt.thread_id == commit.thread_id)

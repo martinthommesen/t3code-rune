@@ -260,14 +260,21 @@ pub(super) fn record_release(
             .fail(operation, plan.input.provider_disabled().message));
     }
     let workspace_id = format!("{}:workspace", plan.input.command_id.0);
-    if !replay_exists(
-        &transaction,
-        plan,
-        operation,
-        &workspace_id,
-        thread_id,
-        WORKSPACE_COMMAND,
-    )? {
+    let workspace_recorded = if let Some(reused) = &plan.reused_worktree {
+        state::thread(&transaction, thread_id)
+            .map_err(fail)?
+            .is_some_and(|thread| thread.active && reused.matches(&thread))
+    } else {
+        replay_exists(
+            &transaction,
+            plan,
+            operation,
+            &workspace_id,
+            thread_id,
+            WORKSPACE_COMMAND,
+        )?
+    };
+    if !workspace_recorded {
         return Err(plan
             .input
             .fail(operation, "Workspace metadata has not been committed."));

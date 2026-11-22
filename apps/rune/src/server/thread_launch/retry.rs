@@ -12,7 +12,8 @@ use crate::server::turn_commands::{ThreadEventStream, record_projected_sequence,
 use super::execute::{CommitObserver, schedule_preparation};
 use super::input::LaunchMessage;
 use super::{
-    LaunchCommit, LaunchContext, LaunchInput, PreparedLaunch, Trimmed, WorkspaceStrategy, state,
+    LaunchCommit, LaunchContext, LaunchInput, PreparedLaunch, Trimmed, WorkspaceStrategy,
+    WorktreeBinding, state,
 };
 
 pub(in crate::server) const COMMAND: &str = "prepared-run.retry";
@@ -198,6 +199,13 @@ impl Preparation {
         let branch = self.thread["branch"].as_str().map(str::to_owned);
         let context = |key: &str| self.thread[key].clone();
         let prompt = self.message["text"].as_str().unwrap_or_default();
+        let reused_worktree = self.thread["worktreePath"]
+            .as_str()
+            .zip(branch.as_deref())
+            .map(|(path, branch)| WorktreeBinding {
+                path: Trimmed(path.to_owned()),
+                branch: Trimmed(branch.to_owned()),
+            });
         let input = LaunchInput {
             command_id: retry.command_id,
             project_id: Trimmed(context("projectId").as_str().unwrap_or_default().to_owned()),
@@ -232,6 +240,7 @@ impl Preparation {
             branch,
             initial_message_id: None,
             had_launch_receipt: true,
+            reused_worktree,
         }
     }
 
