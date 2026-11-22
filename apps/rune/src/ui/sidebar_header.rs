@@ -268,6 +268,9 @@ pub(super) fn shortcut(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool
     {
         return false;
     }
+    if super::sidebar::thread_actions::undo::key(state, event, tx) {
+        return true;
+    }
     let terminal_focus = tx.focused() == Some(super::terminal::INPUT_KEY);
     let control = mods.ctrl || (!cfg!(target_os = "macos") && mods.cmd);
     let command = state.resolve_shortcut(event, tx);

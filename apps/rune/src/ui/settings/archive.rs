@@ -95,11 +95,11 @@ impl State {
         action: ArchiveAction,
         thread_id: &str,
         tx: &mut Tx,
-    ) {
+    ) -> bool {
         let archive = &mut self.settings.archive;
         let enabled = match action {
             ArchiveAction::Archive => archive.archivable,
-            ArchiveAction::Unarchive => archive.writable,
+            ArchiveAction::Unarchive | ArchiveAction::UndoArchive => archive.writable,
             ArchiveAction::Delete => archive.deletable,
         };
         let connected = self
@@ -107,17 +107,17 @@ impl State {
             .as_ref()
             .is_some_and(|workspace| !workspace.reconnecting);
         let Some(connection) = self.connection.as_ref().filter(|_| connected && enabled) else {
-            return;
+            return false;
         };
         if archive.pending.contains_key(thread_id) {
-            return;
+            return false;
         }
         let operation = Uuid::new_v4();
         archive
             .pending
             .insert(thread_id.to_owned(), (action, operation));
         archive.error = None;
-        if action != ArchiveAction::Archive
+        if matches!(action, ArchiveAction::Unarchive | ArchiveAction::Delete)
             && tx
                 .focused()
                 .is_some_and(|key| key == action_key(action, thread_id))
@@ -125,6 +125,7 @@ impl State {
             tx.focus("close-client-settings", tx.focus_visible());
         }
         connection.archive_action(action, thread_id.to_owned(), operation);
+        true
     }
 }
 
@@ -141,12 +142,26 @@ pub(in crate::ui) fn settle(
         return;
     }
     archive.pending.remove(thread_id);
-    if action == ArchiveAction::Archive {
-        crate::ui::sidebar::thread_actions::settle(state, thread_id, result);
-        return;
+    use crate::ui::sidebar::thread_actions;
+    match action {
+        ArchiveAction::Archive => {
+            thread_actions::settle_archive(state, thread_id, result, tx);
+            return;
+        }
+        ArchiveAction::UndoArchive => {
+            if result.is_ok()
+                && let Some(Ok(threads)) = archive.threads.as_mut()
+            {
+                threads.retain(|thread| thread.id != thread_id);
+            }
+            thread_actions::settle_undo(state, thread_id, result, tx);
+            return;
+        }
+        ArchiveAction::Unarchive | ArchiveAction::Delete => {}
     }
     match result {
         Ok(()) => {
+            state.thread_actions.undo.invalidate(thread_id);
             if let Some(Ok(threads)) = archive.threads.as_mut() {
                 threads.retain(|thread| thread.id != thread_id);
             }
@@ -160,7 +175,9 @@ pub(in crate::ui) fn settle(
         Err(message) => {
             let label = match action {
                 ArchiveAction::Archive => "Failed to archive thread.",
-                ArchiveAction::Unarchive => "Failed to unarchive thread.",
+                ArchiveAction::Unarchive | ArchiveAction::UndoArchive => {
+                    "Failed to unarchive thread."
+                }
                 ArchiveAction::Delete => "Failed to delete thread.",
             };
             archive.error = Some(format!("{label} {message}"));
@@ -519,7 +536,7 @@ fn thread_row(
                 .focus_ring(1.0, 2.0, palette.accent)
                 .child(icon(&UNARCHIVE, 14.0).color(palette.muted).a11y_hidden()),
             move |state: &mut State, tx| {
-                state.submit_archive_action(ArchiveAction::Unarchive, &id, tx)
+                state.submit_archive_action(ArchiveAction::Unarchive, &id, tx);
             },
         ));
     }
@@ -573,6 +590,7 @@ fn unarchive_key(thread_id: &str) -> String {
 fn action_key(action: ArchiveAction, thread_id: &str) -> String {
     match action {
         ArchiveAction::Archive => format!("thread-{thread_id}"),
+        ArchiveAction::UndoArchive => "sidebar-archive-undo".into(),
         ArchiveAction::Unarchive => unarchive_key(thread_id),
         ArchiveAction::Delete => delete::key(thread_id),
     }

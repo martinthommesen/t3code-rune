@@ -375,7 +375,10 @@ fn surface(
             submit = State::submit_thread_prompt;
         }
     }
-    let editor = editor.on_submit(submit);
+    let editor = editor
+        .on_input_key(super::sidebar::thread_actions::undo::key)
+        .on_input_change(|state: &mut State, _| state.thread_actions.undo.release_shortcut())
+        .on_submit(submit);
     let mut footer = row().w_full().px(8.0).pb(8.0).center_y().gap(8.0);
     if starting_thread && draft.worktree_launch.is_none() {
         footer = footer.child(

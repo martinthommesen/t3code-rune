@@ -399,6 +399,7 @@ impl State {
 
     fn disconnect(&mut self) {
         self.sidebar = sidebar::SidebarState::default();
+        self.thread_actions = sidebar::thread_actions::Panel::default();
         self.history = History::default();
         self.connection = None;
         self.workspace = None;
@@ -1074,6 +1075,7 @@ impl State {
         changed |= project::folder_collision::poll(self, tx);
         changed |= self.poll_question(clock);
         changed |= sidebar::poll_rename(self);
+        changed |= self.thread_actions.undo.poll(tx);
         changed |= settings::poll_worktree_location(self, tx);
         changed |= settings::poll_snooze_options(self, tx);
         changed |= settings::poll_add_project_base_directory(self, tx);
@@ -1126,6 +1128,7 @@ impl State {
             } => {
                 self.history = History::default();
                 self.settings.archive = Default::default();
+                self.thread_actions = Default::default();
                 self.pairing_code.clear();
                 if self.draft_environment.as_deref() != Some(&environment_id) {
                     self.keybindings = None;
@@ -1169,6 +1172,7 @@ impl State {
             }
             Event::Shell { projects, threads } => {
                 self.update_shell(Shell { projects, threads });
+                sidebar::thread_actions::undo::reopen(self);
                 self.select_added_project(tx);
                 if self
                     .workspace
@@ -1732,6 +1736,7 @@ impl State {
                 sidebar::cancel_rename(self);
                 self.connection = None;
                 self.workspace = None;
+                self.thread_actions = Default::default();
                 self.question_auto_advance = None;
                 self.connection_error = Some(reason);
                 self.command_palette = None;
@@ -1997,6 +2002,9 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
             if modal_open || onboarding_open {
                 return false;
             }
+            if sidebar::thread_actions::undo::key(state, event, tx) {
+                return true;
+            }
             if state.matches_terminal_toggle(event, tx)
                 && state
                     .workspace
@@ -2242,7 +2250,9 @@ fn sidebar_footer(
                 hover: colors.hover,
                 accent: colors.ring,
                 ..palette
-            }));
+            }))
+            .child(el().grow(1.0))
+            .children(sidebar::thread_actions::undo::footer(state, palette));
     }
     let status = if workspace.reconnecting {
         "Reconnecting…"
@@ -2274,6 +2284,7 @@ fn sidebar_footer(
                 .grow(1.0)
                 .min_w(0.0),
         )
+        .children(sidebar::thread_actions::undo::footer(state, palette))
 }
 
 fn detail(

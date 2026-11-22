@@ -11,6 +11,8 @@ use crate::connection::ArchiveAction;
 use super::super::{Palette, ProjectView, State, confirmation, sidebar_header};
 use super::{Destination, begin_rename};
 
+pub(in crate::ui) mod undo;
+
 const MENU: &str = "sidebar-thread-menu";
 const ARCHIVE: &str = "sidebar-archive-thread";
 const RENAME: &str = "sidebar-rename-thread";
@@ -31,12 +33,15 @@ struct Target {
 pub(in crate::ui) struct Panel {
     menu: Option<(Target, PointerPress)>,
     confirmation: Option<Target>,
-    pending_navigation: HashMap<String, String>,
+    pending_archive: HashMap<String, Option<String>>,
+    pub(in crate::ui) undo: undo::Notice,
 }
 
 impl Panel {
     pub(in crate::ui) fn pending_navigation(&self, thread_id: &str) -> bool {
-        self.pending_navigation.contains_key(thread_id)
+        self.pending_archive
+            .get(thread_id)
+            .is_some_and(Option::is_some)
     }
 }
 
@@ -132,12 +137,12 @@ impl State {
         if !self.can_archive_thread(&target.id) {
             return;
         }
-        if active_thread(self, &target.id) {
+        if self.submit_archive_action(ArchiveAction::Archive, &target.id, tx) {
+            let reopen = active_thread(self, &target.id).then(|| target.project_id.clone());
             self.thread_actions
-                .pending_navigation
-                .insert(target.id.clone(), target.project_id.clone());
+                .pending_archive
+                .insert(target.id.clone(), reopen);
         }
-        self.submit_archive_action(ArchiveAction::Archive, &target.id, tx);
     }
 }
 
@@ -151,16 +156,29 @@ fn active_thread(state: &State, id: &str) -> bool {
         )
 }
 
-pub(in crate::ui) fn settle(state: &mut State, id: &str, result: Result<(), String>) {
-    let target = state.thread_actions.pending_navigation.remove(id);
+pub(in crate::ui) fn settle_archive(
+    state: &mut State,
+    id: &str,
+    result: Result<(), String>,
+    tx: &mut Tx,
+) {
+    let Some(reopen) = state.thread_actions.pending_archive.remove(id) else {
+        return;
+    };
     if let Err(error) = result {
         state.project_notice = Some(format!("Failed to archive thread. {error}"));
-    } else if let Some(project) = target
+        return;
+    }
+    state.thread_actions.undo.archived(id, reopen.clone(), tx);
+    undo::announce_archive(state, tx);
+    if let Some(project) = reopen
         && active_thread(state, id)
     {
         state.navigate(Destination::NewThread(project));
     }
 }
+
+pub(in crate::ui) use undo::settle as settle_undo;
 
 pub(super) fn target(thread: El, id: String, can_rename: bool) -> El {
     thread.on_secondary_press(move |state: &mut State, point, tx| {

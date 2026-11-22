@@ -324,7 +324,11 @@ fn toolbar(state: &State, workspace: &Workspace, shell: &Shell, colors: Colors, 
                 .grow(1.0)
                 .min_w(0.0)
                 .on_edit(|state: &mut State| &mut state.sidebar.search)
-                .on_input_change(|_: &mut State, tx| tx.scroll_to_instant("threads", 0.0, 0.0))
+                .on_input_change(|state: &mut State, tx| {
+                    state.thread_actions.undo.release_shortcut();
+                    tx.scroll_to_instant("threads", 0.0, 0.0);
+                })
+                .on_input_key(thread_actions::undo::key)
                 .on_submit(open_first_thread),
         );
     if !state.sidebar.search.text.is_empty() {
@@ -930,8 +934,10 @@ fn thread_card(
                 settle_rename(state, true, Some(tx));
             })
             .on_input_key(|state: &mut State, event, tx| {
-                event.key == Key::Escape && settle_rename(state, false, Some(tx))
+                thread_actions::undo::key(state, event, tx)
+                    || (event.key == Key::Escape && settle_rename(state, false, Some(tx)))
             })
+            .on_input_change(|state: &mut State, _| state.thread_actions.undo.release_shortcut())
     } else {
         normal_title()
     };

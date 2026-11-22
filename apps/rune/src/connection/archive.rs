@@ -8,6 +8,7 @@ use super::{Command, Connection, Event, EventSender, REQUEST_TIMEOUT, Session, S
 pub(crate) enum ArchiveAction {
     Archive,
     Unarchive,
+    UndoArchive,
     Delete,
 }
 
@@ -15,7 +16,7 @@ impl ArchiveAction {
     fn command(self) -> &'static str {
         match self {
             Self::Archive => "thread.archive",
-            Self::Unarchive => "thread.unarchive",
+            Self::Unarchive | Self::UndoArchive => "thread.unarchive",
             Self::Delete => "thread.delete",
         }
     }
@@ -23,7 +24,7 @@ impl ArchiveAction {
     pub(crate) fn activity(self) -> &'static str {
         match self {
             Self::Archive => "archiving",
-            Self::Unarchive => "unarchiving",
+            Self::Unarchive | Self::UndoArchive => "unarchiving",
             Self::Delete => "deleting",
         }
     }
@@ -79,6 +80,7 @@ impl Session {
             ArchiveAction::Unarchive => {
                 self.archive_writes && self.shell.contains_archived_thread(&request.thread_id)
             }
+            ArchiveAction::UndoArchive => self.archive_writes,
             ArchiveAction::Delete => {
                 self.archive_deletes && self.shell.contains_archived_thread(&request.thread_id)
             }

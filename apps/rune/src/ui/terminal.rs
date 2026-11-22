@@ -800,6 +800,15 @@ impl State {
     }
 
     pub(super) fn resolve_shortcut(&self, event: &KeyEvent, tx: &Tx) -> Option<&str> {
+        self.resolve_shortcut_allowing_thread_undo(event, tx, false)
+    }
+
+    pub(super) fn resolve_shortcut_allowing_thread_undo(
+        &self,
+        event: &KeyEvent,
+        tx: &Tx,
+        bypass_editor: bool,
+    ) -> Option<&str> {
         let binding = match &self.keybindings {
             Some(binding) => binding,
             None => crate::connection::Keybindings::stock(),
@@ -818,13 +827,16 @@ impl State {
                 _ => None,
             })
             .is_some_and(|draft| draft.edit.focused);
+        let sidebar_input = matches!(tx.focused(), Some("thread-search" | "rename-thread-title"));
         binding.command(event, tx, |flag| match flag {
             "terminalFocus" => terminal_focus,
             "terminalOpen" => self.terminal.is_some(),
             "draftThreadRoute" => draft_route,
             "isDesktop" => true,
             "composerFocus" => composer_focus,
-            "editableFocus" => terminal_focus || composer_focus,
+            "editableFocus" => {
+                terminal_focus || (!bypass_editor && (composer_focus || sidebar_input))
+            }
             _ => false,
         })
     }
