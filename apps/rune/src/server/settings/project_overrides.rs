@@ -1,6 +1,7 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+use rusqlite::Connection;
 use serde_json::{Value, json};
 
 use super::{Fields, client, patch, project_scripts, secret_slug, slug, trim};
@@ -125,9 +126,7 @@ impl ProjectPatch {
             projects.insert(id, next.into());
         }
         projects.retain(|_, entry| entry.as_object().is_some_and(|fields| !fields.is_empty()));
-        if !projects.is_empty() {
-            stored.insert(KEY.to_owned(), projects.into());
-        }
+        put_entries(stored, projects);
         Ok(())
     }
 }
@@ -140,11 +139,51 @@ pub(super) fn copy_unknown(target: &mut Fields, raw: &Fields) {
     );
 }
 
+pub(super) fn valid_legacy_fields(stored: &Fields) -> bool {
+    stored
+        .get("projectSettingsFolded")
+        .is_none_or(Value::is_boolean)
+        && LEGACY.iter().all(|(legacy, _)| {
+            stored.get(*legacy).is_none_or(|entries| {
+                entries.as_object().is_some_and(|entries| {
+                    entries.iter().all(|(id, value)| {
+                        !trim(id).is_empty()
+                            && if *legacy == "projectScriptOverrides" {
+                                value.is_null() || project_scripts::decode(value, "").is_ok()
+                            } else {
+                                value.is_boolean()
+                            }
+                    })
+                })
+            })
+        })
+}
+
 pub(super) fn fold_legacy(stored: &mut Fields, database: &Path) -> rusqlite::Result<()> {
-    if stored.get("projectSettingsFolded") == Some(&Value::Bool(true)) {
-        return Ok(());
+    if !folded(stored) {
+        let database = crate::server::store::open_readonly(database)?;
+        fold_legacy_on(stored, &database)?;
     }
-    let database = crate::server::store::open_readonly(database)?;
+    Ok(())
+}
+
+pub(super) fn reconcile_startup(stored: &mut Fields, database: &Path) -> rusqlite::Result<bool> {
+    let mut database = crate::server::store::open_readonly(database)?;
+    let projects = database.transaction()?;
+    let migrated = !folded(stored) && fold_legacy_on(stored, &projects)?;
+    let swept = sweep(stored, &projects)?;
+    projects.commit()?;
+    if migrated || swept {
+        refresh_legacy(stored);
+    }
+    Ok(migrated || swept)
+}
+
+fn folded(stored: &Fields) -> bool {
+    stored.get("projectSettingsFolded") == Some(&Value::Bool(true))
+}
+
+fn fold_legacy_on(stored: &mut Fields, database: &Connection) -> rusqlite::Result<bool> {
     let mut query = database.prepare(
         "SELECT project_id, default_model_selection_json, default_thread_env_mode, auto_pull, scripts_json
          FROM projection_projects WHERE deleted_at IS NULL",
@@ -159,7 +198,7 @@ pub(super) fn fold_legacy(stored: &mut Fields, database: &Path) -> rusqlite::Res
                 .is_none_or(Fields::is_empty)
         })
     {
-        return Ok(());
+        return Ok(false);
     }
     let mut projects = take_entries(stored);
     let mut reset_scripts = HashSet::new();
@@ -205,9 +244,55 @@ pub(super) fn fold_legacy(stored: &mut Fields, database: &Path) -> rusqlite::Res
         }
         row = rows.next()?;
     }
-    stored.insert(KEY.to_owned(), projects.into());
+    projects.retain(|_, entry| entry.as_object().is_some_and(|fields| !fields.is_empty()));
+    put_entries(stored, projects);
     stored.insert("projectSettingsFolded".to_owned(), true.into());
-    Ok(())
+    Ok(true)
+}
+
+fn sweep(stored: &mut Fields, database: &Connection) -> rusqlite::Result<bool> {
+    let mut entries = take_entries(stored);
+    if entries.is_empty() {
+        return Ok(false);
+    }
+    let mut query =
+        database.prepare("SELECT project_id, deleted_at IS NOT NULL FROM projection_projects")?;
+    let deleted_by_id = query
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
+        })?
+        .collect::<rusqlite::Result<HashMap<_, _>>>()?;
+    let mut changed = false;
+    entries.retain(|id, entry| match deleted_by_id.get(id) {
+        Some(false) => true,
+        Some(true) if entry.get("worktreeCleanup").is_some() => {
+            let current = entry.as_object().expect("validated project overrides");
+            let mut next = Fields::new();
+            copy_unknown(&mut next, current);
+            let has_opaque_fields = !next.is_empty();
+            next.insert(
+                "worktreeCleanup".to_owned(),
+                current["worktreeCleanup"].clone(),
+            );
+            next.insert("providerInstances".to_owned(), Value::Object(Fields::new()));
+            let next = Value::Object(next);
+            changed |= has_opaque_fields || *entry != next;
+            *entry = next;
+            true
+        }
+        _ => {
+            changed = true;
+            false
+        }
+    });
+    put_entries(stored, entries);
+    Ok(changed)
+}
+
+fn put_entries(stored: &mut Fields, entries: Fields) {
+    if !entries.is_empty() {
+        stored.insert(KEY.to_owned(), entries.into());
+    }
 }
 
 fn take_entries(stored: &mut Fields) -> Fields {
@@ -219,6 +304,12 @@ fn take_entries(stored: &mut Fields) -> Fields {
         .map(|(id, mut entry)| {
             if entry["responseStreamingMode"] == "token" {
                 entry["responseStreamingMode"] = "paragraph".into();
+            }
+            if let Some(cleanup) = entry
+                .get("worktreeCleanup")
+                .and_then(client::worktree_cleanup)
+            {
+                entry["worktreeCleanup"] = cleanup;
             }
             (trim(&id).to_owned(), entry)
         })

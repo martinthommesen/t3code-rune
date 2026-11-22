@@ -275,3 +275,43 @@ fn first_project_override_write_folds_legacy_defaults_without_reviving_a_reset()
         .unwrap();
     assert_eq!(mode, "worktree");
 }
+
+#[test]
+fn startup_reconciliation_keeps_the_file_when_the_project_lookup_fails_after_folding() {
+    let temp = tempfile::tempdir().unwrap();
+    let database = temp.path().join("statev2.sqlite");
+    let settings_path = temp.path().join("settings.json");
+    let connection = rusqlite::Connection::open(&database).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE projection_projects (
+          project_id TEXT, default_model_selection_json TEXT, default_thread_env_mode TEXT,
+          auto_pull INTEGER, scripts_json TEXT, deleted_at TEXT
+        );
+        INSERT INTO projection_projects VALUES ('live', NULL, 'worktree', 1, '[]', NULL);
+        INSERT INTO projection_projects VALUES (NULL, NULL, NULL, 0, '[]', '2026-01-01');",
+        )
+        .unwrap();
+    let old = b"{\n  // Preserve the original document on error.\n  \"projectAutoPullOverrides\": {\"live\":false}\n}\n";
+    fs::write(&settings_path, old).unwrap();
+    let file = SettingsFile::new(settings_path.clone());
+    assert!(file.reconcile_projects_on_startup(&database).is_err());
+    assert_eq!(fs::read(settings_path).unwrap(), old);
+}
+
+#[test]
+fn startup_reconciliation_leaves_invalid_stored_settings_for_repair() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("settings.json");
+    let old =
+        b"{\"projectSettingsOverrides\":{\"live\":{\"worktreeCleanup\":{\"mode\":\"wrong\"}}}}";
+    fs::write(&path, old).unwrap();
+    let file = SettingsFile::new(path.clone());
+    file.reconcile_projects_on_startup(&temp.path().join("not-present.sqlite"))
+        .unwrap();
+    assert_eq!(fs::read(path).unwrap(), old);
+    assert_eq!(
+        file.read().unwrap().for_client()["continueThreadsAfterServerUpdate"],
+        false
+    );
+}

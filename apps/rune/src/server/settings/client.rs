@@ -160,6 +160,9 @@ pub(super) fn project(
 }
 
 fn project_overrides(public: &mut Fields, raw: &Fields) -> Option<()> {
+    if !overrides::valid_legacy_fields(raw) {
+        return None;
+    }
     let mut projects = Fields::new();
     if let Some(overrides) = raw.get("projectSettingsOverrides") {
         for (id, value) in overrides.as_object()? {
@@ -175,6 +178,9 @@ fn project_overrides(public: &mut Fields, raw: &Fields) -> Option<()> {
                 );
             }
             copy_streaming_mode(&mut fields, value);
+            if let Some(cleanup) = value.get("worktreeCleanup") {
+                fields.insert("worktreeCleanup".to_owned(), worktree_cleanup(cleanup)?);
+            }
             if let Some(instances) = value.get("providerInstances") {
                 let mut mapped = Fields::new();
                 for (id, instance) in instances.as_object()? {
@@ -251,6 +257,48 @@ fn project_overrides(public: &mut Fields, raw: &Fields) -> Option<()> {
     }
     public.insert("projectSettingsOverrides".to_owned(), projects.into());
     Some(())
+}
+
+pub(super) fn worktree_cleanup(value: &Value) -> Option<Value> {
+    if value.is_null() {
+        return Some(Value::Null);
+    }
+    match value.get("mode")?.as_str()? {
+        "off" => Some(json!({"mode":"off"})),
+        "custom" => {
+            let rules = value.get("rules")?.as_object()?;
+            let keep_when = match rules.get("worktreeKeepWhen") {
+                Some(value) => literal(
+                    value,
+                    &["any-local-files", "uncommitted-changes", "tracked-changes"],
+                )?,
+                None => "uncommitted-changes",
+            };
+            Some(json!({
+                "mode":"custom",
+                "rules":{
+                    "worktreeKeepWhen":keep_when,
+                    "worktreeAfterDays":retention_days(rules.get("worktreeAfterDays")?,1)?,
+                    "worktreeSettledAfterDays":retention_days(rules.get("worktreeSettledAfterDays").unwrap_or(&Value::Null),0)?,
+                    "worktreeOnMerge":rules.get("worktreeOnMerge")?.as_bool()?,
+                    "worktreeOnDelete":rules.get("worktreeOnDelete")?.as_bool()?,
+                    "worktreeUnchanged":rules.get("worktreeUnchanged")?.as_bool()?,
+                },
+            }))
+        }
+        _ => None,
+    }
+}
+
+fn retention_days(value: &Value, minimum: u64) -> Option<Value> {
+    if value.is_null() {
+        return Some(Value::Null);
+    }
+    let days = value.as_f64()?;
+    if days.fract() != 0.0 || !(minimum as f64..=3650.0).contains(&days) {
+        return None;
+    }
+    Some(Value::from(days as u64))
 }
 
 fn apply_text_generation_fallback(public: &mut Fields, instances: &[(String, ProviderInstance)]) {

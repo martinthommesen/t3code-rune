@@ -83,6 +83,41 @@ impl SettingsFile {
         }
     }
 
+    pub(super) fn reconcile_projects_on_startup(
+        &self,
+        database: &Path,
+    ) -> Result<(), SettingsError> {
+        let _write = self
+            .shared
+            .writes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut stored = match disk::read(&self.path) {
+            Ok(stored) => stored,
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => return Ok(()),
+            Err(error) => return Err(SettingsError(error)),
+        };
+        if SettingsSnapshot::decode_fields(&stored).is_none() {
+            return Ok(());
+        }
+        let original = stored.clone();
+        let changed = project_overrides::reconcile_startup(&mut stored, database)
+            .map_err(|error| SettingsError(io::Error::other(error)))?;
+        if changed && stored != original {
+            if SettingsSnapshot::decode_fields(&stored).is_none() {
+                return Err(SettingsError(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Invalid reconciled project settings.",
+                )));
+            }
+            let mut contents = serde_json::to_string_pretty(&stored)
+                .map_err(|error| SettingsError(io::Error::other(error)))?;
+            contents.push('\n');
+            disk::write(&self.path, contents.as_bytes()).map_err(SettingsError)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn subscribe_changes(&self) -> UnboundedReceiver<Arc<Value>> {
         self.shared.subscribers.subscribe()
     }

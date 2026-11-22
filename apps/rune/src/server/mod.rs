@@ -150,6 +150,9 @@ impl LocalHost {
         let terminals = Arc::new(terminal::TerminalManager::with_state_dir(&state_dir)?);
         let named_projects_root = named_projects::root_for(&state_dir);
         let settings = SettingsFile::new(state_dir.join("settings.json"));
+        if settings.reconcile_projects_on_startup(&database).is_err() {
+            eprintln!("Project settings could not be reconciled at startup.");
+        }
         let cwd = std::env::current_dir()?;
         let store = Store::open(database.clone())?;
         let turns = TurnCommands::new(database.clone());
