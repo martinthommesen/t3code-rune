@@ -88,6 +88,22 @@ pub struct ThreadOptions {
     pub cwd: PathBuf,
     pub model: String,
     pub app_thread_id: Option<String>,
+    pub mcp: Option<ThreadMcp>,
+}
+
+#[derive(Clone)]
+pub struct ThreadMcp {
+    pub url: String,
+    pub authorization: String,
+}
+
+impl std::fmt::Debug for ThreadMcp {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ThreadMcp")
+            .field("url", &self.url)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -712,6 +728,13 @@ fn thread_params(
     });
     if let Some(id) = &options.app_thread_id {
         config["shell_environment_policy.set.T3CODE_THREAD_ID"] = json!(id);
+    }
+    if let Some(mcp) = &options.mcp {
+        config["mcp_servers.t3-code"] = json!({
+            "url": mcp.url,
+            "tool_timeout_sec": 3900,
+            "http_headers": { "Authorization": mcp.authorization },
+        });
     }
     let mut params = json!({ "cwd": wire_path(method, &options.cwd)?, "model": options.model, "config": config });
     if let Some(thread_id) = resume {

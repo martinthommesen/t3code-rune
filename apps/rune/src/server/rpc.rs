@@ -1821,6 +1821,9 @@ fn dispatch_thread(
         Ok((result, thread_ids)) => {
             if result.committed {
                 for thread_id in thread_ids {
+                    if command_type == "thread.delete" {
+                        local.thread_mcp.revoke_thread(&thread_id);
+                    }
                     let _ = local
                         .projection_changes
                         .send(ProjectionChange::Thread(thread_id));

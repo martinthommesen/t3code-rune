@@ -1,0 +1,822 @@
+{
+  "name": "t3_thread_read",
+  "title": "Read a T3 thread",
+  "description": "Read any thread by id. View `messages` (default) or `activity` (all items). Newest first; older: `beforePosition=earlierPosition`; from the start: `afterPosition=-1`, then `nextPosition`. Cut-off text: `itemId`, `textOffset=nextTextOffset`. Reading a child's final result marks it delivered. In your reply, name it as its `link` verbatim.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "environmentId": {
+        "type": "string"
+      },
+      "threadId": {
+        "type": "string"
+      },
+      "itemId": {
+        "type": "string"
+      },
+      "textOffset": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "view": {
+        "type": "string",
+        "enum": ["messages", "activity"]
+      },
+      "afterPosition": {
+        "type": "integer",
+        "minimum": -1
+      },
+      "beforePosition": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "Max 100."
+      },
+      "runLimit": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "Max 50."
+      },
+      "maxCharsPerItem": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "Max 20000."
+      }
+    },
+    "required": ["threadId"]
+  },
+  "outputSchema": {
+    "type": "object",
+    "properties": {
+      "thread": {
+        "type": "object",
+        "properties": {
+          "threadId": {
+            "type": "string"
+          },
+          "projectId": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "link": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "createdBy": {
+            "type": "string",
+            "enum": ["user", "agent", "system"]
+          },
+          "creationSource": {
+            "type": "string",
+            "enum": ["web", "mobile", "mcp", "provider", "server"]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "idle",
+              "preparing",
+              "queued",
+              "starting",
+              "running",
+              "waiting",
+              "completed",
+              "interrupted",
+              "failed",
+              "cancelled",
+              "rolled_back"
+            ]
+          },
+          "latestRunId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "activeRunId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "providerInstanceId": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "runtimeMode": {
+            "type": "string",
+            "enum": ["approval-required", "auto-accept-edits", "auto", "full-access"]
+          },
+          "interactionMode": {
+            "type": "string",
+            "enum": ["default", "plan"]
+          },
+          "linkedPullRequest": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "projectId": {
+                    "type": "string"
+                  },
+                  "repository": {
+                    "type": "string"
+                  },
+                  "number": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": ["projectId", "repository", "number", "url"],
+                "additionalProperties": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pullRequests": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "host": {
+                      "type": "string"
+                    },
+                    "repository": {
+                      "type": "string"
+                    },
+                    "number": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 9007199254740991
+                    },
+                    "url": {
+                      "type": "string"
+                    },
+                    "source": {
+                      "type": "string",
+                      "enum": ["manual", "created", "agent", "stack", "stack-dismissed"]
+                    },
+                    "state": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": ["open", "closed", "merged"]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "watching": {
+                      "type": "boolean"
+                    },
+                    "watchStartedAt": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "host",
+                    "repository",
+                    "number",
+                    "url",
+                    "source",
+                    "state",
+                    "watching",
+                    "watchStartedAt"
+                  ],
+                  "additionalProperties": true
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pullRequestCount": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "openPullRequestCount": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "titleRegeneration": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "requestId": {
+                    "type": "string"
+                  },
+                  "startedAt": {
+                    "type": "string"
+                  }
+                },
+                "required": ["requestId", "startedAt"],
+                "additionalProperties": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lastTitleRegeneration": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": ["renamed", "unchanged", "failed"]
+                  },
+                  "message": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "requestId": {
+                    "type": "string"
+                  },
+                  "completedAt": {
+                    "type": "string"
+                  }
+                },
+                "required": ["status", "requestId", "completedAt"],
+                "additionalProperties": true
+              },
+              {
+                "type": "null"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "worktreePath": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "parentThreadId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "relationshipToParent": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": ["fork", "subagent"]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "delegatedFrom": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "environmentId": {
+                    "type": "string"
+                  },
+                  "threadId": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  }
+                },
+                "required": ["environmentId", "threadId", "title"],
+                "additionalProperties": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "runCount": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "itemCount": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "pendingRequestCount": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "archived": {
+            "type": "boolean"
+          },
+          "settled": {
+            "type": "boolean"
+          },
+          "settledAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "snoozed": {
+            "type": "boolean"
+          },
+          "snoozedUntil": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pinned": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "blockedOnThreadWait": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pendingBackgroundTasks": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "taskId": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": ["subagent", "command", "monitor", "background_task"]
+                    },
+                    "description": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "awaited": {
+                      "anyOf": [
+                        {
+                          "type": "boolean",
+                          "enum": [true]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "childThreadId": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": ["taskId", "kind"],
+                  "additionalProperties": true
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId",
+          "projectId",
+          "title",
+          "createdBy",
+          "creationSource",
+          "status",
+          "latestRunId",
+          "activeRunId",
+          "providerInstanceId",
+          "model",
+          "runtimeMode",
+          "interactionMode",
+          "linkedPullRequest",
+          "titleRegeneration",
+          "branch",
+          "worktreePath",
+          "parentThreadId",
+          "relationshipToParent",
+          "runCount",
+          "itemCount",
+          "pendingRequestCount",
+          "archived",
+          "settled",
+          "settledAt",
+          "snoozed",
+          "snoozedUntil",
+          "createdAt",
+          "updatedAt"
+        ],
+        "additionalProperties": true
+      },
+      "recentRuns": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "runId": {
+              "type": "string"
+            },
+            "ordinal": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "preparing",
+                "queued",
+                "starting",
+                "running",
+                "waiting",
+                "completed",
+                "interrupted",
+                "failed",
+                "cancelled",
+                "rolled_back"
+              ]
+            },
+            "providerInstanceId": {
+              "type": "string"
+            },
+            "model": {
+              "type": "string"
+            },
+            "executedModel": {
+              "anyOf": [
+                {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Model the provider reported running, or null when unavailable. Can differ from the requested `model`."
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "requestedAt": {
+              "type": "string"
+            },
+            "startedAt": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "completedAt": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "runId",
+            "ordinal",
+            "status",
+            "providerInstanceId",
+            "model",
+            "requestedAt",
+            "startedAt",
+            "completedAt"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "position": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "visibility": {
+              "type": "string",
+              "enum": ["local", "inherited", "synthetic"]
+            },
+            "sourceThreadId": {
+              "type": "string"
+            },
+            "itemId": {
+              "type": "string"
+            },
+            "subagentId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "runId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "messageId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "createdBy": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": ["user", "agent", "system"]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "creationSource": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": ["web", "mobile", "mcp", "provider", "server"]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "senderThreadId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "idle",
+                "pending",
+                "running",
+                "waiting",
+                "completed",
+                "failed",
+                "cancelled",
+                "interrupted"
+              ]
+            },
+            "title": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "text": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "textTruncated": {
+              "type": "boolean"
+            },
+            "nextTextOffset": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "updatedAt": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "position",
+            "visibility",
+            "sourceThreadId",
+            "itemId",
+            "runId",
+            "messageId",
+            "createdBy",
+            "creationSource",
+            "type",
+            "status",
+            "title",
+            "text",
+            "textTruncated",
+            "updatedAt"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "nextPosition": {
+        "anyOf": [
+          {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "hasMore": {
+        "type": "boolean"
+      },
+      "earlierPosition": {
+        "anyOf": [
+          {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          {
+            "type": "null"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "required": ["thread", "recentRuns", "items", "nextPosition", "hasMore"],
+    "additionalProperties": true
+  },
+  "annotations": {
+    "title": "Read a T3 thread",
+    "readOnlyHint": false,
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": true
+  }
+}

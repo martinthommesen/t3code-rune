@@ -34,6 +34,7 @@ mod terminal_rpc;
 mod text_generation;
 mod thread_commands;
 mod thread_launch;
+mod thread_read_mcp;
 mod turn_commands;
 mod turn_worker;
 pub(crate) use turn_worker::{CommandColor, CommandPen, TerminalOutput};
@@ -107,6 +108,7 @@ struct LocalOperations {
     preview: Option<Arc<browser_preview::Preview>>,
     repository_identities: repository_identity::Identities,
     threads: ThreadCommands,
+    thread_mcp: thread_read_mcp::ThreadReadMcp,
     turns: TurnCommands,
     turn_queue: TurnQueue,
     settings: SettingsFile,
@@ -190,10 +192,17 @@ impl LocalHost {
             .spawn(move || {
                 runtime.block_on(async {
                     let identity = Identity::local(environment_id, &cwd).await;
-                    let turn_worker = TurnWorker::spawn(
+                    let thread_mcp = thread_read_mcp::ThreadReadMcp::new(
+                        database.clone(),
+                        identity.id.clone(),
+                        env!("CARGO_PKG_VERSION").to_owned(),
+                    );
+                    let turn_worker = TurnWorker::spawn_with_mcp(
                         turns.clone(),
                         settings.clone(),
                         projection_changes.clone(),
+                        thread_mcp.clone(),
+                        format!("http://{address}/mcp"),
                     );
                     let title_settings = settings.clone();
                     let title_changes = projection_changes.clone();
@@ -242,6 +251,7 @@ impl LocalHost {
                         preview: preview.clone(),
                         repository_identities,
                         threads,
+                        thread_mcp,
                         turns,
                         turn_queue: turn_worker.sender(),
                         settings,
@@ -394,7 +404,7 @@ pub(crate) fn run(database: PathBuf, port: u16) -> Result<(), Box<dyn Error>> {
 }
 
 fn router(environment: SharedEnvironment) -> Router {
-    Router::new()
+    let routes = Router::new()
         .route("/.well-known/t3/environment", get(descriptor))
         .route("/oauth/token", post(exchange))
         .route("/api/auth/websocket-ticket/rpc", post(issue_ticket))
@@ -406,12 +416,15 @@ fn router(environment: SharedEnvironment) -> Router {
         .route("/api/assets/{*tail}", get(project_favicon::get))
         .route("/api/preview-stream/ws", get(browser_preview::upgrade))
         .route("/ws", get(upgrade))
+        .with_state(Arc::clone(&environment));
+    let routes = if let Some(local) = &environment.local {
+        routes.merge(local.thread_mcp.router())
+    } else {
+        routes
+    };
+    routes
         .layer(DefaultBodyLimit::max(8 * 1024))
-        .layer(middleware::from_fn_with_state(
-            Arc::clone(&environment),
-            local_requests,
-        ))
-        .with_state(environment)
+        .layer(middleware::from_fn_with_state(environment, local_requests))
 }
 
 async fn local_requests(

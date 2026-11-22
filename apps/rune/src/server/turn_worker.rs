@@ -20,6 +20,9 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use t3_rune::providers::CodexLaunch;
+use t3_rune::providers::codex::ThreadMcp;
+
+use super::thread_read_mcp::{ProviderScope, ThreadReadMcp};
 use t3_rune::providers::codex::{
     AssistantPhase, CodexAdapterError, CodexSession, CodexSessionClient, CodexSessionEvent,
     SettlementStatus, ThreadId, ToolLifecycle, TurnEvent, TurnKey,
@@ -178,10 +181,35 @@ impl TurnWorker {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) fn spawn(
         commands: TurnCommands,
         settings: SettingsFile,
         changes: broadcast::Sender<ProjectionChange>,
+    ) -> Self {
+        Self::spawn_worker(commands, settings, changes, None)
+    }
+
+    pub(super) fn spawn_with_mcp(
+        commands: TurnCommands,
+        settings: SettingsFile,
+        changes: broadcast::Sender<ProjectionChange>,
+        reader: ThreadReadMcp,
+        endpoint: String,
+    ) -> Self {
+        Self::spawn_worker(
+            commands,
+            settings,
+            changes,
+            Some(CodexMcp { reader, endpoint }),
+        )
+    }
+
+    fn spawn_worker(
+        commands: TurnCommands,
+        settings: SettingsFile,
+        changes: broadcast::Sender<ProjectionChange>,
+        mcp: Option<CodexMcp>,
     ) -> Self {
         let queue = TurnQueue::new(commands.clone(), changes.clone());
         let (stop, signal) = oneshot::channel();
@@ -191,6 +219,7 @@ impl TurnWorker {
                 settings,
                 changes,
                 worker_id: format!("rune-codex:{}", Uuid::new_v4()),
+                mcp,
             }
             .run(queue.clone(), signal),
         );
@@ -213,6 +242,12 @@ struct Worker {
     settings: SettingsFile,
     changes: broadcast::Sender<ProjectionChange>,
     worker_id: String,
+    mcp: Option<CodexMcp>,
+}
+
+struct CodexMcp {
+    reader: ThreadReadMcp,
+    endpoint: String,
 }
 
 impl Worker {
@@ -433,6 +468,8 @@ impl Worker {
                 session,
                 threads: Vec::new(),
                 loaded: HashMap::new(),
+                mcp_registrations: HashMap::new(),
+                mcp_session_id: Uuid::new_v4().to_string(),
             });
         }
         let active = runtime.as_mut().ok_or(WorkerError::Closed)?;
@@ -456,6 +493,9 @@ impl Worker {
         let Some(runtime) = runtime.take() else {
             return Ok(());
         };
+        if let Some(mcp) = &self.mcp {
+            mcp.reader.revoke_provider_session(&runtime.mcp_session_id);
+        }
         let shutdown = runtime.session.shutdown().await;
         for thread_id in self
             .commands
@@ -498,6 +538,34 @@ impl Worker {
         if !runtime.threads.iter().any(|attached| attached == thread_id) {
             runtime.threads.push(thread_id.to_owned());
         }
+        let mut thread = claim.thread.clone();
+        if let Some(mcp) = &self.mcp {
+            let registration = match runtime.mcp_registrations.entry(thread_id.to_owned()) {
+                std::collections::hash_map::Entry::Occupied(entry) => {
+                    mcp.reader.touch_thread(thread_id);
+                    entry.into_mut()
+                }
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    let authorization = mcp
+                        .reader
+                        .issue(ProviderScope {
+                            thread_id: thread_id.to_owned(),
+                            provider_instance_id: "codex".to_owned(),
+                            provider_session_id: runtime.mcp_session_id.clone(),
+                        })
+                        .map_err(|_| {
+                            WorkerError::Unavailable(
+                                "The local thread reader could not authenticate the Codex session.",
+                            )
+                        })?;
+                    entry.insert(ThreadMcp {
+                        url: mcp.endpoint.clone(),
+                        authorization,
+                    })
+                }
+            };
+            thread.mcp = Some(registration.clone());
+        }
         let session = &mut runtime.session;
         let mut pending = VecDeque::new();
         let client = session.client();
@@ -506,8 +574,8 @@ impl Worker {
                 Some(native_thread) if runtime.loaded.get(thread_id) == Some(native_thread) => {
                     Ok(native_thread.clone())
                 }
-                Some(native_thread) => client.resume_thread(native_thread, &claim.thread).await,
-                None => client.start_thread(&claim.thread).await,
+                Some(native_thread) => client.resume_thread(native_thread, &thread).await,
+                None => client.start_thread(&thread).await,
             }
         };
         let native_thread = match await_native(session, native, &mut pending).await {
@@ -1157,6 +1225,8 @@ struct ActiveRuntime {
     session: CodexSession,
     threads: Vec<String>,
     loaded: HashMap<String, ThreadId>,
+    mcp_registrations: HashMap<String, ThreadMcp>,
+    mcp_session_id: String,
 }
 
 #[derive(PartialEq, Eq)]

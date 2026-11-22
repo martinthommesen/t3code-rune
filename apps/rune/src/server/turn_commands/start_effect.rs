@@ -145,6 +145,7 @@ impl TurnCommands {
                 cwd: cwd.clone(),
                 model: model.clone(),
                 app_thread_id: Some(thread_id),
+                mcp: None,
             },
             turn: TurnOptions {
                 cwd,

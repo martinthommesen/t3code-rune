@@ -223,6 +223,7 @@ mod subprocess {
                 cwd: replay.directory.clone(),
                 model: "gpt-6-luna".into(),
                 app_thread_id: None,
+                mcp: None,
             })
             .await
             .unwrap();
@@ -465,6 +466,7 @@ mod subprocess {
             cwd: replay.directory.clone(),
             model: "gpt-6-sol".into(),
             app_thread_id: Some("local-thread".into()),
+            mcp: None,
         };
         assert_eq!(client.start_thread(&thread).await.unwrap(), key.thread_id);
         assert_eq!(
