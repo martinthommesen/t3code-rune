@@ -30,7 +30,11 @@ macro_rules! glyph {
 
 mod archive;
 mod keybindings;
+pub(super) mod path_input;
 pub(super) use archive::settle as settle_archive_action;
+pub(super) use workspace::project_start::{
+    poll as poll_add_project_base_directory, warning as add_project_base_scope_warning,
+};
 pub(super) use workspace::snooze::poll as poll_snooze_options;
 pub(super) use worktrees::{poll_branch_fields, poll_location as poll_worktree_location};
 
@@ -190,6 +194,11 @@ impl State {
                 .as_ref()
                 .and_then(|settings| settings.snooze.as_ref()),
         );
+        self.settings.workspace.project_start.apply(
+            setting
+                .as_ref()
+                .and_then(|settings| settings.add_project_base.as_ref()),
+        );
         self.settings.workspace.current = setting;
     }
 
@@ -208,7 +217,24 @@ impl State {
             .workspace
             .snooze
             .settle(operation, result.is_ok());
+        self.settings
+            .workspace
+            .project_start
+            .settle(operation, result.is_ok());
         self.settings.workspace.settle(operation, result);
+    }
+
+    pub(super) fn configured_project_start_directory(&self) -> Option<&str> {
+        Some(
+            self.settings
+                .workspace
+                .current
+                .as_ref()?
+                .add_project_base
+                .as_ref()?
+                .path
+                .as_str(),
+        )
     }
 
     pub(super) fn workspace_settings_disconnected(&mut self, final_disconnect: bool) {

@@ -3,6 +3,7 @@ use uuid::Uuid;
 
 use crate::connection::{FolderListing, ProjectCreated};
 
+use super::settings::path_input;
 use super::{BODY, Palette, SMALL, State, TITLE, button, error_text, form_field, input};
 
 pub(super) mod clone_banner;
@@ -85,6 +86,37 @@ impl Browse {
     }
 }
 
+fn initial_browse_query(configured: Option<&str>) -> String {
+    let path = configured
+        .unwrap_or_default()
+        .trim_matches(path_input::whitespace);
+    if path.is_empty() {
+        return "~/".into();
+    }
+    let explicit_relative = matches!(path, "." | "..")
+        || ["./", "../", ".\\", "..\\"]
+            .iter()
+            .any(|prefix| path.starts_with(prefix));
+    let windows = path_input::is_windows_absolute(path);
+    let unix = path.starts_with('/');
+    let anchored = unix || windows || path == "~" || path.starts_with("~/") || explicit_relative;
+    let mut directory = if anchored {
+        path.to_owned()
+    } else {
+        format!("~/{path}")
+    };
+    let has_separator = directory.ends_with('/') || !unix && directory.ends_with('\\');
+    if !has_separator {
+        let separator = if windows || !unix && directory.contains('\\') {
+            '\\'
+        } else {
+            '/'
+        };
+        directory.push(separator);
+    }
+    directory
+}
+
 impl State {
     pub(super) fn show_add_project(&mut self, tx: &mut Tx) {
         if let Some(workspace) = self
@@ -114,6 +146,7 @@ impl State {
 
     fn choose_project_folder(&mut self, tx: &mut Tx) {
         let cwd = self.project_browse_cwd();
+        let initial = initial_browse_query(self.configured_project_start_directory());
         let Some(form) = &mut self.add_project else {
             return;
         };
@@ -127,7 +160,7 @@ impl State {
                 cwd,
                 ..Browse::default()
             });
-            form.path.replace_text("~/");
+            form.path.replace_text(initial);
         }
         tx.focus_when_shown("project-folder", false);
     }

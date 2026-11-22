@@ -26,6 +26,7 @@ pub(super) enum Setting {
     Permissions,
     Workspace,
     Snooze,
+    ProjectBase,
 }
 
 impl Setting {
@@ -34,6 +35,7 @@ impl Setting {
             Self::Permissions => "default-permissions-inheritance",
             Self::Workspace => "default-workspace-inheritance",
             Self::Snooze => "snooze-options-inheritance",
+            Self::ProjectBase => "add-project-base-inheritance",
         }
     }
 
@@ -42,6 +44,7 @@ impl Setting {
             Self::Permissions => "default-permissions",
             Self::Workspace => "default-workspace",
             Self::Snooze => super::snooze::ADD,
+            Self::ProjectBase => super::project_start::INPUT,
         }
     }
 
@@ -50,6 +53,7 @@ impl Setting {
             Self::Permissions => "reset-default-permissions",
             Self::Workspace => "reset-default-workspace",
             Self::Snooze => "reset-snooze-options",
+            Self::ProjectBase => super::project_start::RESET_INPUT,
         }
     }
 
@@ -62,11 +66,11 @@ impl Setting {
                 .copied()
                 .map(permission),
             Self::Workspace => settings.projects.get(id).copied().map(super::label),
-            Self::Snooze => None,
+            Self::Snooze | Self::ProjectBase => None,
         }
     }
 
-    fn environment_value(self, settings: &WorkspaceSetting) -> Option<&'static str> {
+    fn environment_value(self, settings: &WorkspaceSetting) -> Option<&str> {
         match self {
             Self::Permissions => {
                 let mode = settings.permission.environment;
@@ -78,6 +82,11 @@ impl Setting {
                 .as_ref()
                 .filter(|setting| setting.presets != snooze::defaults())
                 .map(|setting| OPTIONS_COUNT[setting.presets.len()]),
+            Self::ProjectBase => settings
+                .add_project_base
+                .as_ref()
+                .map(|setting| setting.path.as_str())
+                .filter(|path| !path.is_empty()),
         }
     }
 
@@ -86,6 +95,7 @@ impl Setting {
             Self::Permissions => permission(RuntimeMode::FullAccess),
             Self::Workspace => super::label(crate::connection::WorkspaceMode::Local),
             Self::Snooze => OPTIONS_COUNT[snooze::defaults().len()],
+            Self::ProjectBase => "Empty",
         }
     }
 }
@@ -107,15 +117,15 @@ enum Source {
     BuiltIn,
 }
 
-struct Layer {
+struct Layer<'a> {
     source: Source,
     label: &'static str,
-    value: Option<&'static str>,
+    value: Option<&'a str>,
 }
 
 struct Inheritance<'a> {
     machine: &'a str,
-    layers: Vec<Layer>,
+    layers: Vec<Layer<'a>>,
     overrides: Vec<(&'a Project, &'static str)>,
     may_clear: bool,
 }
@@ -154,12 +164,16 @@ fn resolve_inheritance(state: &State, setting: Setting) -> Option<Inheritance<'_
     if setting == Setting::Snooze && (panel.project_selected() || current.snooze.is_none()) {
         return None;
     }
+    if setting == Setting::ProjectBase && current.add_project_base.is_none() {
+        return None;
+    }
     let machine = state.workspace.as_ref()?.label.as_str();
     let environment = setting.environment_value(current);
     let project = panel
         .scope
         .id
         .as_deref()
+        .filter(|_| matches!(setting, Setting::Permissions | Setting::Workspace))
         .map(|id| setting.project_value(current, id));
     let mut layers = Vec::with_capacity(4);
     if let Some(value) = project {
@@ -210,6 +224,10 @@ fn resolve_inheritance(state: &State, setting: Setting) -> Option<Inheritance<'_
             .snooze
             .as_ref()
             .is_some_and(|setting| setting.writable),
+        Setting::ProjectBase => current
+            .add_project_base
+            .as_ref()
+            .is_some_and(|setting| setting.writable),
     };
     Some(Inheritance {
         machine,
@@ -254,7 +272,11 @@ pub(super) fn marker(state: &State, setting: Setting, palette: Palette) -> El {
         tx.focus_when_shown(initial, tx.focus_visible());
     })
     .child(icon(&LAYERS, 12.0).color(color).a11y_hidden());
-    if !active && !state.settings.workspace.project_selected() && details.overrides.is_empty() {
+    let project = details
+        .layers
+        .iter()
+        .any(|layer| layer.source == Source::Project);
+    if !active && !project && details.overrides.is_empty() {
         frame.group_opacity(0.0, 1.0)
     } else {
         frame
@@ -325,7 +347,9 @@ pub(super) fn overlay(state: &State, palette: Palette) -> Option<[El; 2]> {
                         .child(
                             text(layer.value.unwrap_or("Inherits"))
                                 .font(ITEM)
-                                .color(value_color),
+                                .color(value_color)
+                                .max_w(128.0)
+                                .truncate(),
                         )
                         .child(if effective {
                             icon(&CHECK, 14.0).color(palette.accent).a11y_hidden()
@@ -477,6 +501,7 @@ fn tab(state: &mut State, setting: Setting, backwards: bool, tx: &mut Tx) -> boo
         Setting::Permissions => super::permissions::resettable(state),
         Setting::Workspace => panel.configured().is_some() && panel.writable(state),
         Setting::Snooze => super::snooze::can_reset(state),
+        Setting::ProjectBase => super::project_start::resettable(state),
     } {
         setting.reset()
     } else {
@@ -485,6 +510,8 @@ fn tab(state: &mut State, setting: Setting, backwards: bool, tx: &mut Tx) -> boo
     close(state, setting, tx);
     if target == super::snooze::ADD {
         super::snooze::focus_editor(state, tx);
+    } else if target == super::project_start::INPUT {
+        super::project_start::focus_control(state, tx);
     } else {
         tx.focus(target, true);
     }
@@ -504,7 +531,7 @@ fn clear(state: &mut State, setting: Setting, tx: &mut Tx) {
     let setting = match setting {
         Setting::Permissions => ResetWorkspaceOverride::Permissions,
         Setting::Workspace => ResetWorkspaceOverride::Mode,
-        Setting::Snooze => return,
+        Setting::Snooze | Setting::ProjectBase => return,
     };
     let operation = state
         .connection

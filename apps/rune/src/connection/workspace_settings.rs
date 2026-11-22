@@ -17,6 +17,7 @@ const KEY: &str = "defaultThreadEnvMode";
 const ORIGIN: &str = "newWorktreesStartFromOrigin";
 const PERMISSIONS: &str = "defaultRuntimeMode";
 const DIRECTORY: &str = "worktreesDirectory";
+const ADD_PROJECT_BASE: &str = "addProjectBaseDirectory";
 const BRANCH_NAMING: &str = "branchNamingMode";
 const FAVORITES: &str = "favorites";
 const PROJECT_OVERRIDES: &str = "projectSettingsOverrides";
@@ -38,6 +39,7 @@ pub(super) enum Edit {
     StartFromRemote(Option<bool>),
     Permissions(Option<RuntimeMode>),
     WorktreesDirectory(String),
+    AddProjectBaseDirectory(String),
     BranchNaming(Option<BranchNamingMode>),
     BranchText(BranchTextField, Option<String>),
     SnoozePresets(Vec<Preset>),
@@ -58,6 +60,7 @@ impl Edit {
             Self::Permissions(None) if project_scope => (PERMISSIONS, Value::Null),
             Self::Permissions(None) => (PERMISSIONS, json!(RuntimeMode::FullAccess)),
             Self::WorktreesDirectory(path) => (DIRECTORY, json!(path)),
+            Self::AddProjectBaseDirectory(path) => (ADD_PROJECT_BASE, json!(path)),
             Self::BranchNaming(Some(mode)) => (BRANCH_NAMING, json!(mode)),
             Self::BranchNaming(None) if project_scope => (BRANCH_NAMING, Value::Null),
             Self::BranchNaming(None) => (BRANCH_NAMING, json!(BranchNamingMode::Static)),
@@ -241,11 +244,19 @@ pub(crate) struct SnoozeSetting {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+pub(crate) struct AddProjectBaseDirectory {
+    pub(crate) path: String,
+    pub(crate) writable: bool,
+    pub(crate) managed_by: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct WorkspaceSetting {
     pub(crate) configured: Option<WorkspaceMode>,
     pub(crate) origin: OriginSetting,
     pub(crate) permission: PermissionSetting,
     pub(crate) worktree_location: Option<WorktreeLocation>,
+    pub(crate) add_project_base: Option<AddProjectBaseDirectory>,
     pub(crate) branch_naming: BranchNamingSetting,
     pub(crate) snooze: Option<SnoozeSetting>,
     pub(crate) favorites: FavoriteSetting,
@@ -262,6 +273,7 @@ pub(super) struct Subscription {
     permission_policy: PermissionPolicy,
     directory_supported: bool,
     directory_managed_by: Option<String>,
+    add_project_base_managed_by: Option<String>,
     branch_naming_managed_by: Option<String>,
     snooze_managed_by: Option<String>,
     branch_text_managed_by: [Option<String>; 2],
@@ -286,6 +298,7 @@ impl Subscription {
             permission_policy: PermissionPolicy::default(),
             directory_supported: false,
             directory_managed_by: None,
+            add_project_base_managed_by: None,
             branch_naming_managed_by: None,
             snooze_managed_by: None,
             branch_text_managed_by: [None, None],
@@ -311,6 +324,8 @@ impl Subscription {
                     self.directory_supported =
                         config["environment"]["capabilities"][DIRECTORY].as_bool() == Some(true);
                     self.directory_managed_by = managed_by(&config["managedPolicy"], DIRECTORY);
+                    self.add_project_base_managed_by =
+                        managed_by(&config["managedPolicy"], ADD_PROJECT_BASE);
                     self.branch_naming_managed_by =
                         managed_by(&config["managedPolicy"], BRANCH_NAMING);
                     self.snooze_managed_by = managed_by(&config["managedPolicy"], snooze::KEY);
@@ -338,6 +353,13 @@ impl Subscription {
                 writable: self.can_write && self.favorites_managed_by.is_none(),
             },
             override_order: self.overrides.keys().cloned().collect(),
+            add_project_base: settings[ADD_PROJECT_BASE].as_str().map(|path| {
+                AddProjectBaseDirectory {
+                    path: path.to_owned(),
+                    writable: self.can_write && self.add_project_base_managed_by.is_none(),
+                    managed_by: self.add_project_base_managed_by.clone(),
+                }
+            }),
             snooze: snooze::decode(&settings[snooze::KEY], snooze::KEY)
                 .ok()
                 .map(|presets| SnoozeSetting {
@@ -514,6 +536,10 @@ impl Connection {
         self.update_workspace_setting(project_id, Edit::Permissions(mode))
     }
 
+    pub(crate) fn update_add_project_base_directory(&self, path: String) -> Option<Uuid> {
+        self.update_workspace_setting(None, Edit::AddProjectBaseDirectory(path))
+    }
+
     pub(crate) fn update_worktree_location(&self, path: String) -> Option<Uuid> {
         self.update_workspace_setting(None, Edit::WorktreesDirectory(path))
     }
@@ -607,6 +633,7 @@ impl Session {
             Edit::StartFromRemote(_) => &settings.origin_managed_by,
             Edit::Permissions(_) => &settings.permission_policy.managed_by,
             Edit::WorktreesDirectory(_) => &settings.directory_managed_by,
+            Edit::AddProjectBaseDirectory(_) => &settings.add_project_base_managed_by,
             Edit::BranchNaming(_) => &settings.branch_naming_managed_by,
             Edit::BranchText(field, _) => &settings.branch_text_managed_by[field.index()],
             Edit::SnoozePresets(_) => &settings.snooze_managed_by,
@@ -622,6 +649,8 @@ impl Session {
             && (!environment || !settings.directory_supported)
         {
             Some("Worktree location is unavailable for this scope.".into())
+        } else if matches!(edit, Edit::AddProjectBaseDirectory(_)) && !environment {
+            Some("Add project base directory is an environment-wide setting.".into())
         } else if let Some(organization) = managed_by {
             Some(format!("Managed by {organization}."))
         } else if !settings.can_write {

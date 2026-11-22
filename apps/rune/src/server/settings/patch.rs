@@ -80,7 +80,10 @@ impl Patch {
             if supported(key) {
                 let value = if matches!(
                     key,
-                    "worktreesDirectory" | "branchNamePrefix" | "branchNameInstructions"
+                    "worktreesDirectory"
+                        | "branchNamePrefix"
+                        | "branchNameInstructions"
+                        | "addProjectBaseDirectory"
                 ) {
                     text(value).expect("validated string setting").into()
                 } else {
@@ -183,6 +186,7 @@ fn supported(key: &str) -> bool {
             | "newWorktreesStartFromOrigin"
             | "worktreeSubmodules"
             | "worktreesDirectory"
+            | "addProjectBaseDirectory"
             | "branchNamingMode"
             | "branchNamePrefix"
             | "branchNameInstructions"
@@ -191,7 +195,10 @@ fn supported(key: &str) -> bool {
 
 pub(super) fn invalid_value(key: &str, value: &Value) -> Option<&'static str> {
     match key {
-        "worktreesDirectory" | "branchNamePrefix" | "branchNameInstructions"
+        "worktreesDirectory"
+        | "branchNamePrefix"
+        | "branchNameInstructions"
+        | "addProjectBaseDirectory"
             if !value.is_string() =>
         {
             Some("Expected string")

@@ -80,11 +80,10 @@ pub(super) fn project(
         let presets = snooze::decode(value, snooze::KEY).ok()?;
         fields.insert(snooze::KEY.to_owned(), json!(presets));
     }
-    for key in [
-        "worktreesDirectory",
-        "addProjectBaseDirectory",
-        "threadTitleInstructions",
-    ] {
+    if let Some(value) = raw.get("addProjectBaseDirectory") {
+        fields.insert("addProjectBaseDirectory".to_owned(), text(value)?.into());
+    }
+    for key in ["worktreesDirectory", "threadTitleInstructions"] {
         if let Some(value) = raw.get(key).and_then(text) {
             fields.insert(key.to_owned(), value.into());
         }

@@ -14,6 +14,7 @@ use super::{CONTROL, DESCRIPTION, Palette, RESET, SECTION, State, error_text};
 mod inheritance;
 pub(super) mod keyboard;
 mod permissions;
+pub(super) mod project_start;
 mod scope;
 pub(super) mod snooze;
 
@@ -47,6 +48,7 @@ pub(super) struct Panel {
     permission_typeahead: keyboard::Typeahead,
     scope: scope::Scope,
     pub(super) snooze: snooze::Panel,
+    pub(super) project_start: project_start::Panel,
     pending: Option<Uuid>,
     error: Option<String>,
 }
@@ -84,6 +86,7 @@ impl Panel {
     pub(super) fn disconnect(&mut self) {
         self.current = None;
         self.snooze.apply(None);
+        self.project_start.apply(None);
         self.close_popups();
     }
 
@@ -478,6 +481,7 @@ pub(super) fn page(state: &State, palette: Palette, width: f32) -> El {
                 .max_w(800.0)
                 .gap(22.0)
                 .child(scope::view(state, palette))
+                .children(project_start::section(state, palette, width))
                 .child(section)
                 .children(snooze::section(state, palette, width)),
         )

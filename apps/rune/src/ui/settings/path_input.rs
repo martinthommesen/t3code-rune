@@ -2,7 +2,7 @@ use std::sync::OnceLock;
 
 use regex_lite::Regex;
 
-pub(super) fn normalize(previous: &str, next: &str) -> String {
+pub(in crate::ui) fn normalize(previous: &str, next: &str) -> String {
     let is_typing = if let Some(added) = next.strip_prefix(previous) {
         added.encode_utf16().count() == 1
     } else {
@@ -60,7 +60,7 @@ fn is_folder_path(path: &str) -> bool {
     path.starts_with('/') || path.starts_with("~/") || is_windows_absolute(path)
 }
 
-fn is_windows_absolute(path: &str) -> bool {
+pub(in crate::ui) fn is_windows_absolute(path: &str) -> bool {
     path.starts_with("\\\\")
         || match path.as_bytes() {
             [drive, b':'] | [drive, b':', b'/' | b'\\', ..] => drive.is_ascii_alphabetic(),
@@ -68,7 +68,7 @@ fn is_windows_absolute(path: &str) -> bool {
         }
 }
 
-pub(super) fn whitespace(character: char) -> bool {
+pub(in crate::ui) fn whitespace(character: char) -> bool {
     matches!(character, '\u{0009}'..='\u{000d}' | ' ' | '\u{00a0}' | '\u{1680}'
         | '\u{2000}'..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}'
         | '\u{205f}' | '\u{3000}' | '\u{feff}')

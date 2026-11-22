@@ -278,6 +278,7 @@ impl State {
 
     fn continue_git_project(&mut self, tx: &mut Tx) {
         let cwd = self.project_browse_cwd();
+        let directory = super::initial_browse_query(self.configured_project_start_directory());
         let can_browse = self
             .workspace
             .as_ref()
@@ -294,7 +295,7 @@ impl State {
             return;
         }
         let clone = Destination::new(raw);
-        form.path.replace_text(format!("~/{}", clone.leaf));
+        form.path.replace_text(format!("{directory}{}", clone.leaf));
         form.clone = Some(clone);
         form.browse = can_browse.then(|| Browse {
             cwd,

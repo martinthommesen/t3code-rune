@@ -1059,6 +1059,7 @@ impl State {
         changed |= sidebar::poll_rename(self);
         changed |= settings::poll_worktree_location(self, tx);
         changed |= settings::poll_snooze_options(self, tx);
+        changed |= settings::poll_add_project_base_directory(self, tx);
         changed |= settings::poll_branch_fields(self, tx);
         changed |= settings::poll_project(self);
         changed |= settings::poll_project_files(self, tx);
@@ -2025,6 +2026,9 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
         }
     }
     body = body.children(command_palette);
+    body = body.children(settings::add_project_base_scope_warning(
+        state, palette, width,
+    ));
     if let Some(caption) = state.window_chrome.overlay(palette.dark) {
         body = body.child(caption);
     }

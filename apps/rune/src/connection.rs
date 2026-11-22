@@ -75,8 +75,8 @@ pub(crate) use terminal::{
 };
 pub(crate) use workspace_retry::WorkspaceRetry;
 pub(crate) use workspace_settings::{
-    BranchNamingMode, BranchTextField, FavoriteSetting, ModelFavorite, PermissionSetting,
-    ResetWorkspaceOverride, SnoozeSetting, WorkspaceSetting, WorktreeLocation,
+    AddProjectBaseDirectory, BranchNamingMode, BranchTextField, FavoriteSetting, ModelFavorite,
+    PermissionSetting, ResetWorkspaceOverride, SnoozeSetting, WorkspaceSetting, WorktreeLocation,
 };
 pub(crate) use worktree_setup::WorktreeSetup;
 
@@ -1559,7 +1559,7 @@ impl Session {
         if matches!(self.archive, ArchiveState::Needed) {
             self.load_archive().await?;
         }
-        if needs_catalog && self.providers_request_id.is_none() {
+        if (needs_catalog || self.project_writes) && self.providers_request_id.is_none() {
             self.subscribe_provider_catalog().await?;
         }
         Ok(())

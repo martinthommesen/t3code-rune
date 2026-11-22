@@ -5,7 +5,7 @@ use crate::connection::WorktreeLocation;
 use super::super::{CONTROL, DESCRIPTION, Palette, RESET, State, icon_button};
 use super::workspace;
 
-mod path_input;
+use super::super::path_input;
 
 const ROW: &str = "worktree-location-row";
 const INPUT: &str = "worktree-location";
