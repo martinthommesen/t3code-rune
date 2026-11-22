@@ -220,11 +220,9 @@ impl<'a> Models<'a> {
             model,
         };
         let reported_tier = model.default_service_tier();
-        let standard = reported_tier == Some(ServiceTier::Standard.as_str());
-        let saved_service_tier = selection
-            .service_tier()
-            .or(standard.then_some(ServiceTier::Standard));
-        let codex_effort = (standard || reported_tier.is_none())
+        let default_tier = reported_tier.and_then(|tier| ServiceTier::for_model(&model.slug, tier));
+        let saved_service_tier = selection.service_tier().or(default_tier);
+        let codex_effort = (default_tier.is_some() || reported_tier.is_none())
             .then(|| EffortPicker::for_model(model, selection.reasoning_effort()))
             .flatten();
         let saved_speed = codex_effort
@@ -272,8 +270,23 @@ impl<'a> Models<'a> {
         ))
     }
 
-    pub(super) fn contains_model(&self, model: &str) -> bool {
-        self.choices.iter().any(|choice| choice.model.slug == model)
+    pub(super) fn select_model(
+        &self,
+        model: &str,
+        remembered: Option<ModelSelection>,
+    ) -> Option<ModelSelection> {
+        let choice = self
+            .choices
+            .iter()
+            .find(|choice| choice.model.slug == model)?;
+        let selected = remembered.filter(|selection| {
+            selection.reasoning_effort().is_some()
+                && choice.matches(selection)
+                && selection
+                    .service_tier()
+                    .is_none_or(|tier| choice.model.service_tier_choice(tier).is_some())
+        });
+        Some(selected.unwrap_or_else(|| ModelSelection::plain(DraftProvider::Codex, model)))
     }
 
     pub(super) fn has_selection(&self) -> bool {
@@ -700,10 +713,11 @@ impl<'a> Models<'a> {
                             .and_then(ModelSelection::reasoning_effort)
                     }
                     Target::Saved(thread_id) => {
-                        if !checked {
-                            state.choose_saved_model(thread_id, &slug);
+                        if checked {
+                            current_effort
+                        } else {
+                            state.choose_saved_model(thread_id, &slug)
                         }
-                        current_effort
                     }
                 };
                 let Some(picker) = target.picker(state) else {

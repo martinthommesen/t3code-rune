@@ -51,6 +51,7 @@ pub(crate) struct ClientSettings {
     appearance: AppearancePreference,
     browser_link_target: BrowserLinkTarget,
     reasoning: reasoning::Preferences,
+    saved_codex_options: reasoning::SavedOptions,
     project_order: project_order::Preferences,
 }
 
@@ -69,6 +70,7 @@ impl Default for ClientSettings {
             appearance: AppearancePreference::default(),
             browser_link_target: BrowserLinkTarget::default(),
             reasoning: reasoning::Preferences::default(),
+            saved_codex_options: reasoning::SavedOptions::new(),
             project_order: project_order::Preferences::default(),
         }
     }
@@ -132,6 +134,10 @@ impl ClientSettings {
             reasoning: document
                 .as_ref()
                 .and_then(|value| reasoning::Preferences::read(value).ok())
+                .unwrap_or_default(),
+            saved_codex_options: document
+                .as_ref()
+                .and_then(|value| reasoning::read_saved_options(value).ok())
                 .unwrap_or_default(),
         }
     }

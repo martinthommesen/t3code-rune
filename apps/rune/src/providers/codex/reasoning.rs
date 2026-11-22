@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ReasoningEffort {
     Low,
@@ -19,16 +19,31 @@ impl ReasoningEffort {
     pub const SOL_MODEL: &str = "gpt-5.6-sol";
 
     pub fn for_model(model: &str, value: &str) -> Option<Self> {
-        if !matches!(model, Self::MODEL_ID | Self::SOL_MODEL) {
-            return None;
-        }
-        match value {
-            "low" => Some(Self::Low),
-            "medium" => Some(Self::Medium),
-            "high" => Some(Self::High),
-            "xhigh" => Some(Self::ExtraHigh),
-            "max" if model == Self::SOL_MODEL => Some(Self::Max),
-            "ultra" if model == Self::SOL_MODEL => Some(Self::Ultra),
+        let maximum = Self::maximum_for_model(model)?;
+        let effort = match value {
+            "low" => Self::Low,
+            "medium" => Self::Medium,
+            "high" => Self::High,
+            "xhigh" => Self::ExtraHigh,
+            "max" => Self::Max,
+            "ultra" => Self::Ultra,
+            _ => return None,
+        };
+        (effort <= maximum).then_some(effort)
+    }
+
+    fn maximum_for_model(model: &str) -> Option<Self> {
+        match model {
+            Self::MODEL_ID | "gpt-5.5" => Some(Self::ExtraHigh),
+            "gpt-5.6-luna" | "gpt-6-luna" => Some(Self::Max),
+            Self::SOL_MODEL
+            | "gpt-5.6-terra"
+            | "gpt-6-sol"
+            | "gpt-6-astra"
+            | "gpt-6.1-sol"
+            | "gpt-6.1-terra"
+            | "gpt-6.2-sol"
+            | "gpt-6.2-astra" => Some(Self::Ultra),
             _ => None,
         }
     }
@@ -72,15 +87,24 @@ impl ServiceTier {
         }
     }
 
+    pub fn for_model(model: &str, value: &str) -> Option<Self> {
+        match value {
+            "default" => Some(Self::Standard),
+            "priority"
+                if model != ReasoningEffort::MODEL_ID
+                    && ReasoningEffort::maximum_for_model(model).is_some() =>
+            {
+                Some(Self::Priority)
+            }
+            _ => None,
+        }
+    }
+
     fn parse(model: &str, option: &Value) -> Option<Self> {
         if option["id"] != Self::OPTION_ID || option.as_object()?.len() != 2 {
             return None;
         }
-        match option["value"].as_str()? {
-            "default" => Some(Self::Standard),
-            "priority" if model == ReasoningEffort::SOL_MODEL => Some(Self::Priority),
-            _ => None,
-        }
+        Self::for_model(model, option["value"].as_str()?)
     }
 }
 
@@ -114,6 +138,43 @@ impl ReasoningOptions {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn applies_catalogue_limits_for_the_observed_codex_models() {
+        for (model, maximum) in [
+            ("gpt-5.5", ReasoningEffort::ExtraHigh),
+            ("gpt-5.6-luna", ReasoningEffort::Max),
+            ("gpt-5.6-sol", ReasoningEffort::Ultra),
+            ("gpt-5.6-terra", ReasoningEffort::Ultra),
+            ("gpt-6-luna", ReasoningEffort::Max),
+            ("gpt-6-sol", ReasoningEffort::Ultra),
+            ("gpt-6-astra", ReasoningEffort::Ultra),
+            ("gpt-6.1-sol", ReasoningEffort::Ultra),
+            ("gpt-6.1-terra", ReasoningEffort::Ultra),
+            ("gpt-6.2-sol", ReasoningEffort::Ultra),
+            ("gpt-6.2-astra", ReasoningEffort::Ultra),
+        ] {
+            let options = |effort| {
+                json!([
+                    {"id":"reasoningEffort","value":effort},
+                    {"id":"serviceTier","value":"priority"},
+                ])
+            };
+            assert_eq!(
+                ReasoningOptions::parse(model, &options(maximum.as_str())),
+                Some(ReasoningOptions {
+                    effort: maximum,
+                    service_tier: Some(ServiceTier::Priority)
+                }),
+            );
+            assert_eq!(
+                ReasoningOptions::parse(model, &options("ultra")).is_some(),
+                maximum == ReasoningEffort::Ultra,
+            );
+        }
+        assert!(ReasoningEffort::for_model("unknown", "medium").is_none());
+        assert!(ServiceTier::for_model("unknown", "priority").is_none());
+    }
 
     #[test]
     fn sol_accepts_the_reported_service_tiers_in_either_option_order() {

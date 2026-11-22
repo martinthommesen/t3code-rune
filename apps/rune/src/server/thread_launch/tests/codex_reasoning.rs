@@ -44,7 +44,7 @@ async fn codex_reasoning_choice_does_not_admit_other_model_options() {
     for (model, option, value) in [
         ("gpt-5.4", "reasoningEffort", "unsupported"),
         ("gpt-5.4", "serviceTier", "high"),
-        ("gpt-5.5", "reasoningEffort", "high"),
+        ("gpt-5.5", "reasoningEffort", "ultra"),
     ] {
         let mut request = launch_request();
         request["modelSelection"] = json!({

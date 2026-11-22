@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use t3_rune::providers::codex::{ReasoningEffort, ServiceTier};
 
-use crate::connection::{DraftProvider, ModelSelection, Thread};
+use crate::connection::{ModelSelection, Thread};
 
 use super::super::{Conversation, Palette, ProjectView, State, Workspace};
 use super::Layout;
@@ -45,51 +45,56 @@ impl State {
         thread_id: &str,
         effort: ReasoningEffort,
     ) {
-        self.edit_saved_model(thread_id, |models| models.select_effort(effort));
+        self.edit_saved_options(thread_id, |models| models.select_effort(effort));
     }
 
     pub(super) fn choose_saved_speed(&mut self, thread_id: &str, tier: ServiceTier) {
-        self.edit_saved_model(thread_id, |models| models.select_speed(tier));
+        self.edit_saved_options(thread_id, |models| models.select_speed(tier));
     }
 
-    pub(in crate::ui) fn choose_saved_model(&mut self, thread_id: &str, model: &str) {
-        self.edit_saved_model(thread_id, |models| {
-            models
-                .contains_model(model)
-                .then(|| ModelSelection::plain(DraftProvider::Codex, model))
-        });
+    pub(super) fn choose_saved_model(
+        &mut self,
+        thread_id: &str,
+        model: &str,
+    ) -> Option<ReasoningEffort> {
+        let remembered = self.client_settings.saved_codex_options(model).cloned();
+        self.edit_saved_model(thread_id, |models| models.select_model(model, remembered))?
+            .reasoning_effort()
+    }
+
+    fn edit_saved_options(
+        &mut self,
+        thread_id: &str,
+        pick: impl FnOnce(&Models<'_>) -> Option<ModelSelection>,
+    ) {
+        if let Some(selection) = self.edit_saved_model(thread_id, pick)
+            && let Err(error) = self.client_settings.remember_saved_codex_options(selection)
+        {
+            self.project_notice = Some(format!("Could not remember model options. {error}"));
+        }
     }
 
     fn edit_saved_model(
         &mut self,
         thread_id: &str,
         pick: impl FnOnce(&Models<'_>) -> Option<ModelSelection>,
-    ) {
-        let Some(workspace) = self.workspace.as_ref() else {
-            return;
-        };
-        if !available(workspace, thread_id)
-            .is_some_and(|conversation| conversation.saved_model_picker.is_some())
-        {
-            return;
-        }
-        let Some(selection) = workspace
-            .thread(thread_id)
-            .and_then(|thread| Models::for_saved(workspace, thread))
-            .and_then(|models| pick(&models))
-        else {
-            return;
-        };
-        let Some(draft) = self
+    ) -> Option<ModelSelection> {
+        let workspace = self.workspace.as_ref()?;
+        available(workspace, thread_id)?
+            .saved_model_picker
+            .as_ref()?;
+        let thread = workspace.thread(thread_id)?;
+        let selection = pick(&Models::for_saved(workspace, thread)?)?;
+        let draft = self
             .drafts
             .get_mut(thread_id)
-            .filter(|draft| !draft.pending && draft.pending_saved_reasoning.is_none())
-        else {
-            return;
-        };
-        draft.pending_saved_reasoning = self.connection.as_ref().and_then(|connection| {
-            connection.set_saved_codex_model(thread_id.to_owned(), selection)
-        });
+            .filter(|draft| !draft.pending && draft.pending_saved_reasoning.is_none())?;
+        let operation = self
+            .connection
+            .as_ref()?
+            .set_saved_codex_model(thread_id.to_owned(), selection.clone())?;
+        draft.pending_saved_reasoning = Some(operation);
+        Some(selection)
     }
 
     pub(in crate::ui) fn settle_saved_reasoning(

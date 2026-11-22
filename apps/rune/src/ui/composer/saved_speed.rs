@@ -1,7 +1,7 @@
 use rune::color::hex;
 use rune::{Color, El, Icon, Key, icon, row, text};
 
-use t3_rune::providers::codex::{ReasoningEffort, ServiceTier};
+use t3_rune::providers::codex::ServiceTier;
 
 use crate::connection::ProviderModel;
 
@@ -29,9 +29,7 @@ impl<'a> SavedSpeed<'a> {
         model: &'a ProviderModel,
         current: Option<ServiceTier>,
     ) -> Option<Self> {
-        if model.slug != ReasoningEffort::SOL_MODEL {
-            return None;
-        }
+        ServiceTier::for_model(&model.slug, ServiceTier::Priority.as_str())?;
         Some(Self {
             current: current.unwrap_or(ServiceTier::Standard),
             standard: model.service_tier_choice(ServiceTier::Standard)?,

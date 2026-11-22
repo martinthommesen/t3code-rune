@@ -2320,6 +2320,20 @@ set -eu
         }
     }
 
+    #[tokio::test]
+    async fn respects_implicit_and_explicit_luna_options_after_resume() {
+        let initial = json!({"instanceId":"codex","model":"gpt-5.6-sol"});
+        let luna = json!({"instanceId":"codex","model":"gpt-6-luna"});
+        let mut explicit = luna.clone();
+        explicit["options"] = json!([
+            {"id":"reasoningEffort","value":"max"},
+            {"id":"serviceTier","value":"default"},
+        ]);
+        for selection in [luna, explicit] {
+            verify_two_turn_conversation(true, Some((initial.clone(), selection))).await;
+        }
+    }
+
     async fn verify_two_turn_conversation(restart: bool, change: Option<(Value, Value)>) {
         let fixture = Fixture::new();
         let commands = fixture.commands();
