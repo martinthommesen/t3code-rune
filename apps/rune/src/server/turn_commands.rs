@@ -344,15 +344,6 @@ impl TurnCommands {
                 "This command requires a root-workspace thread with an existing workspace directory.",
             ));
         }
-        if let Some(requested) = &model_selection
-            && (requested != &thread.model_selection
-                || !model_selection::has_native_codex_thread(provider_thread.as_ref())
-                || validate_model_selection(requested).is_err())
-        {
-            return Err(TurnCommandError::Unsupported(
-                "The prompt's model selection must match the saved Codex model selection.",
-            ));
-        }
         let provider = match thread_payload["providerInstanceId"].as_str() {
             Some(CODEX_INSTANCE) => {
                 validate_model_selection(&thread.model_selection)?;
@@ -375,6 +366,21 @@ impl TurnCommands {
                 ));
             }
         };
+        if let Some(requested) = &model_selection {
+            let native_thread = provider_thread.as_ref();
+            let can_resume = match provider {
+                NativeProvider::Codex => model_selection::has_native_codex_thread(native_thread),
+                NativeProvider::Claude => native_thread
+                    .filter(|thread| thread["driver"] == CLAUDE_INSTANCE)
+                    .and_then(|thread| thread["nativeThreadRef"]["nativeId"].as_str())
+                    .is_some_and(|id| Uuid::parse_str(id).is_ok()),
+            };
+            if requested != &thread.model_selection || !can_resume {
+                return Err(TurnCommandError::Unsupported(
+                    "The prompt's model selection must match the saved model on a resumable thread.",
+                ));
+            }
+        }
         let model_switch = if model_selection::has_native_codex_thread(provider_thread.as_ref()) {
             model_selection::model_change(&transaction, &thread_id, &thread.model_selection)?
         } else {

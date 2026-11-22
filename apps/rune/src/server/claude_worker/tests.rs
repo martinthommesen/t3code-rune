@@ -103,11 +103,22 @@ async fn assert_two_turns(recording: &str, reopen: bool) {
         command["commandId"] = json!(command_id);
         command["messageId"] = json!(command_id);
         command["text"] = json!(text);
+        let configured = settings.read().unwrap();
+        if index == 1 && reopen {
+            command["modelSelection"] =
+                json!({"instanceId":"claudeAgent","model":"claude-haiku-4-5"});
+            assert!(matches!(
+                commands.dispatch_with_settings(
+                    serde_json::from_value(command.clone()).unwrap(),
+                    Some(&configured),
+                ),
+                Err(TurnCommandError::Unsupported(_))
+            ));
+            command["modelSelection"] =
+                json!({"instanceId":"claudeAgent","model":"claude-sonnet-4-6"});
+        }
         let dispatch = commands
-            .dispatch_with_settings(
-                serde_json::from_value(command).unwrap(),
-                Some(&settings.read().unwrap()),
-            )
+            .dispatch_with_settings(serde_json::from_value(command).unwrap(), Some(&configured))
             .unwrap();
         let effect_id = format!(
             "effect:{command_id}:provider-turn.start:{}",
