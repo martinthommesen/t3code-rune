@@ -791,11 +791,7 @@ impl State {
         })
     }
 
-    fn terminal_key(&mut self, event: &KeyEvent, tx: &mut Tx) -> bool {
-        if event.is_command('v') && (event.mods.shift || cfg!(target_os = "macos")) {
-            tx.request_paste();
-            return true;
-        }
+    fn terminal_key(&mut self, event: &KeyEvent, wrapped_lines: &[usize], tx: &mut Tx) -> bool {
         match self.resolve_shortcut(event, tx) {
             Some("terminal.toggle") => self.detach_terminal_pane(),
             Some("terminal.new") => self.new_terminal_tab(tx),
@@ -811,6 +807,9 @@ impl State {
                 let Some(terminal) = &self.terminal else {
                     return false;
                 };
+                if terminal_clipboard_key(event, terminal.attachment, wrapped_lines, tx) {
+                    return true;
+                }
                 let application = terminal.screen.term.mode().contains(TermMode::APP_CURSOR);
                 if let Some(action) = history::input_key(event)
                     && self.scroll_history(terminal.attachment, action)
@@ -823,6 +822,61 @@ impl State {
         }
         true
     }
+}
+
+fn terminal_output_key(attachment: u64) -> String {
+    format!("terminal-output-{attachment}")
+}
+
+fn terminal_clipboard_key(
+    event: &KeyEvent,
+    attachment: u64,
+    wrapped_lines: &[usize],
+    tx: &mut Tx,
+) -> bool {
+    let insert = !cfg!(target_os = "macos") && matches!(event.key, Key::Insert) && !event.mods.logo;
+    if (event.is_command('v') && (event.mods.shift || cfg!(target_os = "macos")))
+        || (insert && event.mods.shift && !event.mods.ctrl)
+    {
+        tx.request_paste();
+        return true;
+    }
+    if !event.is_command('c') && !(insert && event.mods.ctrl && !event.mods.shift) {
+        return false;
+    }
+    let output = terminal_output_key(attachment);
+    let Some(selection) = tx
+        .text_selection()
+        .and_then(|selection| {
+            selection
+                .texts()
+                .iter()
+                .find(|text| text.key() == Some(&output))
+        })
+        .filter(|selection| !selection.text().is_empty())
+    else {
+        return false;
+    };
+    let text = selection.text();
+    let first = selection.range().start;
+    let mut copied = String::with_capacity(text.len());
+    let mut start = 0;
+    for offset in wrapped_lines
+        .iter()
+        .filter_map(|offset| offset.checked_sub(first))
+        .take_while(|&offset| offset < text.len())
+    {
+        if text.as_bytes()[offset] == b'\n' {
+            copied.push_str(&text[start..offset]);
+            start = offset + 1;
+        }
+    }
+    copied.push_str(&text[start..]);
+    tx.copy(copied);
+    if !cfg!(target_os = "macos") && !event.mods.shift && !insert {
+        tx.clear_text_selection();
+    }
+    true
 }
 
 fn key_input(event: &KeyEvent, application_cursor: bool) -> Option<String> {
@@ -870,9 +924,10 @@ fn viewport(terminal: &Pane, active: bool, palette: Palette) -> El {
     } else {
         format!("{INPUT_KEY}-{attachment}")
     };
-    let (contents, spans) = screen_text(terminal, palette);
+    let (contents, spans, wrapped_lines) = screen_text(terminal, palette);
     let mut output = col().w_full().grow(1.0).min_h(0.0).clip_rounded(0.0).child(
         text(contents)
+            .key(terminal_output_key(attachment))
             .font(FONT)
             .color(palette.ink)
             .spans(spans)
@@ -897,7 +952,7 @@ fn viewport(terminal: &Pane, active: bool, palette: Palette) -> El {
         })
         .focusable(active)
         .no_focus_ring()
-        .on_key(State::terminal_key)
+        .on_key(move |state: &mut State, event, tx| state.terminal_key(event, &wrapped_lines, tx))
         .on_wheel(move |state: &mut State, event, _| state.terminal_wheel(attachment, event))
         .on_layout(move |state: &mut State, rect| state.resize_terminal_pane(attachment, rect))
         .child(output);
@@ -907,7 +962,7 @@ fn viewport(terminal: &Pane, active: bool, palette: Palette) -> El {
     viewport
 }
 
-fn screen_text(terminal: &Pane, palette: Palette) -> (String, Vec<Span>) {
+fn screen_text(terminal: &Pane, palette: Palette) -> (String, Vec<Span>, Vec<usize>) {
     let term = &terminal.screen.term;
     let grid = term.grid();
     let content = term.renderable_content();
@@ -919,6 +974,7 @@ fn screen_text(terminal: &Pane, palette: Palette) -> (String, Vec<Span>) {
     let cols = grid.columns();
     let mut contents = String::new();
     let mut spans = Vec::new();
+    let mut wrapped_lines = Vec::new();
     for row in 0..rows {
         let line = Line(row as i32 - content.display_offset as i32);
         let end = (0..cols).rev().find(|&col| {
@@ -979,10 +1035,13 @@ fn screen_text(terminal: &Pane, palette: Palette) -> (String, Vec<Span>) {
             }
         }
         if row + 1 < rows {
+            if grid[line][Column(cols - 1)].flags.contains(Flags::WRAPLINE) {
+                wrapped_lines.push(contents.len());
+            }
             contents.push('\n');
         }
     }
-    (contents, spans)
+    (contents, spans, wrapped_lines)
 }
 
 fn color(value: TerminalColor, colors: &Colors, default: Color) -> Color {
