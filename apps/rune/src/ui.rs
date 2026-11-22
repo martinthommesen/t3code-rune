@@ -634,9 +634,19 @@ impl State {
                 })),
             }),
             Destination::NewThread(id) => {
+                let model_choice = self
+                    .draft_environment
+                    .as_deref()
+                    .and_then(|environment| {
+                        self.client_settings.draft_codex_reasoning(environment, &id)
+                    })
+                    .map(crate::connection::ModelSelection::codex_reasoning);
                 self.new_thread_drafts
                     .entry(id.clone())
-                    .or_insert_with(Draft::new_thread);
+                    .or_insert_with(|| Draft {
+                        model_choice,
+                        ..Draft::new_thread()
+                    });
                 Some(ProjectSelection {
                     id,
                     view: ProjectView::NewThread,
@@ -1370,6 +1380,7 @@ impl State {
                 project_id,
                 thread_id,
             } => {
+                self.clear_draft_reasoning(&project_id);
                 if let Some(launch) = self
                     .new_thread_drafts
                     .get_mut(&project_id)

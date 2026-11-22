@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
-use t3_rune::providers::codex::RuntimeMode;
+use t3_rune::providers::codex::{ReasoningEffort, RuntimeMode};
 
 use super::projection::ProjectRow;
 
@@ -42,6 +42,21 @@ impl ModelSelection {
             model: model.to_owned(),
             options: None,
         }
+    }
+
+    pub(crate) fn codex_reasoning(effort: ReasoningEffort) -> Self {
+        Self {
+            instance_id: DraftProvider::Codex.instance_id().to_owned(),
+            model: ReasoningEffort::MODEL_ID.to_owned(),
+            options: Some(json!([{"id":ReasoningEffort::OPTION_ID,"value":effort}])),
+        }
+    }
+
+    pub(crate) fn reasoning_effort(&self) -> Option<ReasoningEffort> {
+        if self.instance_id != DraftProvider::Codex.instance_id() {
+            return None;
+        }
+        ReasoningEffort::from_options(&self.model, self.options.as_ref()?)
     }
 }
 
@@ -296,7 +311,7 @@ pub(super) fn payload(config: Value, project: &ProjectRow, draft: &Draft) -> Res
     let model_selection = match &draft.model {
         Some(model) => {
             let provider = DraftProvider::from_instance(model.instance_id());
-            if model.plain_model().is_none()
+            if (model.plain_model().is_none() && model.reasoning_effort().is_none())
                 || !provider.is_some_and(|provider| policy.allows(provider, model.model()))
                 || (provider == Some(DraftProvider::Claude)
                     && !matches!(draft.workspace, Workspace::Root))

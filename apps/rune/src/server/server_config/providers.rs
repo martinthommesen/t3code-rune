@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
+use t3_rune::providers::codex::ReasoningEffort;
 use t3_rune::providers::{CodexAppServer, CodexError};
 use time::OffsetDateTime;
 
@@ -251,12 +252,42 @@ fn wire_model(model: Model) -> Option<Value> {
         "slug": slug,
         "name": model_name(name),
         "isCustom": false,
-        "capabilities": null,
+        "capabilities": reasoning_capability(slug, &model),
     });
     if model.is_default {
         value["isDefault"] = true.into();
     }
     Some(value)
+}
+
+fn reasoning_capability(slug: &str, model: &Model) -> Value {
+    let default = model
+        .default_reasoning_effort
+        .as_deref()
+        .and_then(|value| ReasoningEffort::for_model(slug, value));
+    let mut options = Vec::new();
+    let mut current_value = None;
+    for option in &model.supported_reasoning_efforts {
+        let Some(effort) = ReasoningEffort::for_model(slug, &option.reasoning_effort) else {
+            continue;
+        };
+        let mut row = json!({"id":effort.as_str(),"label":effort.label()});
+        if Some(effort) == default {
+            row["isDefault"] = true.into();
+            current_value = Some(effort);
+        }
+        options.push(row);
+    }
+    if options.is_empty() {
+        return Value::Null;
+    }
+    let mut reasoning = json!({
+        "id":ReasoningEffort::OPTION_ID,"label":"Reasoning","type":"select","options":options
+    });
+    if let Some(effort) = current_value {
+        reasoning["currentValue"] = effort.as_str().into();
+    }
+    json!({"optionDescriptors":[reasoning]})
 }
 
 fn model_name(name: &str) -> String {

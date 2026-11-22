@@ -115,7 +115,11 @@ impl TurnCommands {
         };
         let projected_thread: ThreadProjection = serde_json::from_str(&payload)?;
         let model_selection: Value = serde_json::from_str(&model_selection)?;
-        let model = validate_model_selection(&model_selection)?.to_owned();
+        let selection = validate_model_selection(&model_selection)?;
+        let model = selection.model.to_owned();
+        let reasoning_effort = selection
+            .reasoning_effort
+            .map(|effort| effort.as_str().to_owned());
         let cwd = PathBuf::from(cwd);
 
         transaction.execute(
@@ -145,7 +149,7 @@ impl TurnCommands {
                 text: crate::composer_context::provider_text(text, context.as_deref()),
                 runtime_mode: projected_thread.runtime_mode,
                 interaction_mode: projected_thread.interaction_mode,
-                reasoning_effort: None,
+                reasoning_effort,
             },
         }))
     }

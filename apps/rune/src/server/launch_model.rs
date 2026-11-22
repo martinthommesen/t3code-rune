@@ -33,6 +33,15 @@ pub(super) struct Model {
     #[serde(default)]
     pub(super) is_default: bool,
     pub(super) display_name: Option<String>,
+    pub(super) default_reasoning_effort: Option<String>,
+    #[serde(default)]
+    pub(super) supported_reasoning_efforts: Vec<ModelEffort>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ModelEffort {
+    pub(super) reasoning_effort: String,
 }
 
 pub(super) async fn discover(

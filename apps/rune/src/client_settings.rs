@@ -9,6 +9,7 @@ use crate::server::parse_settings_json;
 
 mod appearance;
 mod chromium;
+mod reasoning;
 mod terminal;
 
 pub(crate) use appearance::AppearanceMode;
@@ -35,6 +36,7 @@ pub(crate) struct ClientSettings {
     terminal_layouts: terminal::Layouts,
     closed_thread_details: ClosedThreadDetails,
     appearance: AppearancePreference,
+    reasoning: reasoning::Preferences,
 }
 
 impl Default for ClientSettings {
@@ -46,6 +48,7 @@ impl Default for ClientSettings {
             terminal_layouts: terminal::Layouts::new(),
             closed_thread_details: ClosedThreadDetails::new(),
             appearance: AppearancePreference::default(),
+            reasoning: reasoning::Preferences::default(),
         }
     }
 }
@@ -77,6 +80,10 @@ impl ClientSettings {
             terminal_layouts,
             closed_thread_details,
             appearance: AppearancePreference::at_state_dir(state_dir),
+            reasoning: document
+                .as_ref()
+                .and_then(|value| reasoning::Preferences::read(value).ok())
+                .unwrap_or_default(),
         }
     }
 

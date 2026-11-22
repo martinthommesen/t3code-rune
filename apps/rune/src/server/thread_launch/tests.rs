@@ -1,4 +1,5 @@
 mod claude;
+mod codex_reasoning;
 
 use std::fs;
 use std::process::Command;

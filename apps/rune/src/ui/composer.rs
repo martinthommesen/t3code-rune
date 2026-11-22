@@ -11,6 +11,7 @@ use super::project::clone_banner;
 use super::worktree_setup;
 use super::{Draft, Palette, Project, SMALL, State, Workspace, button, error_text};
 
+mod codex_effort;
 mod draft_model_picker;
 mod model_favorites;
 mod model_picker;

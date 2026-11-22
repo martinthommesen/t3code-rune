@@ -10,6 +10,7 @@ use crate::connection::{
 
 use super::super::sidebar::provider_badge;
 use super::super::{Draft, Palette, State, Workspace};
+use super::codex_effort::{self, EffortPicker};
 use super::model_favorites::{self, Favorites};
 use super::model_picker::{self, CHECK, Colors, DETAILS, LABEL, SEARCH};
 
@@ -74,6 +75,11 @@ impl Choice<'_> {
         self.provider.instance_id() == selected.instance_id()
             && self.model.slug == selected.model()
             && (self.provider != DraftProvider::Claude || selected.plain_model().is_some())
+            && selected.reasoning_effort().is_none_or(|effort| {
+                self.model
+                    .reasoning_levels()
+                    .is_some_and(|levels| levels.options.contains(&effort))
+            })
     }
 
     fn mark(self, palette: Palette, color: Colors, size: f32) -> El {
@@ -89,6 +95,7 @@ impl Choice<'_> {
 pub(super) struct Models<'a> {
     choices: Vec<Choice<'a>>,
     selected: Option<Choice<'a>>,
+    codex_effort: Option<EffortPicker>,
     favorites: &'a Favorites,
     full_access: bool,
 }
@@ -138,8 +145,19 @@ impl<'a> Models<'a> {
             codex.find(|choice| slug == Some(choice.model.slug.as_str()))
         }
         .copied();
+        let codex_effort = selected
+            .filter(|choice| choice.provider == DraftProvider::Codex)
+            .and_then(|choice| {
+                EffortPicker::for_model(
+                    choice.model,
+                    draft
+                        .selected_model()
+                        .and_then(ModelSelection::reasoning_effort),
+                )
+            });
         Some(Self {
             selected,
+            codex_effort,
             choices,
             favorites: &workspace.model_favorites,
             full_access: policy.full_access(),
@@ -174,7 +192,10 @@ impl<'a> Models<'a> {
         let claude = self
             .selected
             .is_some_and(|choice| choice.provider == DraftProvider::Claude);
-        let label = if claude {
+        let effort = self.codex_effort.as_ref().and_then(EffortPicker::current);
+        let label = if let Some(effort) = effort {
+            format!("{}, {}", initial.model.name, effort.label())
+        } else if claude {
             format!("{}, High · 200k", initial.model.name)
         } else {
             self.selected
@@ -183,7 +204,11 @@ impl<'a> Models<'a> {
         let width = if claude {
             183.0
         } else {
-            (rune::text::measure(name, &[], LABEL, None).0 + 42.0).clamp(78.0, 183.0)
+            let width = rune::text::measure(name, &[], LABEL, None).0 + 42.0;
+            let suffix = effort.map_or(0.0, |effort| {
+                rune::text::measure(effort.label(), &[], LABEL, None).0 + 4.0
+            });
+            (width + suffix).clamp(78.0, 183.0)
         };
         let mut trigger = row()
             .key(TRIGGER)
@@ -214,7 +239,9 @@ impl<'a> Models<'a> {
             trigger = trigger.child(choice.mark(palette, color, 16.0));
         }
         trigger = trigger.child(text(name).font(LABEL).color(color.ink).truncate());
-        if claude {
+        if let Some(effort) = effort {
+            trigger = trigger.child(text(effort.label()).font(LABEL).color(color.muted));
+        } else if claude {
             trigger = trigger
                 .child(text("High").font(LABEL).color(color.muted))
                 .child(text("200k").font(DETAILS).color(color.ink));
@@ -361,7 +388,19 @@ impl<'a> Models<'a> {
         }
         let width = model_picker::popup_width(lane);
         let columns = width >= 420.0;
-        let details = if let Some(choice) = self
+        let details = if let Some(effort) = &self.codex_effort {
+            effort.view(
+                project,
+                self.selected
+                    .expect("Codex reasoning model")
+                    .model
+                    .name
+                    .as_str(),
+                if columns { 192.0 } else { width - 45.0 },
+                palette,
+                QUERY,
+            )
+        } else if let Some(choice) = self
             .selected
             .filter(|choice| choice.provider == DraftProvider::Claude)
         {
@@ -448,6 +487,7 @@ impl<'a> Models<'a> {
         let provider = choice.provider;
         let slug = choice.model.slug.clone();
         let legacy = choice.model.is_legacy;
+        let codex_levels = choice.model.reasoning_levels();
         let action = self
             .favorites
             .action(provider.instance_id(), &slug, shelf, palette, color);
@@ -467,18 +507,28 @@ impl<'a> Models<'a> {
             .hover(color.hover)
             .hover_group()
             .on_press_tx(move |state: &mut State, tx| {
-                if let Some(draft) = state.new_thread_drafts.get_mut(&project)
-                    && let Some(picker) = &mut draft.model_picker
-                {
-                    if !checked {
-                        draft.model_choice = Some(ModelSelection::plain(provider, &slug));
-                    }
+                if !checked {
+                    state.choose_draft_model(&project, provider, &slug);
+                }
+                if let Some(draft) = state.new_thread_drafts.get_mut(&project) {
+                    let selected = draft
+                        .selected_model()
+                        .and_then(ModelSelection::reasoning_effort);
+                    let Some(picker) = &mut draft.model_picker else {
+                        return;
+                    };
                     if picker.tab != Tab::Favorites {
                         picker.tab = Tab::Provider(provider);
                     }
                     picker.expanded[provider_index(provider)] |= legacy;
                     if provider == DraftProvider::Claude {
                         tx.focus_when_shown(EFFORT, tx.focus_visible());
+                    } else if let Some(levels) = &codex_levels {
+                        let effort = selected
+                            .filter(|value| levels.options.contains(value))
+                            .or(levels.default)
+                            .unwrap_or(levels.options[0]);
+                        tx.focus_when_shown(codex_effort::key(effort), tx.focus_visible());
                     }
                 }
             })

@@ -37,6 +37,7 @@ use serde_json::{Value, json};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use t3_rune::providers::codex::ReasoningEffort;
 use t3_rune::providers::codex::{InteractionMode, RuntimeMode};
 
 const COMMAND_TYPE: &str = "message.dispatch";
@@ -661,7 +662,14 @@ pub(super) fn supports_plain_claude_config(
             .all(|entry| matches!(entry.value, super::settings::EnvironmentValue::Literal(_)))
 }
 
-pub(super) fn validate_model_selection(selection: &Value) -> Result<&str, TurnCommandError> {
+pub(super) struct CodexTurnModel<'a> {
+    model: &'a str,
+    reasoning_effort: Option<ReasoningEffort>,
+}
+
+pub(super) fn validate_model_selection(
+    selection: &Value,
+) -> Result<CodexTurnModel<'_>, TurnCommandError> {
     let Some(model) = selection["model"]
         .as_str()
         .filter(|model| !model.trim().is_empty())
@@ -670,16 +678,26 @@ pub(super) fn validate_model_selection(selection: &Value) -> Result<&str, TurnCo
             "This thread does not have a selected Codex model.",
         ));
     };
-    if selection["instanceId"] != CODEX_INSTANCE
-        || selection
-            .as_object()
-            .is_some_and(|selection| selection.len() != 2)
-    {
-        return Err(TurnCommandError::Unsupported(
-            "This command requires the built-in Codex provider and a model without overrides.",
-        ));
+    let unsupported = || {
+        TurnCommandError::Unsupported(
+            "This command requires the built-in Codex provider and supported model options.",
+        )
+    };
+    let fields = selection.as_object().ok_or_else(unsupported)?;
+    if selection["instanceId"] != CODEX_INSTANCE {
+        return Err(unsupported());
     }
-    Ok(model)
+    let reasoning_effort = match fields.get("options") {
+        None if fields.len() == 2 => None,
+        Some(options) if fields.len() == 3 => {
+            Some(ReasoningEffort::from_options(model, options).ok_or_else(unsupported)?)
+        }
+        _ => return Err(unsupported()),
+    };
+    Ok(CodexTurnModel {
+        model,
+        reasoning_effort,
+    })
 }
 
 pub(super) fn allocate_turn_item_in_run(

@@ -1,4 +1,5 @@
 mod events;
+mod reasoning;
 mod terminals;
 mod usage;
 
@@ -19,6 +20,8 @@ pub use events::{
     ReasoningStream, TodoListStep, TodoListStepStatus, TodoListUpdate, ToolItem, ToolLifecycle,
     TurnEvent, UserInputRequest, WebSearchUpdate,
 };
+
+pub use reasoning::ReasoningEffort;
 
 pub use usage::{
     NativeTokenCounts, TokenTotals, TokenUsageSnapshot, TurnContextUsage, TurnTokenUsage,

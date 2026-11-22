@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use serde::Deserialize;
 use serde_json::Value;
 
+use t3_rune::providers::codex::ReasoningEffort;
+
 pub(crate) type ProviderCatalog = HashMap<String, ProviderMetadata>;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -37,6 +39,36 @@ pub(crate) struct ProviderModel {
     pub(crate) is_legacy: bool,
     #[serde(default, rename = "isDefault")]
     pub(crate) is_default: bool,
+    capabilities: Option<Value>,
+}
+
+pub(crate) struct ReasoningLevels {
+    pub(crate) options: Vec<ReasoningEffort>,
+    pub(crate) default: Option<ReasoningEffort>,
+}
+
+impl ProviderModel {
+    pub(crate) fn reasoning_levels(&self) -> Option<ReasoningLevels> {
+        let descriptor = self.capabilities.as_ref()?["optionDescriptors"]
+            .as_array()?
+            .iter()
+            .find(|descriptor| {
+                descriptor["id"] == ReasoningEffort::OPTION_ID && descriptor["type"] == "select"
+            })?;
+        let options: Vec<_> = descriptor["options"]
+            .as_array()?
+            .iter()
+            .filter_map(|entry| ReasoningEffort::for_model(&self.slug, entry["id"].as_str()?))
+            .collect();
+        if options.is_empty() {
+            return None;
+        }
+        let default = descriptor["currentValue"]
+            .as_str()
+            .and_then(|value| ReasoningEffort::for_model(&self.slug, value))
+            .filter(|effort| options.contains(effort));
+        Some(ReasoningLevels { options, default })
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]

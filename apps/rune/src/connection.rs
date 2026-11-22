@@ -59,7 +59,7 @@ pub(crate) use projection::{
 };
 use projection::{Conversation, Shell};
 pub(crate) use provider_metadata::{
-    ProviderCatalog, ProviderMetadata, ProviderModel, ProviderReadiness,
+    ProviderCatalog, ProviderMetadata, ProviderModel, ProviderReadiness, ReasoningLevels,
 };
 pub(crate) use queue_mutation::QueueMutation;
 #[cfg(test)]
