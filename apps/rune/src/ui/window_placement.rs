@@ -7,6 +7,8 @@ use super::State;
 
 mod document;
 mod geometry;
+#[cfg(target_os = "linux")]
+mod wayland;
 pub(super) mod x11;
 
 use document::{Bounds, Placement, Store};
@@ -133,6 +135,8 @@ pub(super) fn run(
     if !cfg!(target_os = "linux") && persistence.is_none() {
         return app.args(rune_args).try_run();
     }
+    #[cfg(target_os = "linux")]
+    let window_args = rune_args.clone();
     rune::try_run_windows_with_args(RunOptions::default(), rune_args, move |displays| {
         let x11 = displays.iter().any(|display| {
             matches!(
@@ -146,6 +150,13 @@ pub(super) fn run(
             spec.options.borderless = borderless;
             return [spec];
         };
+        #[cfg(target_os = "linux")]
+        if displays
+            .iter()
+            .any(|display| matches!(display.native_id(), Some(NativeDisplayId::Wayland(_))))
+        {
+            return [wayland::restore(app, window_args, saved, displays)];
+        }
         let displays: Vec<_> = displays.iter().map(Monitor::new).collect();
         let restored = saved.and_then(|placement| {
             displays
