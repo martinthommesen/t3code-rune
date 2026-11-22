@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use rune::{
     Color, El, Key, KeyEvent, ScrollSpec, TextEdit, Tx, col, edit_access, el, icon, row, text,
     text_input,
@@ -195,7 +197,7 @@ impl<'a> Models<'a> {
     }
 
     pub(super) fn for_saved(workspace: &'a Workspace, thread: &'a Thread) -> Option<Self> {
-        let selection = thread.providers.codex_reasoning_model()?;
+        let selection = thread.providers.codex_model()?;
         let metadata = workspace
             .providers
             .as_ref()?
@@ -210,12 +212,17 @@ impl<'a> Models<'a> {
             model,
         };
         Some(Self {
-            choices: vec![selected],
+            choices: metadata
+                .models()
+                .iter()
+                .map(|model| Choice {
+                    provider: DraftProvider::Codex,
+                    metadata,
+                    model,
+                })
+                .collect(),
             selected: Some(selected),
-            codex_effort: Some(EffortPicker::for_model(
-                model,
-                selection.reasoning_effort(),
-            )?),
+            codex_effort: EffortPicker::for_model(model, selection.reasoning_effort()),
             favorites: &workspace.model_favorites,
             permissions: thread.providers.permissions_label(),
         })
@@ -225,6 +232,10 @@ impl<'a> Models<'a> {
         self.codex_effort
             .as_ref()
             .is_some_and(|picker| picker.supports(effort))
+    }
+
+    pub(super) fn contains_model(&self, model: &str) -> bool {
+        self.choices.iter().any(|choice| choice.model.slug == model)
     }
 
     pub(super) fn has_selection(&self) -> bool {
@@ -245,31 +256,49 @@ impl<'a> Models<'a> {
                 .contains(choice.provider.instance_id(), &choice.model.slug)
         });
         let legacy = self.selected.is_some_and(|choice| choice.model.is_legacy);
-        let name = self.selected.map_or("Choose a model", |choice| {
-            choice
-                .model
-                .short_name
-                .as_deref()
-                .unwrap_or(&choice.model.name)
-        });
+        let saved = matches!(&target, Target::Saved(_));
+        let name = self
+            .selected
+            .map_or(Cow::Borrowed("Choose a model"), |choice| {
+                if saved {
+                    choice.model.codex_short_name()
+                } else {
+                    Cow::Borrowed(
+                        choice
+                            .model
+                            .short_name
+                            .as_deref()
+                            .unwrap_or(&choice.model.name),
+                    )
+                }
+            });
         let claude = self
             .selected
             .is_some_and(|choice| choice.provider == DraftProvider::Claude);
-        let effort = self.codex_effort.as_ref().and_then(EffortPicker::current);
+        let effort = self
+            .codex_effort
+            .as_ref()
+            .and_then(EffortPicker::current)
+            .map(ReasoningEffort::label)
+            .or_else(|| {
+                saved
+                    .then(|| initial.model.default_reasoning().map(|(_, label)| label))
+                    .flatten()
+            });
         let label = if let Some(effort) = effort {
-            format!("{}, {}", initial.model.name, effort.label())
+            format!("{}, {effort}", initial.model.name)
         } else if claude {
             format!("{}, High · 200k", initial.model.name)
         } else {
             self.selected
-                .map_or_else(|| name.to_owned(), |choice| choice.model.name.clone())
+                .map_or_else(|| name.to_string(), |choice| choice.model.name.clone())
         };
         let width = if claude {
             183.0
         } else {
-            let width = rune::text::measure(name, &[], LABEL, None).0 + 42.0;
+            let width = rune::text::measure(&name, &[], LABEL, None).0 + 42.0;
             let suffix = effort.map_or(0.0, |effort| {
-                rune::text::measure(effort.label(), &[], LABEL, None).0 + 4.0
+                rune::text::measure(effort, &[], LABEL, None).0 + 4.0
             });
             (width + suffix).clamp(78.0, 183.0)
         };
@@ -301,9 +330,9 @@ impl<'a> Models<'a> {
         if let Some(choice) = self.selected {
             trigger = trigger.child(choice.mark(palette, color, 16.0));
         }
-        trigger = trigger.child(text(name).font(LABEL).color(color.ink).truncate());
+        trigger = trigger.child(text(name.as_ref()).font(LABEL).color(color.ink).truncate());
         if let Some(effort) = effort {
-            trigger = trigger.child(text(effort.label()).font(LABEL).color(color.muted));
+            trigger = trigger.child(text(effort).font(LABEL).color(color.muted));
         } else if claude {
             trigger = trigger
                 .child(text("High").font(LABEL).color(color.muted))
@@ -478,6 +507,15 @@ impl<'a> Models<'a> {
                 EFFORT,
                 QUERY,
             )
+        } else if matches!(target, Target::Saved(_))
+            && let Some(choice) = self.selected
+            && choice.model.default_reasoning().is_some()
+        {
+            codex_effort::reported_defaults(
+                choice.model,
+                if columns { 192.0 } else { width - 45.0 },
+                palette,
+            )
         } else {
             el().w(192.0).a11y_hidden()
         };
@@ -592,7 +630,12 @@ impl<'a> Models<'a> {
                             .and_then(Draft::selected_model)
                             .and_then(ModelSelection::reasoning_effort)
                     }
-                    Target::Saved(_) => current_effort,
+                    Target::Saved(thread_id) => {
+                        if !checked {
+                            state.choose_saved_model(thread_id, &slug);
+                        }
+                        current_effort
+                    }
                 };
                 let Some(picker) = target.picker(state) else {
                     return;

@@ -10,7 +10,7 @@ use time::OffsetDateTime;
 use crate::server::launch_model::{Model, read_pages};
 use crate::server::settings::{CodexInstanceError, SettingsSnapshot};
 use crate::server::thread_commands::trim_js;
-use crate::server::turn_commands::timestamp;
+use crate::server::turn_commands::{codex_default_effort_override, timestamp};
 use crate::server::turn_worker::launch::process_config;
 
 mod claude;
@@ -261,31 +261,42 @@ fn wire_model(model: Model) -> Option<Value> {
 }
 
 fn reasoning_capability(slug: &str, model: &Model) -> Value {
-    let default = model
-        .default_reasoning_effort
-        .as_deref()
-        .and_then(|value| ReasoningEffort::for_model(slug, value));
-    let mut options = Vec::new();
-    let mut current_value = None;
-    for option in &model.supported_reasoning_efforts {
-        let Some(effort) = ReasoningEffort::for_model(slug, &option.reasoning_effort) else {
-            continue;
-        };
-        let mut row = json!({"id":effort.as_str(),"label":effort.label()});
-        if Some(effort) == default {
-            row["isDefault"] = true.into();
-            current_value = Some(effort);
-        }
-        options.push(row);
-    }
+    let default = codex_default_effort_override(slug)
+        .map(ReasoningEffort::as_str)
+        .or(model.default_reasoning_effort.as_deref());
+    let options: Vec<_> = model
+        .supported_reasoning_efforts
+        .iter()
+        .map(|option| {
+            let id = option.reasoning_effort.as_str();
+            let label = match id {
+                "none" => "None",
+                "minimal" => "Minimal",
+                "low" => "Low",
+                "medium" => "Medium",
+                "high" => "High",
+                "xhigh" => "Extra High",
+                "max" => "Max",
+                "ultra" => "Ultra",
+                other => other,
+            };
+            let mut row = json!({"id":id,"label":label});
+            if Some(id) == default {
+                row["isDefault"] = true.into();
+            }
+            row
+        })
+        .collect();
     if options.is_empty() {
         return Value::Null;
     }
     let mut reasoning = json!({
         "id":ReasoningEffort::OPTION_ID,"label":"Reasoning","type":"select","options":options
     });
-    if let Some(effort) = current_value {
-        reasoning["currentValue"] = effort.as_str().into();
+    if let Some(default) =
+        default.filter(|default| options.iter().any(|option| option["id"] == *default))
+    {
+        reasoning["currentValue"] = default.into();
     }
     json!({"optionDescriptors":[reasoning]})
 }

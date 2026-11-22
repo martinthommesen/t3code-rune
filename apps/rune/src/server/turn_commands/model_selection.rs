@@ -5,13 +5,13 @@ use time::OffsetDateTime;
 
 use super::super::settings::SettingsSnapshot;
 use super::{
-    CODEX_INSTANCE, ReasoningEffort, ThreadEventStream, ThreadProjection, TurnCommandError,
-    TurnCommands, idle_workspace, record_projected_sequence, timestamp, validate_model_selection,
+    CODEX_INSTANCE, ThreadEventStream, ThreadProjection, TurnCommandError, TurnCommands,
+    idle_workspace, record_projected_sequence, timestamp, validate_model_selection,
 };
 
 pub(in crate::server) const COMMAND: &str = "thread.model-selection.set";
 const EVENT: &str = "thread.model-selection-updated";
-const UNAVAILABLE: &str = "This thread cannot change its saved Codex reasoning effort right now.";
+const UNAVAILABLE: &str = "This thread cannot change its saved Codex model selection right now.";
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -22,7 +22,7 @@ struct Input {
 }
 
 impl TurnCommands {
-    pub(in crate::server) fn can_change_codex_reasoning(
+    pub(in crate::server) fn can_change_saved_codex_model(
         &self,
         thread_id: &str,
         settings: &SettingsSnapshot,
@@ -31,7 +31,7 @@ impl TurnCommands {
         Ok(saved_codex_thread(&database, thread_id, settings)?.is_some())
     }
 
-    pub(in crate::server) fn set_codex_reasoning(
+    pub(in crate::server) fn set_saved_codex_model(
         &self,
         payload: Value,
         settings: &SettingsSnapshot,
@@ -41,13 +41,10 @@ impl TurnCommands {
             thread_id,
             model_selection,
         } = serde_json::from_value(payload)?;
-        let model = validate_model_selection(&model_selection)?;
-        if command_id.trim().is_empty()
-            || thread_id.trim().is_empty()
-            || model.reasoning_effort.is_none()
-        {
+        validate_model_selection(&model_selection)?;
+        if command_id.trim().is_empty() || thread_id.trim().is_empty() {
             return Err(TurnCommandError::Unsupported(
-                "Set a supported GPT-5.4 reasoning effort for this thread.",
+                "A command and thread ID are required to change the model selection.",
             ));
         }
         let mut database = self.connect()?;
@@ -114,8 +111,7 @@ fn saved_codex_thread(
     };
     let thread: ThreadProjection = serde_json::from_value(workspace.thread_payload.clone())?;
     let valid = thread.supports_root_turn(thread_id, &workspace.workspace_root)
-        && validate_model_selection(&thread.model_selection)
-            .is_ok_and(|selection| selection.model == ReasoningEffort::MODEL_ID)
+        && validate_model_selection(&thread.model_selection).is_ok()
         && has_native_codex_thread(workspace.provider_thread.as_ref())
         && settings
             .codex_instance(Some(&workspace.project_id), CODEX_INSTANCE)
@@ -132,17 +128,12 @@ pub(super) fn has_native_codex_thread(provider: Option<&Value>) -> bool {
     })
 }
 
-pub(super) fn reasoning_change(
+pub(super) fn model_change(
     database: &Connection,
     thread_id: &str,
     selection: &Value,
 ) -> Result<Option<Value>, TurnCommandError> {
-    let Some(to) = validate_model_selection(selection)
-        .ok()
-        .and_then(|model| model.reasoning_effort)
-    else {
-        return Ok(None);
-    };
+    validate_model_selection(selection)?;
     let encoded = database.query_row(
         "SELECT json_extract(run.payload_json, '$.modelSelection')
          FROM orchestration_v2_projection_runs AS run
@@ -165,10 +156,8 @@ pub(super) fn reasoning_change(
         return Ok(None);
     };
     let previous: Value = serde_json::from_str(&encoded)?;
-    let from = validate_model_selection(&previous)
-        .ok()
-        .and_then(|model| model.reasoning_effort);
-    Ok(from
-        .filter(|from| *from != to)
-        .map(|_| json!({"from":previous,"to":selection})))
+    Ok(
+        (previous != *selection && validate_model_selection(&previous).is_ok())
+            .then(|| json!({"from":previous,"to":selection})),
+    )
 }

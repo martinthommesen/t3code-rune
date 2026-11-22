@@ -1348,7 +1348,7 @@ fn response(
                 local.settings.read().is_ok_and(|settings| {
                     local
                         .turns
-                        .can_change_codex_reasoning(thread_id, &settings)
+                        .can_change_saved_codex_model(thread_id, &settings)
                         .unwrap_or(false)
                 })
             });
@@ -1615,7 +1615,7 @@ fn dispatch_thread(
             .and_then(|settings| {
                 local
                     .turns
-                    .set_codex_reasoning(payload, &settings)
+                    .set_saved_codex_model(payload, &settings)
                     .map_err(|error| error.to_string())
             });
         return match result {

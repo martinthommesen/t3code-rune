@@ -99,25 +99,63 @@ impl EffortPicker {
             }
             rows = rows.child(option);
         }
-        col()
-            .key("draft-codex-reasoning")
-            .w(width)
-            .min_w(0.0)
-            .px(8.0)
-            .pt(10.0)
-            .gap(12.25)
-            .child(
-                row()
-                    .w_full()
-                    .h(32.0)
-                    .center_y()
-                    .border_sides([0.0, 0.0, 1.0, 0.0], color.line)
-                    .child(text("Reasoning").font(LABEL).color(color.muted).grow(1.0))
-                    .child(text(model).font(DETAILS).color(color.muted)),
-            )
-            .child(rows)
-            .child(el().grow(1.0))
+        panel(model, width, color, rows)
     }
+}
+
+pub(super) fn reported_defaults(model: &ProviderModel, width: f32, palette: Palette) -> El {
+    let color = Colors::new(palette.dark);
+    let default = model.default_reasoning().map(|(id, _)| id);
+    let mut rows = col()
+        .w_full()
+        .gap(2.0)
+        .role("radiogroup")
+        .label("Reasoning");
+    for (id, label) in model.reported_reasoning_options() {
+        let selected = Some(id) == default;
+        let mut option = row()
+            .key(format!("draft-codex-effort-{id}"))
+            .role("radio")
+            .label(if selected {
+                format!("{label}, Default")
+            } else {
+                label.to_owned()
+            })
+            .checked(selected)
+            .disabled(true)
+            .w_full()
+            .h(32.0)
+            .px(8.0)
+            .center_y()
+            .gap(8.0)
+            .child(text(label).font(LABEL).color(color.ink).grow(1.0));
+        if selected {
+            option = option.child(icon(&CHECK, 14.0).color(color.ink).a11y_hidden());
+        }
+        rows = rows.child(option);
+    }
+    panel(&model.codex_short_name(), width, color, rows)
+}
+
+fn panel(model: &str, width: f32, color: Colors, rows: El) -> El {
+    col()
+        .key("draft-codex-reasoning")
+        .w(width)
+        .min_w(0.0)
+        .px(8.0)
+        .pt(10.0)
+        .gap(12.25)
+        .child(
+            row()
+                .w_full()
+                .h(32.0)
+                .center_y()
+                .border_sides([0.0, 0.0, 1.0, 0.0], color.line)
+                .child(text("Reasoning").font(LABEL).color(color.muted).grow(1.0))
+                .child(text(model).font(DETAILS).color(color.muted)),
+        )
+        .child(rows)
+        .child(el().grow(1.0))
 }
 
 pub(super) fn key(effort: ReasoningEffort) -> String {

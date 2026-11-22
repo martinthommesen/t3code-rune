@@ -296,7 +296,11 @@ pub(super) fn transcript(
                 layout.viewport[0],
                 colors,
             );
-            let Some(change) = message.reasoning_change else {
+            let Some(label) = message
+                .model_switch
+                .as_ref()
+                .and_then(|change| change.label(workspace.providers.as_ref()))
+            else {
                 return Some(bubble);
             };
             let rule = || {
@@ -313,7 +317,7 @@ pub(super) fn transcript(
                 .gap(16.0)
                 .child(rule())
                 .child(
-                    text(change.label())
+                    text(label)
                         .font(TextStyle::new(11.0, 500.0).lh(14.0))
                         .color(colors.muted),
                 )
@@ -406,7 +410,7 @@ pub(super) fn draft_prompt(thread_id: &str, prompt: &str, layout: Layout, palett
             text: prompt.to_owned(),
             context: None,
             created_by: None,
-            reasoning_change: None,
+            model_switch: None,
         },
         layout.max_bubble_width(),
         layout.viewport[0],

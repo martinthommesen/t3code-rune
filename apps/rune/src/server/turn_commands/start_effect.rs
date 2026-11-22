@@ -119,6 +119,7 @@ impl TurnCommands {
         let model = selection.model.to_owned();
         let reasoning_effort = selection
             .reasoning_effort
+            .or_else(|| super::codex_default_effort_override(&model))
             .map(|effort| effort.as_str().to_owned());
         let cwd = PathBuf::from(cwd);
 

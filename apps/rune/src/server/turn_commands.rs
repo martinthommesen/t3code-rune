@@ -347,11 +347,10 @@ impl TurnCommands {
         if let Some(requested) = &model_selection
             && (requested != &thread.model_selection
                 || !model_selection::has_native_codex_thread(provider_thread.as_ref())
-                || !validate_model_selection(requested)
-                    .is_ok_and(|model| model.reasoning_effort.is_some()))
+                || validate_model_selection(requested).is_err())
         {
             return Err(TurnCommandError::Unsupported(
-                "The prompt's model selection must match the saved Codex reasoning effort.",
+                "The prompt's model selection must match the saved Codex model selection.",
             ));
         }
         let provider = match thread_payload["providerInstanceId"].as_str() {
@@ -377,7 +376,7 @@ impl TurnCommands {
             }
         };
         let model_switch = if model_selection::has_native_codex_thread(provider_thread.as_ref()) {
-            model_selection::reasoning_change(&transaction, &thread_id, &thread.model_selection)?
+            model_selection::model_change(&transaction, &thread_id, &thread.model_selection)?
         } else {
             None
         };
@@ -686,6 +685,11 @@ pub(super) fn supports_plain_claude_config(
 pub(super) struct CodexTurnModel<'a> {
     model: &'a str,
     reasoning_effort: Option<ReasoningEffort>,
+}
+
+pub(super) fn codex_default_effort_override(model: &str) -> Option<ReasoningEffort> {
+    (model.strip_prefix("openai.").unwrap_or(model) == "gpt-6-astra")
+        .then_some(ReasoningEffort::Medium)
 }
 
 pub(super) fn validate_model_selection(

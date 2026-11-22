@@ -177,12 +177,12 @@ impl ThreadProviders {
         selection.plain_model()
     }
 
-    pub(crate) fn codex_reasoning_model(&self) -> Option<&ModelSelection> {
+    pub(crate) fn codex_model(&self) -> Option<&ModelSelection> {
         let selection = self.model_selection.as_ref()?;
         (self.current_instance() == Some("codex")
             && selection.instance_id() == "codex"
-            && selection.model() == t3_rune::providers::codex::ReasoningEffort::MODEL_ID)
-            .then_some(selection)
+            && (selection.plain_model().is_some() || selection.reasoning_effort().is_some()))
+        .then_some(selection)
     }
 
     pub(crate) fn permissions_label(&self) -> Option<&'static str> {
@@ -278,7 +278,7 @@ pub(crate) struct Message {
     #[serde(rename = "createdBy")]
     pub(crate) created_by: Option<String>,
     #[serde(skip)]
-    pub(crate) reasoning_change: Option<model_switch::ReasoningChange>,
+    pub(crate) model_switch: Option<Box<model_switch::ModelSwitch>>,
 }
 
 #[derive(Deserialize, PartialEq, Eq)]
@@ -375,8 +375,7 @@ impl Shell {
 
     pub(super) fn saved_codex_model(&self, thread_id: &str) -> Option<&ModelSelection> {
         let row = self.threads.iter().find(|row| row.thread.id == thread_id)?;
-        let selection = row.thread.providers.codex_reasoning_model()?;
-        selection.reasoning_effort().map(|_| selection)
+        row.thread.providers.codex_model()
     }
 
     pub(crate) fn apply(&mut self, value: Value) -> Result<bool, serde_json::Error> {
@@ -690,9 +689,7 @@ impl ThreadProjection {
                     if entry.context.is_some() {
                         message.context = entry.context;
                     }
-                    message.reasoning_change = entry
-                        .model_switch
-                        .and_then(|change| change.reasoning_change());
+                    message.model_switch = entry.model_switch.filter(|change| change.is_codex());
                     Some(ConversationEntry::Message(message))
                 } else {
                     entry.into_message(role).map(ConversationEntry::Message)
@@ -753,9 +750,7 @@ impl TimelineMessage {
             text: self.text?,
             context: self.context,
             created_by: self.created_by,
-            reasoning_change: self
-                .model_switch
-                .and_then(|change| change.reasoning_change()),
+            model_switch: self.model_switch.filter(|change| change.is_codex()),
         })
     }
 }
@@ -845,10 +840,9 @@ impl Conversation {
                         payload: TimelineItem::UserMessage(entry),
                     } => entry
                         .model_switch
-                        .and_then(|change| change.reasoning_change())
+                        .filter(|change| change.is_codex())
                         .is_some_and(|change| {
-                            self.transcript
-                                .set_reasoning_change(&entry.message_id, change)
+                            self.transcript.set_model_switch(&entry.message_id, change)
                         }),
                     ThreadEvent::ItemUpdated {
                         payload: TimelineItem::TodoList(list),
@@ -948,7 +942,15 @@ mod tests {
         );
         let current = conversation.messages();
         assert_eq!(current.len(), 1);
-        assert_eq!(current[0].reasoning_change.unwrap().label(), "High → Low");
+        assert_eq!(
+            current[0]
+                .model_switch
+                .as_ref()
+                .unwrap()
+                .label(None)
+                .as_deref(),
+            Some("High → Low")
+        );
         assert!(
             conversation
                 .apply(json!({"kind":"snapshot", "snapshotSequence":3,

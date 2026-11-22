@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use t3_rune::providers::codex::ReasoningEffort;
 
-use crate::connection::Thread;
+use crate::connection::{DraftProvider, ModelSelection, Thread};
 
 use super::super::{Conversation, Palette, ProjectView, State, Workspace};
 use super::Layout;
@@ -45,18 +45,41 @@ impl State {
         thread_id: &str,
         effort: ReasoningEffort,
     ) {
+        self.edit_saved_model(thread_id, |models| {
+            models
+                .supports_effort(effort)
+                .then(|| ModelSelection::codex_reasoning(effort))
+        });
+    }
+
+    pub(in crate::ui) fn choose_saved_model(&mut self, thread_id: &str, model: &str) {
+        self.edit_saved_model(thread_id, |models| {
+            models
+                .contains_model(model)
+                .then(|| ModelSelection::plain(DraftProvider::Codex, model))
+        });
+    }
+
+    fn edit_saved_model(
+        &mut self,
+        thread_id: &str,
+        pick: impl FnOnce(&Models<'_>) -> Option<ModelSelection>,
+    ) {
         let Some(workspace) = self.workspace.as_ref() else {
             return;
         };
         if !available(workspace, thread_id)
             .is_some_and(|conversation| conversation.saved_model_picker.is_some())
-            || !workspace
-                .thread(thread_id)
-                .and_then(|thread| Models::for_saved(workspace, thread))
-                .is_some_and(|models| models.supports_effort(effort))
         {
             return;
         }
+        let Some(selection) = workspace
+            .thread(thread_id)
+            .and_then(|thread| Models::for_saved(workspace, thread))
+            .and_then(|models| pick(&models))
+        else {
+            return;
+        };
         let Some(draft) = self
             .drafts
             .get_mut(thread_id)
@@ -65,7 +88,7 @@ impl State {
             return;
         };
         draft.pending_saved_reasoning = self.connection.as_ref().and_then(|connection| {
-            connection.set_saved_codex_reasoning(thread_id.to_owned(), effort)
+            connection.set_saved_codex_model(thread_id.to_owned(), selection)
         });
     }
 

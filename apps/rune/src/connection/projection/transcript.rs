@@ -167,8 +167,9 @@ impl Transcript {
             let existing = &mut self.entries[index];
             if let (ConversationEntry::Message(previous), ConversationEntry::Message(next)) =
                 (&*existing, &mut entry)
+                && next.model_switch.is_none()
             {
-                next.reasoning_change = next.reasoning_change.or(previous.reasoning_change);
+                next.model_switch.clone_from(&previous.model_switch);
             }
             if *existing == entry {
                 return false;
@@ -181,10 +182,10 @@ impl Transcript {
         true
     }
 
-    pub(super) fn set_reasoning_change(
+    pub(super) fn set_model_switch(
         &mut self,
         id: &str,
-        change: super::model_switch::ReasoningChange,
+        change: Box<super::model_switch::ModelSwitch>,
     ) -> bool {
         let Some(&index) = self.index.get(&EntryKey::Message(id.to_owned())) else {
             return false;
@@ -192,10 +193,10 @@ impl Transcript {
         let ConversationEntry::Message(message) = &mut self.entries[index] else {
             return false;
         };
-        if message.reasoning_change == Some(change) {
+        if message.model_switch.as_deref() == Some(&*change) {
             return false;
         }
-        message.reasoning_change = Some(change);
+        message.model_switch = Some(change);
         true
     }
 

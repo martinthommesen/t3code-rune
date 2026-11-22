@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use serde::Deserialize;
@@ -48,13 +49,53 @@ pub(crate) struct ReasoningLevels {
 }
 
 impl ProviderModel {
-    pub(crate) fn reasoning_levels(&self) -> Option<ReasoningLevels> {
-        let descriptor = self.capabilities.as_ref()?["optionDescriptors"]
+    fn reasoning_descriptor(&self) -> Option<&Value> {
+        self.capabilities.as_ref()?["optionDescriptors"]
             .as_array()?
             .iter()
             .find(|descriptor| {
                 descriptor["id"] == ReasoningEffort::OPTION_ID && descriptor["type"] == "select"
-            })?;
+            })
+    }
+
+    pub(crate) fn reported_reasoning_options(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.reasoning_descriptor()
+            .and_then(|descriptor| descriptor["options"].as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|option| Some((option["id"].as_str()?, option["label"].as_str()?)))
+    }
+
+    pub(crate) fn default_reasoning(&self) -> Option<(&str, &str)> {
+        let current = self.reasoning_descriptor()?["currentValue"].as_str()?;
+        self.reported_reasoning_options()
+            .find(|(id, _)| *id == current)
+    }
+
+    pub(crate) fn codex_short_name(&self) -> Cow<'_, str> {
+        if let Some(short_name) = self.short_name.as_deref() {
+            return Cow::Borrowed(short_name);
+        }
+        let shortened = self
+            .name
+            .strip_prefix("GPT-")
+            .or_else(|| self.name.strip_prefix("GPT "));
+        if let Some(rest) = shortened.filter(|rest| {
+            rest.split(['-', ' '])
+                .skip(1)
+                .any(|word| word.chars().any(|ch| ch.is_alphabetic()))
+        }) {
+            return if rest.contains(char::is_whitespace) {
+                Cow::Borrowed(rest)
+            } else {
+                Cow::Owned(rest.replace('-', " "))
+            };
+        }
+        Cow::Borrowed(&self.name)
+    }
+
+    pub(crate) fn reasoning_levels(&self) -> Option<ReasoningLevels> {
+        let descriptor = self.reasoning_descriptor()?;
         let options: Vec<_> = descriptor["options"]
             .as_array()?
             .iter()

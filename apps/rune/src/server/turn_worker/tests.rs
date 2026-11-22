@@ -2270,16 +2270,25 @@ set -eu
 
     #[tokio::test]
     async fn applies_saved_reasoning_effort_to_the_same_resumed_native_thread() {
-        verify_two_turn_conversation(true, Some(ReasoningEffort::Low)).await;
+        verify_two_turn_conversation(true, Some(reasoning_selection(ReasoningEffort::Low))).await;
     }
 
-    async fn verify_two_turn_conversation(restart: bool, changed_effort: Option<ReasoningEffort>) {
+    #[tokio::test]
+    async fn changes_the_saved_codex_model_without_overriding_its_default_effort() {
+        verify_two_turn_conversation(
+            true,
+            Some(json!({"instanceId":"codex","model":"gpt-5.6-sol"})),
+        )
+        .await;
+    }
+
+    async fn verify_two_turn_conversation(restart: bool, changed_selection: Option<Value>) {
         let fixture = Fixture::new();
         let commands = fixture.commands();
         let (first_phase, second_phase) = resume_replay_frames();
         let first_text = replay_prompt(&first_phase);
         let second_text = replay_prompt(&second_phase);
-        if changed_effort.is_some() {
+        if changed_selection.is_some() {
             fixture
                 .connection()
                 .execute(
@@ -2318,10 +2327,10 @@ set -eu
         first_script.push(char::from(10));
         let (changes, _) = broadcast::channel(32);
         let settings = settings_for_script(&fixture, &first_script);
-        if changed_effort.is_some() {
+        if changed_selection.is_some() {
             assert!(
                 !commands
-                    .can_change_codex_reasoning(THREAD, &settings.read().unwrap())
+                    .can_change_saved_codex_model(THREAD, &settings.read().unwrap())
                     .unwrap()
             );
         }
@@ -2338,8 +2347,8 @@ set -eu
             )
             .unwrap();
 
-        if let Some(effort) = changed_effort {
-            change_saved_reasoning(&commands, &settings, &connection, effort);
+        if let Some(selection) = &changed_selection {
+            change_saved_model(&commands, &settings, &connection, selection);
         }
         if restart {
             worker.shutdown().await.unwrap();
@@ -2370,20 +2379,20 @@ set -eu
         next["commandId"] = "follow-up".into();
         next["messageId"] = "message:follow-up".into();
         next["text"] = json!(second_text);
-        if let Some(effort) = changed_effort {
+        if let Some(selection) = &changed_selection {
             next["modelSelection"] = reasoning_selection(ReasoningEffort::High);
             assert!(
                 commands
                     .dispatch(serde_json::from_value(next.clone()).unwrap())
                     .is_err()
             );
-            next["modelSelection"] = reasoning_selection(effort);
+            next["modelSelection"] = selection.clone();
         }
         let next = commands
             .dispatch(serde_json::from_value(next).unwrap())
             .unwrap();
         assert_ne!(first.run_id, next.run_id);
-        if let Some(effort) = changed_effort {
+        if let Some(selection) = &changed_selection {
             let change: String = connection
                 .query_row(
                     "SELECT json_extract(payload_json, '$.modelSwitch')
@@ -2396,7 +2405,7 @@ set -eu
             assert_eq!(
                 serde_json::from_str::<Value>(&change).unwrap(),
                 json!({
-                    "from":reasoning_selection(ReasoningEffort::High), "to":reasoning_selection(effort),
+                    "from":reasoning_selection(ReasoningEffort::High), "to":selection,
                 })
             );
         }
@@ -2466,15 +2475,19 @@ set -eu
         assert_eq!(wire_turns.len(), 2);
         assert_eq!(wire_turns[0]["params"]["input"][0]["text"], first_text);
         assert_eq!(wire_turns[1]["params"]["input"][0]["text"], second_text);
-        if let Some(effort) = changed_effort {
-            for (turn, expected) in wire_turns.iter().zip([ReasoningEffort::High, effort]) {
-                assert_eq!(turn["params"]["model"], ReasoningEffort::MODEL_ID);
-                assert_eq!(turn["params"]["effort"], expected.as_str());
-                assert_eq!(
-                    turn["params"]["collaborationMode"]["settings"]["reasoning_effort"],
-                    expected.as_str()
-                );
-            }
+        if let Some(selection) = &changed_selection {
+            assert_eq!(wire_turns[0]["params"]["model"], ReasoningEffort::MODEL_ID);
+            assert_eq!(wire_turns[0]["params"]["effort"], "high");
+            let next = &wire_turns[1]["params"];
+            let effort = selection
+                .get("options")
+                .and_then(|options| options[0].get("value"));
+            assert_eq!(next["model"], selection["model"]);
+            assert_eq!(next.get("effort"), effort);
+            assert_eq!(
+                next["collaborationMode"]["settings"].get("reasoning_effort"),
+                effort
+            );
         }
         assert!(
             wire_turns
@@ -2503,29 +2516,28 @@ set -eu
         ]})
     }
 
-    fn change_saved_reasoning(
+    fn change_saved_model(
         commands: &TurnCommands,
         settings: &SettingsFile,
         connection: &rusqlite::Connection,
-        effort: ReasoningEffort,
+        selection: &Value,
     ) {
         let settings = settings.read().unwrap();
-        let selection = reasoning_selection(effort);
         let input = json!({
             "type":"thread.model-selection.set","commandId":"saved-reasoning",
             "threadId":THREAD,"modelSelection":selection,
         });
         assert!(
             commands
-                .can_change_codex_reasoning(THREAD, &settings)
+                .can_change_saved_codex_model(THREAD, &settings)
                 .unwrap()
         );
         let (sequence, committed) = commands
-            .set_codex_reasoning(input.clone(), &settings)
+            .set_saved_codex_model(input.clone(), &settings)
             .unwrap();
         assert!(committed);
         assert_eq!(
-            commands.set_codex_reasoning(input, &settings).unwrap(),
+            commands.set_saved_codex_model(input, &settings).unwrap(),
             (sequence, false)
         );
         assert_eq!(connection.query_row(

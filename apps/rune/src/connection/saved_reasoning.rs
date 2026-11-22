@@ -2,13 +2,11 @@ use serde_json::{Value, json};
 use tokio::time::Instant;
 use uuid::Uuid;
 
-use t3_rune::providers::codex::ReasoningEffort;
-
 use super::{Command, Connection, Event, EventSender, ModelSelection, Session, SessionStop};
 
 pub(super) struct Edit {
     thread_id: String,
-    effort: ReasoningEffort,
+    selection: ModelSelection,
     operation: Uuid,
 }
 
@@ -30,16 +28,16 @@ impl Pending {
 }
 
 impl Connection {
-    pub(crate) fn set_saved_codex_reasoning(
+    pub(crate) fn set_saved_codex_model(
         &self,
         thread_id: String,
-        effort: ReasoningEffort,
+        selection: ModelSelection,
     ) -> Option<Uuid> {
         let operation = Uuid::new_v4();
         self.commands
             .send(Command::SetSavedReasoning(Edit {
                 thread_id,
-                effort,
+                selection,
                 operation,
             }))
             .ok()?;
@@ -114,7 +112,7 @@ impl Session {
             "type": "thread.model-selection.set",
             "commandId": pending.operation.to_string(),
             "threadId": pending.thread_id,
-            "modelSelection": ModelSelection::codex_reasoning(edit.effort),
+            "modelSelection": edit.selection,
         });
         self.pending_saved_reasoning.insert(id.clone(), pending);
         self.send_request(&id, "orchestration.dispatchCommand", payload)
