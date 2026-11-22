@@ -150,6 +150,37 @@ impl State {
         show_submenu(self, Page::Projects, tx);
     }
 
+    pub(super) fn open_current_project_draft(&mut self, tx: &mut Tx) {
+        let Some(workspace) = self
+            .workspace
+            .as_ref()
+            .filter(|workspace| workspace.launch_writes && !workspace.reconnecting)
+        else {
+            return;
+        };
+        let Some(shell) = &workspace.shell else {
+            return;
+        };
+        let project = workspace
+            .selection
+            .as_ref()
+            .filter(|selection| {
+                matches!(
+                    selection.view,
+                    ProjectView::Conversation(_) | ProjectView::NewThread
+                )
+            })
+            .map(|selection| selection.id.as_str())
+            .or_else(|| {
+                super::sidebar::most_recent_project(shell).map(|project| project.id.as_str())
+            });
+        if let Some(project) = project.map(str::to_owned) {
+            self.open_fresh_project_draft(&project, tx);
+        } else {
+            show_submenu(self, Page::Projects, tx);
+        }
+    }
+
     pub(super) fn open_command_palette(&mut self, tx: &mut Tx) {
         self.show_palette(Page::Commands, tx);
     }
@@ -370,7 +401,7 @@ fn select(state: &mut State, tx: &mut Tx, selection: &Selection) {
     }
     match selection {
         Selection::Project(id) => state.open_fresh_project_draft(id, tx),
-        Selection::Scratch => state.start_scratch_from_command_palette(),
+        Selection::Scratch => state.open_fresh_scratch_draft(),
         Selection::AddProject => state.show_add_project(tx),
         Selection::Appearance(_) | Selection::Command(_) => unreachable!(),
     }

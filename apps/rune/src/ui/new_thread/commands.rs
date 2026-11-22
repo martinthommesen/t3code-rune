@@ -191,7 +191,7 @@ pub(super) fn select(state: &mut State, tx: &mut Tx, selection: &Selection) {
     }
     match selection {
         Selection::NewThread(id) => state.open_fresh_project_draft(id, tx),
-        Selection::Scratch => state.start_scratch_from_command_palette(),
+        Selection::Scratch => state.open_fresh_scratch_draft(),
         Selection::NewProject => {
             state.show_add_project(tx);
             state.choose_project_name(tx);

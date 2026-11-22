@@ -1179,10 +1179,11 @@ impl State {
                 self.update_shell(Shell { projects, threads });
                 sidebar::thread_actions::undo::reopen(self);
                 self.select_added_project(tx);
-                if self
-                    .workspace
-                    .as_ref()
-                    .is_some_and(|workspace| workspace.selection.is_none())
+                if self.scratch_request.is_none()
+                    && self
+                        .workspace
+                        .as_ref()
+                        .is_some_and(|workspace| workspace.selection.is_none())
                     && let Some(draft) = self.home_draft()
                 {
                     self.show_destination(draft);

@@ -564,21 +564,26 @@ fn project_picker(
             continue;
         }
         let id = project.id.clone();
+        let key = format!("project-option-{id}");
+        let choose = move |state: &mut State| {
+            state.sidebar.picker = None;
+            if picker == ProjectPicker::Draft {
+                change_draft_project(state, &id);
+            } else {
+                state.navigate(Destination::NewThread(id.clone()));
+            }
+        };
         items = items.child(
             project_option(
-                format!("project-option-{id}"),
+                key,
                 &project.name,
-                scope.is_some_and(|current| current.id == id),
+                scope.is_some_and(|current| current.id == project.id),
                 Some(project_badge::view(project, &workspace.favicons, dark)),
                 colors,
             )
-            .on_press(move |state: &mut State| {
-                state.sidebar.picker = None;
-                if picker == ProjectPicker::Draft {
-                    change_draft_project(state, &id);
-                } else {
-                    state.navigate(Destination::NewThread(id.clone()));
-                }
+            .on_press(choose.clone())
+            .on_key(move |state, event, tx| {
+                sidebar_header::activate_on_return(state, event, tx, |state, _| choose(state))
             }),
         );
     }

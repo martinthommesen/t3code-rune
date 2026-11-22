@@ -300,6 +300,18 @@ pub(super) fn shortcut(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool
             }
             return true;
         }
+        Some("chat.newLocal") if !terminal_focus => {
+            if !tx.key_repeat() {
+                state.open_current_project_draft(tx);
+            }
+            return true;
+        }
+        Some("chat.newWithoutProject") if !terminal_focus && state.can_open_scratch_draft() => {
+            if !tx.key_repeat() {
+                state.open_fresh_scratch_draft();
+            }
+            return true;
+        }
         Some("chat.new") if !terminal_focus => {
             if !tx.key_repeat() {
                 state.start_new_thread_shortcut(tx);

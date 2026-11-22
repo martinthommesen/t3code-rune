@@ -4,6 +4,8 @@ use crate::connection::{Binding, KeybindingRule, Keybindings, TERMINAL_TOGGLE};
 
 pub(super) const EDITABLE_COMMANDS: &[&str] = &[
     "chat.new",
+    "chat.newLocal",
+    "chat.newWithoutProject",
     "commandPalette.toggle",
     "sidebar.toggle",
     "terminal.close",

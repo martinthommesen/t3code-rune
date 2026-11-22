@@ -12,6 +12,10 @@ pub(in crate::ui) struct ScratchRequest {
 }
 
 impl Workspace {
+    fn scratch_draft_available(&self) -> bool {
+        self.scratch_projects && self.project_writes && self.launch_writes && !self.reconnecting
+    }
+
     pub(in crate::ui) fn is_scratch(&self, project: &Project) -> bool {
         if let Some(root) = &self.scratch_workspace_root {
             let root = comparison_path(root);
@@ -169,20 +173,25 @@ impl State {
         self.request_scratch_project(false);
     }
 
-    pub(in crate::ui) fn start_scratch_from_command_palette(&mut self) {
+    pub(in crate::ui) fn open_fresh_scratch_draft(&mut self) {
         self.request_scratch_project(true);
+    }
+
+    pub(in crate::ui) fn can_open_scratch_draft(&self) -> bool {
+        self.workspace
+            .as_ref()
+            .is_some_and(Workspace::scratch_draft_available)
     }
 
     fn request_scratch_project(&mut self, new_thread: bool) {
         if self.scratch_request.is_some() {
             return;
         }
-        let Some(workspace) = self.workspace.as_ref().filter(|workspace| {
-            workspace.scratch_projects
-                && workspace.project_writes
-                && workspace.launch_writes
-                && !workspace.reconnecting
-        }) else {
+        let Some(workspace) = self
+            .workspace
+            .as_ref()
+            .filter(|workspace| workspace.scratch_draft_available())
+        else {
             return;
         };
         let destination = if new_thread {
