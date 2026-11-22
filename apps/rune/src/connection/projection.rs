@@ -99,11 +99,24 @@ pub(crate) struct Thread {
     pub(crate) activity: ThreadActivity,
     #[serde(flatten)]
     pub(crate) providers: ThreadProviders,
+    #[serde(flatten)]
+    pub(crate) error: ThreadError,
     pub(crate) branch: Option<String>,
     #[serde(rename = "worktreePath")]
     pub(crate) worktree_path: Option<String>,
     #[serde(skip)]
     pub(crate) archived: bool,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ThreadError {
+    #[serde(rename = "lastError")]
+    pub(crate) message: Option<String>,
+    #[serde(rename = "lastErrorClass")]
+    pub(crate) class: Option<String>,
+    #[serde(rename = "lastErrorCode")]
+    pub(crate) code: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
@@ -161,6 +174,14 @@ impl ThreadProviders {
 }
 
 impl Thread {
+    pub(crate) fn latest_run_id(&self) -> Option<&str> {
+        self.providers.latest_run_id.as_deref()
+    }
+
+    pub(crate) fn latest_run_completed_at(&self) -> Option<&str> {
+        self.activity.latest_run_completed_at.as_deref()
+    }
+
     pub(crate) fn has_started_run(&self) -> bool {
         self.run_started_at().is_some()
     }

@@ -27,6 +27,7 @@ mod sidebar;
 mod sidebar_header;
 mod terminal;
 mod thread_details;
+mod thread_error_banner;
 mod window_chrome;
 mod window_placement;
 mod worktree_setup;
@@ -271,6 +272,7 @@ struct State {
     terminal: Option<terminal::Pane>,
     terminal_tabs: terminal::TabsByThread,
     thread_details: thread_details::Popover,
+    thread_error_banner: thread_error_banner::Session,
     window_focused: bool,
     window_chrome: window_chrome::ChromeState,
     window_placement: window_placement::Tracker,
@@ -306,6 +308,7 @@ impl Default for State {
             terminal: None,
             terminal_tabs: terminal::TabsByThread::default(),
             thread_details: thread_details::Popover::default(),
+            thread_error_banner: thread_error_banner::Session::default(),
             window_focused: true,
             window_chrome: window_chrome::ChromeState::default(),
             window_placement: window_placement::Tracker::default(),
@@ -348,6 +351,7 @@ impl State {
         self.question_auto_advance = None;
         self.add_project = None;
         self.thread_details.close();
+        self.thread_error_banner.reset_expansion();
         self.added_project = None;
         self.scratch_request = None;
         self.terminal = None;
@@ -462,6 +466,7 @@ impl State {
         sidebar::close_draft_project_picker(&mut self.sidebar);
         self.draft_workspace_popup = None;
         self.thread_details.close();
+        self.thread_error_banner.reset_expansion();
         if let Some(terminal) = self.terminal.take()
             && let Some(connection) = &self.connection
         {
@@ -1997,6 +2002,8 @@ fn detail(
         body
     };
     let layout = content_layout;
+    let error_banner =
+        thread_error_banner::view(state, thread, &conversation.transcript, layout, palette);
     let body = match &conversation.transcript {
         Transcript::Loading => body.child(placeholder("Loading conversation…", "", palette)),
         Transcript::Failed(error) => {
@@ -2077,7 +2084,7 @@ fn detail(
     {
         pane = pane.child(state.terminal_view(terminal, palette));
     }
-    pane.children(details)
+    pane.children(error_banner).children(details)
 }
 
 fn placeholder(title: &str, description: &str, palette: Palette) -> El {
@@ -2268,6 +2275,7 @@ mod tests {
                 created_at: None,
                 activity: Default::default(),
                 providers: Default::default(),
+                error: Default::default(),
                 branch: Some("main".into()),
                 worktree_path: None,
                 archived: false,

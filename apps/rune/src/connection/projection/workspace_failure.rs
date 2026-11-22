@@ -13,6 +13,7 @@ pub(crate) struct WorkspaceFailure {
     status: Option<String>,
     failure: Option<Detail>,
     pub(crate) started_at: Option<String>,
+    pub(crate) completed_at: Option<String>,
     pub(crate) updated_at: Option<String>,
     #[serde(skip)]
     pub(crate) retryable: bool,
