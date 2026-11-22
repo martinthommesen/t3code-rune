@@ -535,6 +535,34 @@ fn toggle_pin(state: &mut State, id: &str, tx: &mut Tx) {
     }
 }
 
+pub(super) fn thread_filter_label(state: &State, id: &str) -> Option<String> {
+    let project = state
+        .workspace
+        .as_ref()?
+        .shell
+        .as_ref()?
+        .projects
+        .iter()
+        .find(|project| project.id == id && project.archived_at.is_none())?;
+    Some(if state.sidebar.scope.selected.contains(&project.id) {
+        "Show all projects".into()
+    } else {
+        format!("Filter by {}", project.name)
+    })
+}
+
+pub(super) fn toggle_for_thread(state: &mut State, id: &str, tx: &mut Tx) {
+    if thread_filter_label(state, id).is_some() {
+        let select = !state
+            .sidebar
+            .scope
+            .selected
+            .iter()
+            .any(|project| project == id);
+        choose(state, select.then_some(id), false, tx);
+    }
+}
+
 fn choose(state: &mut State, project: Option<&str>, toggle: bool, tx: &mut Tx) {
     let selected = &mut state.sidebar.scope.selected;
     match project {
