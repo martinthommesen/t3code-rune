@@ -9,9 +9,7 @@ use super::State;
 mod x11;
 
 const HEIGHT: f32 = 40.0;
-const TRAILING: f32 = 113.0;
 const BUTTON_SIZE: f32 = 24.0;
-const BUTTON_START: f32 = 5.0;
 const BUTTON_PITCH: f32 = 37.0;
 
 static MINIMIZE: Icon = Icon {
@@ -35,12 +33,49 @@ static CLOSE: Icon = Icon {
     body: r#"<path fill="none" stroke="currentColor" stroke-width="1.75" d="M.8 .8l6.4 6.4m0-6.4L.8 7.2"/>"#,
 };
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CaptionButton {
+    Minimize,
+    Maximize,
+    Close,
+}
+
+#[derive(PartialEq, Eq)]
+struct CaptionLayout {
+    leading: Vec<CaptionButton>,
+    trailing: Vec<CaptionButton>,
+}
+
+impl Default for CaptionLayout {
+    fn default() -> Self {
+        Self {
+            leading: Vec::new(),
+            trailing: vec![
+                CaptionButton::Minimize,
+                CaptionButton::Maximize,
+                CaptionButton::Close,
+            ],
+        }
+    }
+}
+
+impl CaptionLayout {
+    fn width(buttons: &[CaptionButton]) -> f32 {
+        if buttons.is_empty() {
+            0.0
+        } else {
+            buttons.len() as f32 * BUTTON_PITCH + 2.0
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct ChromeState {
     window: Option<WindowHandle>,
     maximized: bool,
     full_screen: bool,
     drag_origin: Option<DragOrigin>,
+    caption_layout: CaptionLayout,
     #[cfg(target_os = "linux")]
     resize_frame: Option<x11::ResizeFrame>,
 }
@@ -62,31 +97,42 @@ impl ChromeState {
         let Some(placement) = window.placement() else {
             return false;
         };
-        #[cfg(target_os = "linux")]
-        if let Some(frame) = &mut self.resize_frame {
-            let _ = frame.poll(placement);
-        }
         let changed =
             self.maximized != placement.maximized || self.full_screen != placement.full_screen;
         self.maximized = placement.maximized;
         self.full_screen = placement.full_screen;
+        #[cfg(target_os = "linux")]
+        if let Some(frame) = &mut self.resize_frame {
+            return frame
+                .poll(placement, &mut self.caption_layout)
+                .unwrap_or(false)
+                || changed;
+        }
         changed
+    }
+
+    pub(super) fn leading_inset(&self) -> f32 {
+        if self.window.is_some() && !self.full_screen {
+            CaptionLayout::width(&self.caption_layout.leading)
+        } else {
+            0.0
+        }
     }
 
     pub(super) fn trailing_inset(&self) -> f32 {
         if self.window.is_some() && !self.full_screen {
-            TRAILING
+            CaptionLayout::width(&self.caption_layout.trailing)
         } else {
             0.0
         }
     }
 
     pub(super) fn drag_band(&self, left: f32) -> Option<El> {
-        let trailing = self.trailing_inset();
-        (trailing > 0.0).then(|| {
+        (self.window.is_some() && !self.full_screen).then(|| {
+            let left = left.max(self.leading_inset());
             self.drag_region(
                 el().key("window-drag-band")
-                    .pin(Some(left), Some(0.0), Some(trailing), None)
+                    .pin(Some(left), Some(0.0), Some(self.trailing_inset()), None)
                     .h(HEIGHT),
             )
         })
@@ -176,33 +222,71 @@ impl ChromeState {
     }
 
     pub(super) fn overlay(&self, dark: bool) -> Option<El> {
-        if self.trailing_inset() == 0.0 {
+        let leading = self.leading_inset();
+        let trailing = self.trailing_inset();
+        if leading == 0.0 && trailing == 0.0 {
             return None;
         }
         let colors = Colors::new(dark);
-        let (maximize_label, maximize_icon) = if self.maximized {
-            ("Restore", &RESTORE)
-        } else {
-            ("Maximize", &MAXIMIZE)
-        };
+        let buttons = &self.caption_layout;
         Some(
             el().key("window-caption")
-                .pin(None, Some(0.0), Some(0.0), None)
-                .size(TRAILING, HEIGHT)
-                .no_window_drag()
-                .child(button(0.0, "Minimize", &MINIMIZE, colors, |state, _| {
-                    state.window_chrome.minimize();
-                }))
-                .child(button(
-                    1.0,
-                    maximize_label,
-                    maximize_icon,
-                    colors,
-                    |_, tx| tx.toggle_maximized(),
-                ))
-                .child(button(2.0, "Close", &CLOSE, colors, |_, tx| {
-                    tx.close_window()
-                })),
+                .pin(Some(0.0), Some(0.0), Some(0.0), None)
+                .h(HEIGHT)
+                .child(
+                    el().key("window-caption-leading")
+                        .pin(Some(0.0), Some(0.0), None, None)
+                        .size(leading, HEIGHT)
+                        .no_window_drag()
+                        .children(
+                            buttons
+                                .leading
+                                .iter()
+                                .enumerate()
+                                .filter(|&(index, kind)| {
+                                    !buttons.leading[index + 1..].contains(kind)
+                                        && !buttons.trailing.contains(kind)
+                                })
+                                .map(|(index, &kind)| {
+                                    self.caption_button(kind, 10.0, index, colors)
+                                }),
+                        ),
+                )
+                .child(
+                    el().key("window-caption-trailing")
+                        .pin(None, Some(0.0), Some(0.0), None)
+                        .size(trailing, HEIGHT)
+                        .no_window_drag()
+                        .children(
+                            buttons
+                                .trailing
+                                .iter()
+                                .enumerate()
+                                .filter(|&(index, kind)| !buttons.trailing[..index].contains(kind))
+                                .map(|(index, &kind)| {
+                                    self.caption_button(kind, 5.0, index, colors)
+                                }),
+                        ),
+                ),
+        )
+    }
+
+    fn caption_button(&self, kind: CaptionButton, offset: f32, index: usize, colors: Colors) -> El {
+        use CaptionButton::*;
+        let (label, glyph, action): (_, _, fn(&mut State, &mut Tx)) = match kind {
+            Minimize => ("Minimize", &MINIMIZE, |state, _| {
+                state.window_chrome.minimize()
+            }),
+            Maximize if self.maximized => ("Restore", &RESTORE, |_, tx| tx.toggle_maximized()),
+            Maximize => ("Maximize", &MAXIMIZE, |_, tx| tx.toggle_maximized()),
+            Close => ("Close", &CLOSE, |_, tx| tx.close_window()),
+        };
+        button(
+            offset + index as f32 * BUTTON_PITCH,
+            label,
+            glyph,
+            colors,
+            action,
         )
     }
 }
@@ -229,17 +313,14 @@ impl Colors {
 }
 
 fn button(
-    index: f32,
+    x: f32,
     label: &'static str,
     glyph: &'static Icon,
     colors: Colors,
     action: fn(&mut State, &mut Tx),
 ) -> El {
     el().key(glyph.name)
-        .absolute(
-            BUTTON_START + index * BUTTON_PITCH,
-            (HEIGHT - BUTTON_SIZE) / 2.0,
-        )
+        .absolute(x, (HEIGHT - BUTTON_SIZE) / 2.0)
         .size(BUTTON_SIZE, BUTTON_SIZE)
         .center()
         .radius(BUTTON_SIZE / 2.0)
@@ -259,7 +340,7 @@ pub(super) fn configure(app: App<State>) -> App<State> {
     {
         let handle = app.handle();
         app.on_window(move |window| {
-            let Some(resize_frame) = x11::ResizeFrame::install(window) else {
+            let Some((resize_frame, caption_layout)) = x11::ResizeFrame::install(window) else {
                 return;
             };
             let window = window.clone();
@@ -267,6 +348,7 @@ pub(super) fn configure(app: App<State>) -> App<State> {
                 state.window_chrome = ChromeState {
                     window: Some(window),
                     resize_frame: Some(resize_frame),
+                    caption_layout,
                     ..ChromeState::default()
                 };
                 state.window_chrome.poll(tx);

@@ -14,22 +14,25 @@ pub(super) const HEIGHT: f32 = if cfg!(target_os = "macos") {
 };
 const CONTROL_SIZE: f32 = 28.0;
 const WORDMARK_SIZE: f32 = 16.84375;
+const MIN_CHROME_WIDTH: f32 = 181.0;
 
 #[derive(Clone, Copy)]
 pub(super) struct Layout {
     leading: f32,
     height: f32,
+    width: f32,
 }
 
 impl Layout {
-    pub(super) fn new(insets: ChromeInsets) -> Self {
+    pub(super) fn new(insets: ChromeInsets, caption_leading: f32) -> Self {
         Self {
             leading: if cfg!(target_os = "macos") && insets.leading > 0.0 {
                 insets.leading + 14.0
             } else {
-                12.0
+                12.0 + caption_leading
             },
             height: HEIGHT.max(insets.height),
+            width: WIDTH.max(MIN_CHROME_WIDTH + caption_leading),
         }
     }
 
@@ -39,6 +42,10 @@ impl Layout {
 
     pub(super) fn height(self) -> f32 {
         self.height
+    }
+
+    pub(super) fn width(self) -> f32 {
+        self.width
     }
 }
 

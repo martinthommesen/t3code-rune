@@ -8,6 +8,9 @@ use x11rb::protocol::xproto::{
 use x11rb::rust_connection::RustConnection;
 
 use super::super::window_placement::x11::window_id;
+use super::CaptionLayout;
+
+mod settings;
 
 const WM_RESIZE_CURSORS: [u16; 8] = [134, 138, 136, 96, 14, 16, 12, 70];
 const RESIZE_BORDER: f64 = 5.0;
@@ -20,10 +23,11 @@ pub(super) struct ResizeFrame {
     minimize: Atom,
     edges: [Window; 8],
     layout: Option<(u16, u16, u16)>,
+    settings: Option<settings::Watcher>,
 }
 
 impl ResizeFrame {
-    pub(super) fn install(window: &WindowHandle) -> Option<Self> {
+    pub(super) fn install(window: &WindowHandle) -> Option<(Self, CaptionLayout)> {
         let window = window_id(window)?;
         let (connection, _) = x11rb::connect(None).ok()?;
         let root = connection.get_geometry(window).ok()?.reply().ok()?.root;
@@ -40,15 +44,24 @@ impl ResizeFrame {
             .ok()?
             .atom;
         let edges = edge_windows(&connection, window)?;
-        Some(Self {
-            connection,
-            window,
-            root,
-            moveresize,
-            minimize,
-            edges,
-            layout: None,
-        })
+        let mut settings = settings::Watcher::install(&connection, root);
+        let caption = settings
+            .as_mut()
+            .map(|watcher| watcher.load(&connection))
+            .unwrap_or_default();
+        Some((
+            Self {
+                connection,
+                window,
+                root,
+                moveresize,
+                minimize,
+                edges,
+                layout: None,
+                settings,
+            },
+            caption,
+        ))
     }
 
     pub(super) fn pointer(&self) -> Option<(i32, i32)> {
@@ -68,7 +81,11 @@ impl ResizeFrame {
         self.request(self.minimize, [ICONIC_STATE, 0, 0, 0, 0])
     }
 
-    pub(super) fn poll(&mut self, placement: WindowPlacement) -> Option<()> {
+    pub(super) fn poll(
+        &mut self,
+        placement: WindowPlacement,
+        caption: &mut CaptionLayout,
+    ) -> Option<bool> {
         let layout = if placement.maximized || placement.full_screen || placement.minimized {
             None
         } else {
@@ -82,6 +99,7 @@ impl ResizeFrame {
             self.reposition(layout)?;
             self.layout = layout;
         }
+        let mut settings_changed = false;
         for _ in 0..16 {
             let Some(event) = self.connection.poll_for_event().ok()? else {
                 break;
@@ -92,8 +110,19 @@ impl ResizeFrame {
             {
                 self.resize(event)?;
             }
+            settings_changed |= self
+                .settings
+                .as_ref()
+                .is_some_and(|watcher| watcher.changed(&event));
         }
-        Some(())
+        if settings_changed && let Some(settings) = &mut self.settings {
+            let next = settings.load(&self.connection);
+            if next != *caption {
+                *caption = next;
+                return Some(true);
+            }
+        }
+        Some(false)
     }
 
     fn reposition(&self, layout: Option<(u16, u16, u16)>) -> Option<()> {

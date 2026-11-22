@@ -1514,7 +1514,7 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
             .is_dark(cx.system_dark()),
     );
     let chrome = cx.chrome_insets();
-    let chrome_layout = sidebar_header::Layout::new(chrome);
+    let chrome_layout = sidebar_header::Layout::new(chrome, state.window_chrome.leading_inset());
     let pane_size = cx.layout_size("detail-pane").unwrap_or([864.0, 740.0]);
     let detail_layout = conversation::Layout {
         header_height: chrome_layout.height(),
@@ -1528,7 +1528,7 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
         viewport: [
             pane_size[0]
                 + if state.sidebar_open {
-                    sidebar_header::WIDTH
+                    chrome_layout.width()
                 } else {
                     0.0
                 },
@@ -1610,7 +1610,7 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
         let left = if state.workspace.is_none() {
             0.0
         } else if state.sidebar_open {
-            sidebar_header::WIDTH
+            chrome_layout.width()
         } else {
             chrome_layout.content_left()
         };
@@ -1734,7 +1734,7 @@ fn workspace_view(
         workspace.label.as_str()
     };
     let side = col()
-        .w(sidebar_header::WIDTH)
+        .w(layout.width())
         .h_full()
         .min_h(0.0)
         .fill(colors.background)
