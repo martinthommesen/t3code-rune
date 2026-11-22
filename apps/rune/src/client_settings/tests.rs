@@ -17,6 +17,29 @@ fn missing_preference_defaults_to_confirming_and_round_trips_when_disabled() {
 }
 
 #[test]
+fn thread_delete_confirmation_is_independent_of_terminal_confirmation() {
+    let state = tempfile::tempdir().unwrap();
+    let file = state.path().join(FILE_NAME);
+    fs::write(
+        &file,
+        r#"{"settings":{"confirmTerminalClose":false},"version":1}"#,
+    )
+    .unwrap();
+    let mut settings = ClientSettings::at_state_dir(state.path());
+    assert!(settings.confirm_thread_delete());
+    settings.set_confirm_thread_delete(false).unwrap();
+
+    let mut reopened = ClientSettings::at_state_dir(state.path());
+    assert!(!reopened.confirm_thread_delete());
+    assert!(!reopened.confirm_terminal_close());
+    reopened.set_confirm_thread_delete(true).unwrap();
+    let saved = read_document(&file).unwrap();
+    assert_eq!(saved["settings"]["confirmThreadDelete"], true);
+    assert_eq!(saved["settings"]["confirmTerminalClose"], false);
+    assert_eq!(saved["version"], 1);
+}
+
+#[test]
 fn inline_thread_details_persist_only_closed_scoped_threads() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join(FILE_NAME);

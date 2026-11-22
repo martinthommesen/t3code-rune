@@ -166,6 +166,14 @@ impl State {
             .map(|error| format!("Could not save client settings. {error}"));
     }
 
+    fn set_thread_delete_confirmation(&mut self, enabled: bool) {
+        self.settings.error = self
+            .client_settings
+            .set_confirm_thread_delete(enabled)
+            .err()
+            .map(|error| format!("Could not save client settings. {error}"));
+    }
+
     fn select_settings_page(&mut self, page: Page) {
         self.save_project_name();
         if self.settings.page == Page::Keybindings && page != Page::Keybindings {
@@ -486,15 +494,36 @@ fn header(page: Page, palette: Palette, border: Color) -> El {
 }
 
 fn general(state: &State, palette: Palette, width: f32, large_touch_switch: bool) -> El {
-    let enabled = state.client_settings.confirm_terminal_close();
-    let switch = confirmation_switch(enabled, large_touch_switch, palette);
-    let mut title = row().items_center().gap(6.0).child(
-        text("Terminal close confirmation")
-            .font(CONTROL)
-            .color(palette.ink),
-    );
-    if !enabled {
-        title = title.child(icon_button(
+    let terminal_confirmation = state.client_settings.confirm_terminal_close();
+    let thread_confirmation = state.client_settings.confirm_thread_delete();
+    let delete_switch = switch_track(
+        thread_confirmation,
+        large_touch_switch,
+        palette,
+        palette.accent,
+    )
+    .key("confirm-thread-deletion")
+    .label("Confirm thread deletion")
+    .focusable(true)
+    .on_press_tx(|state: &mut State, _| {
+        state.set_thread_delete_confirmation(!state.client_settings.confirm_thread_delete());
+    });
+    let delete_reset = (!thread_confirmation).then(|| {
+        icon_button(
+            "reset-delete-confirmation",
+            "Reset delete confirmation to default",
+            &RESET,
+            12.0,
+            20.0,
+            palette,
+            |state, tx| {
+                state.set_thread_delete_confirmation(true);
+                tx.focus("confirm-thread-deletion", tx.focus_visible());
+            },
+        )
+    });
+    let terminal_reset = (!terminal_confirmation).then(|| {
+        icon_button(
             "reset-terminal-close-confirmation",
             "Reset terminal close confirmation to default",
             &RESET,
@@ -502,19 +531,8 @@ fn general(state: &State, palette: Palette, width: f32, large_touch_switch: bool
             20.0,
             palette,
             State::reset_terminal_close_confirmation,
-        ));
-    }
-    let label = col().grow(1.0).min_w(0.0).gap(4.0).child(title).child(
-        text("Ask before closing terminals and stopping their running processes.")
-            .font(DESCRIPTION)
-            .color(palette.muted)
-            .wrap(),
-    );
-    let control = if width >= 560.0 {
-        row().items_center().gap(32.0).child(label).child(switch)
-    } else {
-        col().gap(12.0).child(label).child(switch)
-    };
+        )
+    });
     let mut group = col()
         .w_full()
         .gap(10.0)
@@ -526,13 +544,29 @@ fn general(state: &State, palette: Palette, width: f32, large_touch_switch: bool
                 .px(16.0),
         )
         .child(
-            control
-                .key("terminal-close-confirmation")
+            col()
                 .w_full()
-                .px(16.0)
-                .py(12.0)
                 .radius(12.0)
-                .border(1.0, palette.line),
+                .border(1.0, palette.line)
+                .child(confirmation_row(
+                    palette,
+                    width,
+                    "delete-confirmation",
+                    "Delete confirmation",
+                    "Ask before deleting a thread and its chat history.",
+                    delete_switch,
+                    delete_reset,
+                ))
+                .child(el().w_full().h(1.0).fill(palette.line))
+                .child(confirmation_row(
+                    palette,
+                    width,
+                    "terminal-close-confirmation",
+                    "Terminal close confirmation",
+                    "Ask before closing terminals and stopping their running processes.",
+                    confirmation_switch(terminal_confirmation, large_touch_switch, palette),
+                    terminal_reset,
+                )),
         );
     if let Some(error) = &state.settings.error {
         group = group.child(error_text(error, palette));
@@ -547,6 +581,36 @@ fn general(state: &State, palette: Palette, width: f32, large_touch_switch: bool
             stick_bottom: false,
         })
         .child(group.max_w(800.0))
+}
+
+fn confirmation_row(
+    palette: Palette,
+    width: f32,
+    key: &str,
+    title: &str,
+    description: &str,
+    switch: El,
+    reset: Option<El>,
+) -> El {
+    let mut heading = row()
+        .items_center()
+        .gap(6.0)
+        .child(text(title).font(CONTROL).color(palette.ink));
+    if let Some(reset) = reset {
+        heading = heading.child(reset);
+    }
+    let label = col().grow(1.0).min_w(0.0).gap(4.0).child(heading).child(
+        text(description)
+            .font(DESCRIPTION)
+            .color(palette.muted)
+            .wrap(),
+    );
+    let control = if width >= 560.0 {
+        row().items_center().gap(32.0).child(label).child(switch)
+    } else {
+        col().gap(12.0).child(label).child(switch)
+    };
+    control.key(key).w_full().px(16.0).py(12.0)
 }
 
 fn confirmation_switch(enabled: bool, large: bool, palette: Palette) -> El {

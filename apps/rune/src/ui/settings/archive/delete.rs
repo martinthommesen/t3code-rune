@@ -23,7 +23,7 @@ pub(super) struct Confirmation {
 }
 
 impl State {
-    fn confirm_archive_deletion(&mut self, thread_id: &str, title: &str, tx: &mut Tx) {
+    fn request_archive_deletion(&mut self, thread_id: &str, title: &str, tx: &mut Tx) {
         let archive = &mut self.settings.archive;
         if archive.confirmation.is_some()
             || !archive.deletable
@@ -33,6 +33,10 @@ impl State {
                 .as_ref()
                 .is_none_or(|workspace| workspace.reconnecting)
         {
+            return;
+        }
+        if !self.client_settings.confirm_thread_delete() {
+            self.submit_archive_action(ArchiveAction::Delete, thread_id, tx);
             return;
         }
         archive.confirmation = Some(Confirmation {
@@ -81,7 +85,7 @@ pub(super) fn opener(thread: &Thread, enabled: bool, palette: Palette) -> El {
             .focusable(enabled)
             .focus_ring(1.0, 2.0, palette.accent)
             .child(icon(&TRASH, 14.0).color(palette.error).a11y_hidden()),
-        move |state: &mut State, tx| state.confirm_archive_deletion(&thread_id, &title, tx),
+        move |state: &mut State, tx| state.request_archive_deletion(&thread_id, &title, tx),
     )
 }
 
