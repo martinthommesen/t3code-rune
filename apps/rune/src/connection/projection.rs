@@ -825,7 +825,8 @@ mod tests {
                 "visibleTurnItems": [
                     {"item":{"type":"user_message", "messageId":"prompt", "text":"Existing prompt"}},
                     {"item":{"type":"assistant_message", "messageId":"reply", "text":"Working"}},
-                    {"item":{"type":"command_execution", "command":"ls"}}
+                    {"item":{"type":"command_execution", "id":"list-files", "threadId":"thread",
+                        "input":"ls", "status":"completed", "exitCode":0}}
                 ]
             },
         })).unwrap());
@@ -833,14 +834,18 @@ mod tests {
             conversation.messages()[0].created_by.as_deref(),
             Some("agent")
         );
-        assert_eq!(conversation.messages()[1].text, "Working");
-        assert_eq!(conversation.messages().len(), 2);
+        assert!(matches!(conversation.entries().as_slice(), [
+            ConversationEntry::Message(prompt), ConversationEntry::Message(reply),
+            ConversationEntry::Command(command),
+        ] if prompt.id == "prompt" && reply.text == "Working" && command.input == "ls"));
         assert!(conversation.apply(json!({
             "kind": "event", "sequence": 6,
             "event": {"type":"turn-item.updated", "payload":{"type":"assistant_message", "messageId":"reply", "text":"Done"}},
         })).unwrap());
-        assert_eq!(conversation.messages()[1].text, "Done");
-        assert_eq!(conversation.messages().len(), 2);
+        assert!(matches!(conversation.entries().as_slice(), [
+            ConversationEntry::Message(prompt), ConversationEntry::Message(reply),
+            ConversationEntry::Command(command),
+        ] if prompt.id == "prompt" && reply.text == "Done" && command.id == "list-files"));
     }
 
     #[test]
