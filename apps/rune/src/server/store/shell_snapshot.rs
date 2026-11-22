@@ -48,12 +48,7 @@ pub(super) fn read_subscriber(
     };
     let (threads, active_subagents, older_settled) = if omit_idle_subagents || omit_older_settled {
         let plan = trim::Plan::read(database, options)?;
-        let mut threads = if plan.ids.is_empty() {
-            Vec::new()
-        } else {
-            let ids = serde_json::to_string(&plan.ids).expect("serializable thread IDs");
-            read_threads(database, SELECTED_ACTIVE_THREADS, [ids])?
-        };
+        let mut threads = read_selected_active_threads(database, &plan.ids)?;
         let older_settled = plan.apply(&mut threads, snapshot_sequence);
         (threads, plan.active_subagents, older_settled)
     } else {
@@ -79,6 +74,17 @@ pub(super) fn read_subscriber(
         json!({"kind": "snapshot", "snapshot": snapshot}),
         active_subagents,
     ))
+}
+
+pub(super) fn read_selected_active_threads(
+    database: &Connection,
+    ids: &[String],
+) -> rusqlite::Result<Vec<Value>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids = serde_json::to_string(ids).expect("serializable thread IDs");
+    read_threads(database, SELECTED_ACTIVE_THREADS, [ids])
 }
 
 fn read_threads(

@@ -7,10 +7,12 @@ use serde::Serialize;
 use serde_json::Value;
 
 mod fork;
+mod older_settled;
 mod shell_delta;
 mod shell_snapshot;
 mod thread_projection;
 
+pub(super) use older_settled::Request as OlderSettledRequest;
 pub(super) use shell_delta::ShellDeltaBatch;
 pub(super) use thread_projection::{
     append_import_event, decode_legacy_attachment, import_shell_previews, parse_timestamp,
@@ -254,6 +256,18 @@ impl Store {
         let snapshot = shell_snapshot::read_archive(&read, sequence)?;
         read.commit()?;
         Ok(snapshot)
+    }
+
+    pub(super) fn older_settled_threads(
+        &self,
+        input: &OlderSettledRequest,
+    ) -> rusqlite::Result<Value> {
+        let mut database = open_readonly(&self.path)?;
+        let read = database.transaction()?;
+        let sequence = read.query_row(SHELL_SEQUENCE, [], |row| row.get(0))?;
+        let page = older_settled::read(&read, sequence, input)?;
+        read.commit()?;
+        Ok(page)
     }
 
     /// Read canonical changes and their durable cursor in one SQLite snapshot.

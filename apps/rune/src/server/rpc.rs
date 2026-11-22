@@ -902,6 +902,21 @@ fn response(
                 ),
             }
         }
+        "orchestration.getOlderSettledThreads" if local.is_some() => {
+            let input = match super::store::OlderSettledRequest::decode(&payload) {
+                Ok(input) => input,
+                Err(message) => return defect(id, message),
+            };
+            match store.older_settled_threads(&input) {
+                Ok(page) => success(id, page),
+                Err(_) => failure(
+                    id,
+                    RpcError::OrchestrationV2GetShellSnapshotError {
+                        message: "Failed to load older settled threads",
+                    },
+                ),
+            }
+        }
         "filesystem.browse" => browse(id, local.is_some() && permissions.filesystem_read, payload),
         "projects.mutate" => mutate_project(local, permissions.orchestration_operate, id, payload),
         "server.getSettings" if local.is_some() => {
