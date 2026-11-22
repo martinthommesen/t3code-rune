@@ -6,7 +6,7 @@ use rune::{
 
 use crate::connection::file_preview::AssetPurpose;
 
-use super::super::{Load, State, binary::Phase, copy_notice};
+use super::super::{Load, State, binary::Phase, image_notice};
 use super::{Bounds, PICTURE, PreviewImage, expanded::SCROLLER};
 
 const MENU_FONT: TextStyle = TextStyle::new(14.0, 400.0)
@@ -88,6 +88,9 @@ impl Action {
     fn enabled(self, image: &PreviewImage) -> bool {
         match self {
             Self::Save => matches!(image.save, Phase::Ready | Phase::SaveError(_)),
+            Self::CopyImage if image.failed() => {
+                matches!(image.save, Phase::Ready | Phase::SaveError(_))
+            }
             Self::CopyImage => {
                 image.invalid()
                     || image
@@ -174,11 +177,19 @@ impl State {
             Action::CopyFullPath => tx.copy(path(&full_path())),
             Action::CopyRelativePath => tx.copy(path(relative)),
             Action::Save => self.request_preview_asset(AssetPurpose::SaveImage),
+            Action::CopyImage if image.failed() => {
+                self.request_preview_asset(AssetPurpose::CopyImage);
+            }
             Action::CopyImage => {
                 if let Some(clipboard) = image.ready().and_then(|raster| raster.clipboard.clone()) {
                     tx.copy_rich(ClipboardContent::default().with_image(clipboard));
                 } else {
-                    copy_notice::show(self, tx);
+                    image_notice::show(
+                        self,
+                        tx,
+                        image_notice::COPY_ERROR,
+                        image_notice::DECODE_ERROR,
+                    );
                 }
             }
         }

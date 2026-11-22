@@ -4,13 +4,17 @@ use std::path::Path;
 use std::sync::mpsc::{Receiver, TryRecvError, sync_channel};
 
 use rune::{
-    Align, El, FileDialogOptions, FileDialogResult, Icon, TextStyle, Tx, col, el, icon, row, text,
+    Align, ClipboardContent, El, FileDialogOptions, FileDialogResult, Icon, TextStyle, Tx, col, el,
+    icon, row, text,
 };
 use uuid::Uuid;
 
 use crate::connection::file_preview::{AssetOutcome, AssetPurpose};
 
-use super::{CHEVRON, CRUMB, Colors, ERROR, Load, Palette, Preview, State, TAB, control, filename};
+use super::{
+    CHEVRON, CRUMB, Colors, ERROR, Load, Palette, Preview, State, TAB, control, filename,
+    image_notice,
+};
 
 const SAVE: &str = "file-preview-save";
 const HEADING: TextStyle = TextStyle::new(14.0, 500.0).lh(20.0);
@@ -24,6 +28,7 @@ pub(super) enum Phase {
     Checking,
     Unavailable(String),
     Ready,
+    Copying,
     Preparing { name: String },
     Choosing,
     Writing(Receiver<io::Result<()>>),
@@ -44,12 +49,21 @@ impl State {
         else {
             return;
         };
-        if let Load::Image(image) = &mut preview.load
-            && image.loading()
-        {
-            image.loaded(result, self.image_cache.as_ref());
-            return;
+        if let Load::Image(image) = &mut preview.load {
+            if image.loading() {
+                image.loaded(result, self.image_cache.as_ref());
+                return;
+            }
+            if matches!(image.save, Phase::Copying) {
+                match image.copy_recovered(result, self.image_cache.as_ref()) {
+                    Ok(image) => tx.copy_rich(ClipboardContent::default().with_image(image)),
+                    Err(message) => image_notice::show(self, tx, image_notice::COPY_ERROR, message),
+                }
+                return;
+            }
         }
+        let failed_image = matches!(&preview.load, Load::Image(image) if image.failed());
+        let reload = failed_image && matches!(&result, AssetOutcome::Prepared(_));
         let title = if matches!(preview.load, Load::Image(_)) {
             "Save image"
         } else {
@@ -61,6 +75,11 @@ impl State {
         *phase = match (&*phase, result) {
             (Phase::Checking, AssetOutcome::Available) => Phase::Ready,
             (Phase::Checking, AssetOutcome::Failed(message)) => Phase::Unavailable(message),
+            (Phase::Preparing { .. }, AssetOutcome::Failed(message)) if failed_image => {
+                *phase = Phase::Ready;
+                image_notice::show(self, tx, image_notice::SAVE_ERROR, message);
+                return;
+            }
             (Phase::Preparing { .. }, AssetOutcome::Failed(message)) => Phase::SaveError(message),
             (Phase::Preparing { name }, AssetOutcome::Prepared(file)) => {
                 let options = FileDialogOptions {
@@ -75,6 +94,13 @@ impl State {
             }
             _ => return,
         };
+        if reload
+            && let Some(connection) = &self.connection
+            && let Load::Image(image) = &mut preview.load
+        {
+            image.reload();
+            connection.prepare_file_asset(preview.request(), AssetPurpose::ShowImage);
+        }
     }
 
     fn prepare_preview_save(&mut self, _: &mut Tx) {
@@ -105,6 +131,7 @@ impl State {
             ) => Phase::Preparing {
                 name: suggested_name,
             },
+            (AssetPurpose::CopyImage, Phase::Ready | Phase::SaveError(_)) => Phase::Copying,
             (AssetPurpose::Inspect, Phase::Unavailable(_)) => Phase::Checking,
             _ => return,
         };

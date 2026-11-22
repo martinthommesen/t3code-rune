@@ -10,6 +10,7 @@ use crate::workspace_image::{self, Source};
 
 use super::{
     CRUMB, Colors, ERROR, Layout, Load, Palette, Preview, State, binary::Phase, control, filename,
+    image_notice,
 };
 
 pub(super) const PICTURE: &str = "file-preview-image";
@@ -125,6 +126,35 @@ impl PreviewImage {
             }
             (AssetOutcome::InvalidImage, _) => Contents::Invalid,
             _ => Contents::Failed,
+        }
+    }
+
+    pub(super) fn failed(&self) -> bool {
+        matches!(self.contents, Contents::Failed)
+    }
+
+    pub(super) fn reload(&mut self) {
+        self.contents = Contents::Loading;
+    }
+
+    pub(super) fn copy_recovered(
+        &mut self,
+        outcome: AssetOutcome,
+        cache: Option<&ImageCache>,
+    ) -> Result<ClipboardImage, String> {
+        self.save = Phase::Ready;
+        match outcome {
+            AssetOutcome::Failed(message) => Err(message),
+            outcome @ (AssetOutcome::Image(_) | AssetOutcome::InvalidImage) => {
+                self.loaded(outcome, cache);
+                if let Contents::Decoding(raster) = &self.contents
+                    && let Some(clipboard) = &raster.clipboard
+                {
+                    return Ok(clipboard.clone());
+                }
+                Err(image_notice::DECODE_ERROR.into())
+            }
+            _ => Err("The file could not be loaded. Try again.".into()),
         }
     }
 
@@ -253,7 +283,7 @@ pub(super) fn view(
                 .font(CRUMB)
                 .color(colors.muted),
         });
-        return if invalid {
+        return if invalid || image.failed() {
             menu::target(
                 content
                     .key(PICTURE)

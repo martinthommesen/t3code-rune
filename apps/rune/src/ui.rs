@@ -321,7 +321,7 @@ struct State {
     terminal_primary_paste: bool,
     thread_details: thread_details::Popover,
     file_preview: Option<file_preview::Preview>,
-    file_preview_copy_notice: Option<file_preview::copy_notice::Notice>,
+    file_preview_image_notice: Option<file_preview::image_notice::Notice>,
     browser_preview: browser_preview::Dock,
     thread_error_banner: thread_error_banner::Session,
     window_focused: bool,
@@ -367,7 +367,7 @@ impl Default for State {
             terminal_primary_paste: false,
             thread_details: thread_details::Popover::default(),
             file_preview: None,
-            file_preview_copy_notice: None,
+            file_preview_image_notice: None,
             browser_preview: browser_preview::Dock::default(),
             thread_error_banner: thread_error_banner::Session::default(),
             window_focused: true,
@@ -1089,7 +1089,7 @@ impl State {
         changed |= settings::poll_project_files(self, tx);
         changed |= self.poll_file_preview_save(tx);
         changed |= self.poll_image_preview();
-        changed |= file_preview::copy_notice::poll(self, clock, tx);
+        changed |= file_preview::image_notice::poll(self, clock, tx);
         changed |= worktree_setup::poll(self, tx);
         if self.sidebar_open
             && self
@@ -2107,7 +2107,7 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
         }
     }
     body = body.children(command_palette);
-    body = body.children(file_preview::copy_notice::view(
+    body = body.children(file_preview::image_notice::view(
         state,
         detail_layout,
         palette,

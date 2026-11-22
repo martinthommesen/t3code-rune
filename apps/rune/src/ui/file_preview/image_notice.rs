@@ -5,8 +5,9 @@ use rune::{Color, Edge, El, Icon, TextStyle, Transition, Tx, col, icon, row, tex
 
 use super::{COPY, Layout, Palette, State};
 
-const TITLE: &str = "Could not copy image";
-const DESCRIPTION: &str =
+pub(super) const COPY_ERROR: &str = "Could not copy image";
+pub(super) const SAVE_ERROR: &str = "Could not save image";
+pub(super) const DECODE_ERROR: &str =
     "The browser could not decode this image for copying. Try saving it instead.";
 const VISIBLE_FOR: Duration = Duration::from_secs(5);
 const COPIED_FOR: Duration = Duration::from_secs(2);
@@ -32,13 +33,22 @@ static CHECK: Icon = Icon {
 };
 
 pub(in crate::ui) struct Notice {
+    title: &'static str,
+    description: String,
     expires: f64,
     hover_started: Option<f64>,
     copied_until: Option<f64>,
 }
 
-pub(super) fn show(state: &mut State, tx: &mut Tx) {
-    state.file_preview_copy_notice = Some(Notice {
+pub(super) fn show(
+    state: &mut State,
+    tx: &mut Tx,
+    title: &'static str,
+    description: impl Into<String>,
+) {
+    state.file_preview_image_notice = Some(Notice {
+        title,
+        description: description.into(),
         expires: tx.clock() + VISIBLE_FOR.as_secs_f64(),
         hover_started: None,
         copied_until: None,
@@ -47,11 +57,11 @@ pub(super) fn show(state: &mut State, tx: &mut Tx) {
 }
 
 pub(in crate::ui) fn poll(state: &mut State, clock: f64, tx: &mut Tx) -> bool {
-    let Some(notice) = &mut state.file_preview_copy_notice else {
+    let Some(notice) = &mut state.file_preview_image_notice else {
         return false;
     };
     if notice.hover_started.is_none() && clock >= notice.expires {
-        state.file_preview_copy_notice = None;
+        state.file_preview_image_notice = None;
         tx.animated();
         return true;
     }
@@ -63,7 +73,7 @@ pub(in crate::ui) fn poll(state: &mut State, clock: f64, tx: &mut Tx) -> bool {
 }
 
 fn hover(state: &mut State, hovered: bool, tx: &mut Tx) {
-    let Some(notice) = &mut state.file_preview_copy_notice else {
+    let Some(notice) = &mut state.file_preview_image_notice else {
         return;
     };
     let now = tx.clock();
@@ -76,19 +86,19 @@ fn hover(state: &mut State, hovered: bool, tx: &mut Tx) {
 }
 
 fn copy(state: &mut State, tx: &mut Tx) {
-    if let Some(notice) = &mut state.file_preview_copy_notice {
-        tx.copy(DESCRIPTION);
+    if let Some(notice) = &mut state.file_preview_image_notice {
+        tx.copy(notice.description.as_str());
         notice.copied_until = Some(tx.clock() + COPIED_FOR.as_secs_f64());
         tx.wake_after(COPIED_FOR);
     }
 }
 
 fn dismiss(state: &mut State, _: &mut Tx) {
-    state.file_preview_copy_notice = None;
+    state.file_preview_image_notice = None;
 }
 
 pub(in crate::ui) fn view(state: &State, layout: Layout, palette: Palette) -> Option<El> {
-    let notice = state.file_preview_copy_notice.as_ref()?;
+    let notice = state.file_preview_image_notice.as_ref()?;
     let [window, _] = layout.viewport;
     let inset = if window >= 640.0 { 32.0 } else { 16.0 };
     let width = (window - 2.0 * inset).clamp(1.0, 360.0);
@@ -136,7 +146,7 @@ pub(in crate::ui) fn view(state: &State, layout: Layout, palette: Palette) -> Op
         row()
             .key("image-copy-error")
             .role("dialog")
-            .label(TITLE)
+            .label(notice.title)
             .absolute(window - inset - width, layout.header_height + inset)
             .w(width)
             .pl(14.0)
@@ -166,9 +176,9 @@ pub(in crate::ui) fn view(state: &State, layout: Layout, palette: Palette) -> Op
                             .gap(8.0)
                             .center_y()
                             .child(icon(&ALERT, 16.0).color(danger))
-                            .child(text(TITLE).font(HEADING).color(ink).role("alert")),
+                            .child(text(notice.title).font(HEADING).color(ink).role("alert")),
                     )
-                    .child(text(DESCRIPTION).font(BODY).color(muted).wrap()),
+                    .child(text(&notice.description).font(BODY).color(muted).wrap()),
             )
             .child(copy)
             .child(close),

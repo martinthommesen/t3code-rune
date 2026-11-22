@@ -63,6 +63,7 @@ pub(crate) enum AssetPurpose {
     Download,
     ShowImage,
     SaveImage,
+    CopyImage,
 }
 
 pub(crate) enum AssetOutcome {
@@ -121,7 +122,7 @@ impl Session {
             return Ok(());
         }
         let resource = match purpose {
-            AssetPurpose::ShowImage | AssetPurpose::SaveImage => json!({
+            AssetPurpose::ShowImage | AssetPurpose::SaveImage | AssetPurpose::CopyImage => json!({
                 "_tag": "workspace-file",
                 "threadId": input.thread_id,
                 "path": input.relative_path,
@@ -200,22 +201,25 @@ impl Session {
                 result: result(exit),
             }),
             Operation::Asset(purpose) => {
-                let url = exit.into_result().ok().and_then(|value| {
-                    self.preview_downloads
-                        .resolve_url(value["relativeUrl"].as_str()?)
+                let url = asset_result(exit, purpose).and_then(|value| {
+                    value["relativeUrl"]
+                        .as_str()
+                        .and_then(|relative| self.preview_downloads.resolve_url(relative))
+                        .ok_or_else(|| "Unable to load file preview.".into())
                 });
                 let result = match (url, purpose) {
                     (
-                        Some(url),
+                        Ok(url),
                         purpose @ (AssetPurpose::Download
                         | AssetPurpose::ShowImage
-                        | AssetPurpose::SaveImage),
+                        | AssetPurpose::SaveImage
+                        | AssetPurpose::CopyImage),
                     ) => {
                         self.preview_downloads.start(pending.id, url, purpose);
                         return;
                     }
-                    (Some(_), AssetPurpose::Inspect) => AssetOutcome::Available,
-                    (None, _) => AssetOutcome::Failed("Unable to load file preview.".into()),
+                    (Ok(_), AssetPurpose::Inspect) => AssetOutcome::Available,
+                    (Err(message), _) => AssetOutcome::Failed(message),
                 };
                 events.send(Event::FilePreviewAsset {
                     id: pending.id,
@@ -249,6 +253,30 @@ impl Session {
             self.interrupt(&pending.request_id).await?;
         }
         Ok(())
+    }
+}
+
+fn asset_result(exit: RpcExit, purpose: AssetPurpose) -> Result<Value, String> {
+    match exit {
+        RpcExit::Success { value } => Ok(value),
+        RpcExit::Failure { cause } => {
+            let missing_workspace_asset = matches!(
+                purpose,
+                AssetPurpose::CopyImage | AssetPurpose::SaveImage
+            ) && cause.iter().any(|reason| {
+                matches!(
+                    reason,
+                    RpcCause::Fail { error }
+                        if error.file.tag.as_deref() == Some("AssetWorkspaceAssetNotFoundError")
+                )
+            });
+            Err(if missing_workspace_asset {
+                "Workspace asset was not found."
+            } else {
+                "Unable to load file preview."
+            }
+            .into())
+        }
     }
 }
 

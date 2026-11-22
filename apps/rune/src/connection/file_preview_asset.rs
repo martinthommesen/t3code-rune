@@ -54,7 +54,7 @@ impl Downloads {
         let client = self.client.clone();
         let task = tokio::spawn(async move {
             let result = match purpose {
-                AssetPurpose::ShowImage => image(client, url).await,
+                AssetPurpose::ShowImage | AssetPurpose::CopyImage => image(client, url).await,
                 _ => download(client, url).await.map(AssetOutcome::Prepared),
             };
             result.unwrap_or_else(|| {
