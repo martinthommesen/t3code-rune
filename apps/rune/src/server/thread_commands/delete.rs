@@ -226,7 +226,7 @@ const SELECT_SIDE_CHATS: &str = "
     GROUP BY child.thread_id ORDER BY MIN(transfer.rowid)
 ";
 
-const INSERT_EFFECT: &str = "
+pub(super) const INSERT_EFFECT: &str = "
     INSERT INTO orchestration_v2_effect_outbox (
         effect_id, command_id, thread_id, effect_type, payload_json, status, attempt_count,
         available_at, created_at, updated_at

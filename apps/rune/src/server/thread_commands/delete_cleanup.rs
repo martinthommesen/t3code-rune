@@ -169,11 +169,11 @@ const SELECT_CLEANUP: &str = "
     SELECT effect.effect_id, effect.thread_id, effect.effect_type, effect.attempt_count
     FROM orchestration_v2_effect_outbox AS effect
     JOIN orchestration_v2_projection_threads AS thread ON thread.thread_id=effect.thread_id
-    WHERE effect.status='pending' AND effect.available_at<=?1 AND thread.deleted_at IS NOT NULL
+    WHERE effect.status='pending' AND effect.available_at<=?1
       AND effect.effect_type IN ('scheduled-tasks.cleanup','terminal.cleanup','preview.cleanup')
       AND effect.effect_id='effect:' || effect.command_id || ':' || effect.effect_type
       AND json_extract(effect.payload_json,'$.type')=effect.effect_type
-      AND EXISTS (
+      AND ((thread.deleted_at IS NOT NULL AND EXISTS (
         SELECT 1 FROM orchestration_events AS tombstone
         JOIN orchestration_command_receipts AS receipt ON receipt.command_id=tombstone.command_id
         WHERE tombstone.aggregate_kind='thread' AND tombstone.application_event_version=2
@@ -185,7 +185,20 @@ const SELECT_CLEANUP: &str = "
             OR (receipt.aggregate_id=json_extract(thread.payload_json,'$.lineage.parentThreadId')
                 AND json_extract(thread.payload_json,'$.lineage.sideChat')=1
                 AND effect.command_id=receipt.command_id || ':side-chat:' || effect.thread_id))
-      )
+      )) OR (
+        thread.deleted_at IS NULL AND thread.archived_at IS NOT NULL
+        AND effect.effect_type='terminal.cleanup'
+        AND EXISTS (
+            SELECT 1 FROM orchestration_events AS archived
+            JOIN orchestration_command_receipts AS receipt ON receipt.command_id=archived.command_id
+            WHERE archived.aggregate_kind='thread' AND archived.application_event_version=2
+              AND archived.stream_id=effect.thread_id AND archived.event_type='thread.archived'
+              AND archived.occurred_at=thread.archived_at AND archived.sequence=receipt.result_sequence
+              AND receipt.aggregate_kind='thread' AND receipt.aggregate_id=effect.thread_id
+              AND receipt.command_id=effect.command_id AND receipt.command_type='thread.archive'
+              AND receipt.status='accepted'
+        )
+      ))
       AND NOT EXISTS (
         SELECT 1 FROM orchestration_v2_effect_outbox AS earlier
         WHERE earlier.thread_id=effect.thread_id AND earlier.command_id=effect.command_id

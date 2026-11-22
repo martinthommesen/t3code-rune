@@ -1659,6 +1659,7 @@ fn dispatch_thread(
         "thread.create"
             | "thread.visit"
             | "thread.metadata.update"
+            | "thread.archive"
             | "thread.unarchive"
             | "thread.delete"
     ) {
@@ -1701,12 +1702,16 @@ fn dispatch_thread(
         Err(ThreadCommandError::InvalidRequest(message))
             if matches!(
                 command_type.as_str(),
-                "thread.metadata.update" | "thread.unarchive" | "thread.delete"
+                "thread.metadata.update" | "thread.archive" | "thread.unarchive" | "thread.delete"
             ) =>
         {
             defect(id, message)
         }
-        Err(error @ ThreadCommandError::NotArchived(_)) => {
+        Err(error)
+            if matches!(error, ThreadCommandError::NotArchived(_))
+                || (command_type == "thread.archive"
+                    && matches!(error, ThreadCommandError::Rejected(_))) =>
+        {
             let message = error.to_string();
             failure(
                 id,
