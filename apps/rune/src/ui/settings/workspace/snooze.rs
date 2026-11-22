@@ -9,6 +9,7 @@ use crate::snooze::{self, Day, MAX_MINUTES, MAX_OPTIONS, Preset, Unit};
 
 use super::{State, start_write};
 
+mod clock;
 mod view;
 
 pub(super) use view::{ADD, can_reset, overlay, section};
@@ -22,6 +23,7 @@ pub(in crate::ui::settings) struct Panel {
     awaiting_echo: VecDeque<Vec<Preset>>,
     sent: Option<Uuid>,
     menu: Option<view::Menu>,
+    clock: Option<clock::Picker>,
     menu_typeahead: super::keyboard::Typeahead,
     list_had_focus: bool,
 }
@@ -195,6 +197,7 @@ impl Panel {
 
     pub(super) fn close_menu(&mut self) {
         self.menu = None;
+        self.clock = None;
         self.menu_typeahead.clear();
     }
 

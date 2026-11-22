@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use rune::{
-    Align, Color, El, Icon, Key, KeyEvent, Shadow, Side, TextStyle, Tx, col, el, icon, row, text,
+    Align, Color, El, Key, KeyEvent, Shadow, Side, TextStyle, Tx, col, el, icon, row, text,
     text_input,
 };
 
@@ -12,16 +12,13 @@ use super::super::{
     CHEVRON, CONTROL, DESCRIPTION, ITEM, Palette, RESET, SECTION, State, inheritance, keyboard,
     surface,
 };
-use super::{Row, add, canonical_time, clock_minute, edit, remove, reset, setting, writable};
+use super::{
+    Row, add, canonical_time, clock, clock_minute, edit, remove, reset, setting, writable,
+};
 
 pub(in crate::ui::settings::workspace) const ADD: &str = "snooze-preset-add";
 const LIST: &str = "snooze-preset-options";
 const VALUE: TextStyle = TextStyle::new(14.0, 400.0).lh(20.0);
-const CLOCK: Icon = Icon {
-    name: "snooze-time-clock",
-    view: 24.0,
-    body: r#"<g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></g>"#,
-};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Field {
@@ -316,17 +313,19 @@ fn option_row(
             .child(text("at").font(DESCRIPTION).color(palette.muted))
             .child(
                 row()
+                    .key(value.key("time-field"))
                     .w(128.0)
                     .h(28.0)
                     .items_center()
-                    .gap(6.0)
-                    .px(9.0)
+                    .gap(2.0)
+                    .pl(9.0)
+                    .pr(5.0)
                     .radius(8.0)
                     .border(1.0, palette.line)
                     .border_layout()
                     .fill(surface(palette, "#fcfcfc", "#171717"))
                     .child(editor.grow(1.0).min_w(0.0))
-                    .child(icon(&CLOCK, 14.0).color(palette.ink).a11y_hidden()),
+                    .child(clock::trigger(value, palette, may_edit)),
             );
     }
     let preview = match preview {
@@ -596,6 +595,9 @@ pub(in crate::ui::settings::workspace) fn overlay(
     state: &State,
     palette: Palette,
 ) -> Option<[El; 2]> {
+    if let Some(picker) = clock::overlay(state, palette) {
+        return Some(picker);
+    }
     let panel = &state.settings.workspace.snooze;
     let menu = panel.menu?;
     let value = panel.rows.iter().find(|row| row.id == menu.row)?;
