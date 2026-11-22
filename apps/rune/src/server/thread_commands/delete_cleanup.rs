@@ -36,6 +36,7 @@ pub(in crate::server) async fn run(
         return;
     }
     let worker = Arc::new(format!("rune-archive-cleanup:{}", Uuid::new_v4()));
+    let mut settled = false;
     loop {
         match commands
             .cleanup_deleted_thread(
@@ -46,12 +47,15 @@ pub(in crate::server) async fn run(
             .await
         {
             Ok(Ok(true)) => {
-                worktree_cleanup.notify_one();
+                settled = true;
                 continue;
             }
             Ok(Ok(false)) => {}
             Ok(Err(error)) => eprintln!("Could not settle thread cleanup: {error}"),
             Err(error) => eprintln!("Thread cleanup task stopped: {error}"),
+        }
+        if std::mem::take(&mut settled) {
+            worktree_cleanup.notify_one();
         }
         tokio::select! {
             notification = notifications.recv() => {

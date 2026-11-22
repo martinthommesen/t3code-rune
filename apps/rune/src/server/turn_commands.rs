@@ -123,6 +123,7 @@ pub(super) enum TurnCommandError {
     Database(rusqlite::Error),
     InvalidProjection(serde_json::Error),
     Checkpoint(super::git_checkpoint::CheckpointError),
+    Worktree(String),
 }
 
 impl fmt::Display for TurnCommandError {
@@ -141,6 +142,7 @@ impl fmt::Display for TurnCommandError {
             Self::Database(error) => write!(formatter, "Could not record the Codex turn: {error}"),
             Self::InvalidProjection(error) => write!(formatter, "Invalid thread data: {error}"),
             Self::Checkpoint(error) => error.fmt(formatter),
+            Self::Worktree(error) => formatter.write_str(error),
         }
     }
 }
@@ -166,6 +168,7 @@ struct ThreadProjection {
     runtime_mode: RuntimeMode,
     interaction_mode: InteractionMode,
     worktree_path: Option<String>,
+    branch: Option<String>,
     lineage: ThreadLineage,
     forked_from: Option<Value>,
     history_origin: Option<String>,
@@ -176,14 +179,40 @@ struct ThreadProjection {
 
 impl ThreadProjection {
     fn supports_root_turn(&self, thread_id: &str, workspace: &Path) -> bool {
-        self.worktree_path.is_none()
-            && self.forked_from.is_none()
+        self.worktree_path.is_none() && self.supports_turn(thread_id, workspace)
+    }
+
+    fn supports_turn(&self, thread_id: &str, workspace: &Path) -> bool {
+        self.forked_from.is_none()
             && self.lineage.parent_thread_id.is_none()
             && self.lineage.root_thread_id == thread_id
             && self.history_origin.as_deref() != Some("v1_import")
-            && self.settled_override.is_none()
+            && self
+                .settled_override
+                .as_ref()
+                .is_none_or(|state| state == "active")
             && self.snoozed_until.is_none()
             && workspace.is_dir()
+    }
+
+    fn dispatch_workspace(&self, thread_id: &str, project: &Path) -> Option<PathBuf> {
+        if !self.supports_turn(thread_id, project) {
+            return None;
+        }
+        let Some(worktree) = self.worktree_path.as_deref() else {
+            return Some(project.to_owned());
+        };
+        let worktree = PathBuf::from(worktree);
+        (worktree.is_absolute()
+            && !worktree
+                .components()
+                .any(|part| part == std::path::Component::ParentDir)
+            && (self
+                .branch
+                .as_deref()
+                .is_some_and(|branch| !branch.is_empty())
+                || worktree.is_dir()))
+        .then_some(worktree)
     }
 }
 
@@ -352,11 +381,11 @@ impl TurnCommands {
             ));
         };
         let thread: ThreadProjection = serde_json::from_value(thread_payload.clone())?;
-        if !thread.supports_root_turn(&thread_id, &workspace_root) {
+        let Some(working_directory) = thread.dispatch_workspace(&thread_id, &workspace_root) else {
             return Err(TurnCommandError::Unsupported(
-                "This command requires a root-workspace thread with an existing workspace directory.",
+                "This command requires a thread with an available project or worktree.",
             ));
-        }
+        };
         let provider = match thread_payload["providerInstanceId"].as_str() {
             Some(CODEX_INSTANCE) => {
                 validate_model_selection(&thread.model_selection)?;
@@ -454,7 +483,7 @@ impl TurnCommands {
                 thread_id: &thread_id,
                 message_id: &message_id,
                 start: DispatchStart::Immediate {
-                    workspace_root: &workspace_root,
+                    workspace_root: &working_directory,
                     model_switch,
                 },
                 run_ordinal,

@@ -32,6 +32,7 @@ macro_rules! glyph {
 mod archive;
 mod browser;
 mod keybindings;
+mod maintenance;
 pub(super) mod path_input;
 pub(super) mod search;
 pub(super) use archive::settle as settle_archive_action;
@@ -75,6 +76,7 @@ static RESET: Icon = glyph!(
 pub(super) struct Panel {
     open: bool,
     pub(super) archive: archive::Panel,
+    maintenance: maintenance::Panel,
     error: Option<String>,
     browser_picker: bool,
     page: Page,
@@ -110,6 +112,7 @@ impl Default for Panel {
         Self {
             open: false,
             archive: archive::Panel::default(),
+            maintenance: maintenance::Panel::default(),
             error: None,
             browser_picker: false,
             page: Page::General,
@@ -134,6 +137,7 @@ enum Page {
     Projects,
     Worktrees,
     Integrations,
+    Maintenance,
     Archive,
 }
 
@@ -147,6 +151,7 @@ impl Page {
             Self::Projects => "Projects",
             Self::Worktrees => "Worktrees",
             Self::Integrations => "Integrations",
+            Self::Maintenance => "Maintenance",
             Self::Archive => "Archive",
         }
     }
@@ -154,6 +159,7 @@ impl Page {
 
 impl State {
     pub(super) fn open_client_settings(&mut self, tx: &mut Tx) {
+        self.leave_maintenance();
         self.settings.open = true;
         self.settings.page = Page::General;
         self.settings.return_focus = "open-client-settings";
@@ -161,6 +167,7 @@ impl State {
     }
 
     pub(super) fn close_client_settings(&mut self, tx: &mut Tx) {
+        self.leave_maintenance();
         self.save_project_name();
         self.settings.open = false;
         self.settings.browser_picker = false;
@@ -219,6 +226,11 @@ impl State {
         }
         self.settings.page = page;
         self.settings.project_order.clear();
+        if page == Page::Maintenance {
+            self.open_maintenance();
+        } else {
+            self.leave_maintenance();
+        }
         if page != Page::Archive {
             self.settings.archive.leave();
         }
@@ -380,6 +392,7 @@ pub(super) fn overlay(
         Page::Worktrees => worktrees::page(state, palette, content_width, width < 640.0),
         Page::Projects => project::page(state, palette, content_width),
         Page::Integrations => browser::page(state, palette, content_width),
+        Page::Maintenance => maintenance::page(state, palette, content_width),
         Page::Archive => archive::page(state, palette, content_width),
     };
     let picker = project::actions_overlay(state, palette, width, height)
@@ -411,7 +424,12 @@ pub(super) fn overlay(
             }
             false
         })
-        .child(navigation(page, navigation_width, color))
+        .child(navigation(
+            page,
+            navigation_width,
+            color,
+            state.settings.maintenance.writable.is_some(),
+        ))
         .child(
             col()
                 .grow(1.0)
@@ -459,7 +477,12 @@ pub(super) fn overlay(
     Some(overlay)
 }
 
-fn navigation(active: Page, width: f32, colors: sidebar_header::Colors) -> El {
+fn navigation(
+    active: Page,
+    width: f32,
+    colors: sidebar_header::Colors,
+    maintenance_available: bool,
+) -> El {
     let mut navigation = col()
         .role("navigation")
         .label("Settings navigation")
@@ -482,8 +505,16 @@ fn navigation(active: Page, width: f32, colors: sidebar_header::Colors) -> El {
             &browser::INTEGRATIONS,
             "settings-integrations",
         ),
+        (
+            Page::Maintenance,
+            &maintenance::WRENCH,
+            "settings-maintenance",
+        ),
         (Page::Archive, &archive::ARCHIVE, "settings-archive"),
     ] {
+        if page == Page::Maintenance && !maintenance_available {
+            continue;
+        }
         let selected = active == page;
         let ink = if selected {
             colors.foreground
@@ -513,6 +544,8 @@ fn navigation(active: Page, width: f32, colors: sidebar_header::Colors) -> El {
         let select = move |state: &mut State, _: &mut Tx| state.select_settings_page(page);
         button = if page == Page::Archive {
             archive::press(button, select)
+        } else if page == Page::Maintenance {
+            maintenance::press(button, select)
         } else if page == Page::Keybindings {
             button
                 .on_press_tx(select)

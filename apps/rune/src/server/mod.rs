@@ -28,6 +28,7 @@ mod server_config;
 pub(crate) use server_config::parse_keybinding_condition;
 mod settings;
 mod shell_http;
+mod storage_cleanup;
 mod store;
 mod terminal;
 mod terminal_rpc;
@@ -112,6 +113,7 @@ struct LocalOperations {
     turns: TurnCommands,
     turn_queue: TurnQueue,
     settings: SettingsFile,
+    storage_cleanup: storage_cleanup::Service,
     config: server_config::Host,
     projection_changes: broadcast::Sender<ProjectionChange>,
     terminals: Arc<terminal::TerminalManager>,
@@ -223,12 +225,14 @@ impl LocalHost {
                         projection_changes.subscribe(),
                         Arc::clone(&worktree_cleanup_changed),
                     ));
+                    let (storage_cleanup, cleanup_reports) = storage_cleanup::Service::pair();
                     let worktree_cleanup = tokio::spawn(thread_commands::worktree_auto::run(
                         threads.clone(),
                         settings.clone(),
                         Arc::clone(&terminals),
                         named_projects_root.with_file_name("worktrees"),
                         worktree_cleanup_changed,
+                        cleanup_reports,
                     ));
                     let repository_identities = repository_identity::Identities::default();
                     let project_clones = ProjectClones::new(
@@ -255,6 +259,7 @@ impl LocalHost {
                         turns,
                         turn_queue: turn_worker.sender(),
                         settings,
+                        storage_cleanup,
                         config,
                         projection_changes,
                         terminals,
@@ -495,7 +500,7 @@ async fn environment_description(environment: &Environment) -> (Value, Option<Pa
         "platform": {"os": os, "arch": arch},
         "serverVersion": env!("CARGO_PKG_VERSION"),
         "orchestrationProtocolVersion": PROTOCOL_VERSION,
-        "capabilities": {"t3ReadOnly": true, "t3ProjectWrites": local, "t3NamedProjects": local, "t3ScratchProjects": scratch_projects, "t3CloneProjects": local, "t3PromptWrites": local, "t3ThreadLaunch": local, "t3WorktreeLaunch": local, "t3RemoteWorktreeLaunch": local, "t3WorktreeSetup": local, "t3WorktreeQueue": local, "t3ShellHttp": local, "t3CheckoutSwitch": local, "t3ThreadStop": local, "t3ArchiveSnapshots": local, "t3ThreadArchive": local, "t3ThreadUnarchive": local, "t3ArchivedThreadDelete": local, "t3ThreadVisits": local, "t3Terminal": local, "t3TerminalIdleWrite": local && cfg!(target_os = "linux"), "serverBrowser": server_browser, "commandOutputStreaming": local, "projectOrganization": local, "worktreesDirectory": local}
+        "capabilities": {"t3ReadOnly": true, "t3ProjectWrites": local, "t3NamedProjects": local, "t3ScratchProjects": scratch_projects, "t3CloneProjects": local, "t3PromptWrites": local, "t3ThreadLaunch": local, "t3WorktreeLaunch": local, "t3RemoteWorktreeLaunch": local, "t3WorktreeSetup": local, "t3WorktreeQueue": local, "t3ShellHttp": local, "t3CheckoutSwitch": local, "t3ThreadStop": local, "t3ArchiveSnapshots": local, "t3ThreadArchive": local, "t3ThreadUnarchive": local, "t3ArchivedThreadDelete": local, "t3ThreadVisits": local, "t3Terminal": local, "t3TerminalIdleWrite": local && cfg!(target_os = "linux"), "serverBrowser": server_browser, "commandOutputStreaming": local, "projectOrganization": local, "worktreesDirectory": local, "storageCleanup": local, "storageCleanupRun": local}
     });
     (description, scratch_root)
 }

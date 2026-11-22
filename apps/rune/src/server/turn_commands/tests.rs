@@ -136,6 +136,31 @@ pub(in crate::server) fn command() -> MessageDispatch {
 }
 
 #[test]
+fn dispatch_claims_the_saved_worktree_before_restoring_it() {
+    let fixture = Fixture::new();
+    let worktree = fixture.directory.join("worktrees/project/thread-feature");
+    fixture.connection().execute(
+        "UPDATE orchestration_v2_projection_threads
+         SET payload_json = json_set(payload_json, '$.worktreePath', ?2, '$.branch', 'feature/saved', '$.settledOverride', 'active')
+         WHERE thread_id = ?1",
+        params![THREAD, worktree.to_str().unwrap()],
+    ).unwrap();
+    let commands = fixture.commands();
+    let dispatch = commands.dispatch(command()).unwrap();
+    let effect = TurnIds::derive(THREAD, MESSAGE).start_effect_id(COMMAND);
+    let claim = commands.claim_start(&effect, "worker").unwrap().unwrap();
+    assert!(dispatch.committed);
+    assert!(!worktree.exists());
+    assert_eq!(claim.thread.cwd, worktree);
+    assert_eq!(
+        commands
+            .workspace_for_restoration(THREAD, &worktree)
+            .unwrap(),
+        Some((fixture.directory.clone(), "feature/saved".to_owned())),
+    );
+}
+
+#[test]
 fn stores_the_first_text_run_in_the_canonical_stream_and_projections() {
     let fixture = Fixture::new();
     let commands = fixture.commands();

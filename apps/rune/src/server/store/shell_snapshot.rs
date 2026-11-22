@@ -27,6 +27,7 @@ const WORKTREE_THREAD_IDS: &str = "SELECT t.thread_id FROM orchestration_v2_proj
     ORDER BY t.updated_at ASC, t.thread_id ASC";
 const ACTIVE_THREAD: &str = "WHERE t.deleted_at IS NULL AND t.archived_at IS NULL
     AND t.thread_id = ?1";
+const STORAGE_THREADS: &str = "WHERE t.deleted_at IS NULL ORDER BY t.created_at, t.thread_id";
 const PROJECTS: &str = "
     SELECT project_id, title, has_custom_title, workspace_root, default_model_selection_json,
            default_thread_env_mode, auto_pull, favicon_path, project_icon_json, scripts_json,
@@ -45,6 +46,10 @@ pub(super) fn read_archive(
         "projects": projects,
         "threads": threads,
     }))
+}
+
+pub(super) fn read_storage_threads(database: &Connection) -> rusqlite::Result<Vec<Value>> {
+    read_threads(database, STORAGE_THREADS, [])
 }
 
 pub(super) fn read_subscriber(

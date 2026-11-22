@@ -574,7 +574,7 @@ fn archive_timestamp(thread: &Thread) -> &str {
         .unwrap_or_default()
 }
 
-fn relative_time(timestamp: &str, now: OffsetDateTime) -> String {
+pub(super) fn relative_time(timestamp: &str, now: OffsetDateTime) -> String {
     let Ok(timestamp) = OffsetDateTime::parse(timestamp, &Rfc3339) else {
         return String::new();
     };

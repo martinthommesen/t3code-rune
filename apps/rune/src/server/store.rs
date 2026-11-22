@@ -11,6 +11,10 @@ mod fork;
 mod older_settled;
 mod shell_delta;
 mod shell_snapshot;
+
+pub(super) fn storage_threads(database: &Connection) -> rusqlite::Result<Vec<Value>> {
+    shell_snapshot::read_storage_threads(database)
+}
 mod thread_projection;
 
 pub(super) use command_detail::CommandDetail;

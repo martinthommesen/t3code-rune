@@ -24,7 +24,7 @@ use self::input::{Trimmed, WorkspaceStrategy};
 pub(super) use self::reservation::{cancel_worktree_setup, request_worktree_cancellation};
 pub(super) use self::retry::{COMMAND as RETRY_COMMAND, RetryInput, retry_preparation};
 pub(super) use self::setup_progress::subscribe_worktree_setup;
-pub(super) use self::workspace::configured_worktrees_root;
+pub(super) use self::workspace::managed_worktrees_roots;
 use super::settings::{SettingsFile, SettingsSnapshot};
 use super::terminal::TerminalManager;
 use super::turn_commands::{NativeProvider, encode_id_part, supports_plain_claude_config};

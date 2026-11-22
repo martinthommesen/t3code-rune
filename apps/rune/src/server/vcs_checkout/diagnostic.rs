@@ -53,6 +53,10 @@ struct Defect {
 }
 
 impl GitCommandError {
+    pub(in crate::server) fn into_detail(self) -> String {
+        self.0.detail
+    }
+
     pub(super) fn new(
         operation: &'static str,
         command: &'static str,

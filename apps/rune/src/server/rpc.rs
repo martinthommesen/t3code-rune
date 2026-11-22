@@ -249,6 +249,66 @@ pub(super) async fn serve(
                 }
             }
             ClientMessage::Request { id, tag, payload }
+                if tag == "server.runStorageCleanup" && local.is_some() =>
+            {
+                if !permissions.settings_write {
+                    Ok(failure(
+                        id,
+                        json!({
+                            "_tag": "EnvironmentAuthorizationError",
+                            "requiredScope": "orchestration:operate",
+                            "requiredPermission": "settings:write",
+                            "message": "The authenticated token is missing required scope: settings:write.",
+                        }),
+                    ))
+                } else if let Err(message) = server_config::validate_input(&payload) {
+                    Ok(defect(id, message))
+                } else if operation_requests.contains_key(&id) {
+                    Ok(failure(
+                        id,
+                        RpcError::InvalidRequest {
+                            message: "Request ID is already in use.",
+                        },
+                    ))
+                } else {
+                    let local = Arc::clone(local.as_ref().expect("local storage cleanup"));
+                    let request_id = id.clone();
+                    let task = operations.spawn(async move {
+                        let frame = match local.storage_cleanup.run_now().await {
+                            Ok(report) => success(id.clone(), json!(report.as_ref())),
+                            Err(message) => failure(
+                                id.clone(),
+                                json!({
+                                    "_tag": "ServerSettingsError", "operation": "read",
+                                    "settingsPath": local.settings.path(), "message": message,
+                                }),
+                            ),
+                        };
+                        (id, frame)
+                    });
+                    operation_requests.insert(request_id, task);
+                    continue;
+                }
+            }
+            ClientMessage::Request { id, tag, payload }
+                if tag == "server.getStorageCleanupReport" && local.is_some() =>
+            {
+                if let Err(message) = server_config::validate_input(&payload) {
+                    Ok(defect(id, message))
+                } else if operation_requests.contains_key(&id) {
+                    Ok(failure(
+                        id,
+                        RpcError::InvalidRequest {
+                            message: "Request ID is already in use.",
+                        },
+                    ))
+                } else {
+                    streams
+                        .start_storage_cleanup(id, local.as_ref().expect("local storage cleanup"));
+                    continue;
+                }
+            }
+            ClientMessage::Request { id, tag, payload }
                 if tag == "subscribeServerConfig" && local.is_some() =>
             {
                 if let Err(message) = server_config::validate_input(&payload) {

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use serde_json::Value;
@@ -23,6 +23,30 @@ pub(in crate::server) struct ClaimedTurnStart {
 }
 
 impl TurnCommands {
+    pub(in crate::server) fn workspace_for_restoration(
+        &self,
+        thread_id: &str,
+        worktree: &Path,
+    ) -> Result<Option<(PathBuf, String)>, TurnCommandError> {
+        let Some(worktree) = worktree.to_str() else {
+            return Ok(None);
+        };
+        Ok(self
+            .read_connection()?
+            .query_row(
+                "SELECT project.workspace_root, json_extract(thread.payload_json, '$.branch')
+                 FROM orchestration_v2_projection_threads AS thread
+                 JOIN projection_projects AS project ON project.project_id = thread.project_id
+                 WHERE thread.thread_id = ?1 AND thread.deleted_at IS NULL
+                   AND project.deleted_at IS NULL
+                   AND json_extract(thread.payload_json, '$.worktreePath') = ?2
+                   AND json_type(thread.payload_json, '$.branch') = 'text'",
+                params![thread_id, worktree],
+                |row| Ok((PathBuf::from(row.get::<_, String>(0)?), row.get(1)?)),
+            )
+            .optional()?)
+    }
+
     pub(in crate::server) fn start_is_cancelled(
         &self,
         claim: &ClaimedTurnStart,

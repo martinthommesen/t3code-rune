@@ -249,3 +249,23 @@ pub(in crate::server) fn configured_worktrees_root(
     }
     Ok(normalized)
 }
+
+pub(in crate::server) fn managed_worktrees_roots(
+    settings_path: &Path,
+    snapshot: &Value,
+    default: &Path,
+) -> Vec<PathBuf> {
+    configured_worktrees_root(Some(settings_path), default)
+        .into_iter()
+        .chain([default.to_owned()])
+        .chain(
+            snapshot["previousWorktreesDirectories"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(PathBuf::from)
+                .filter(|path| path.is_absolute()),
+        )
+        .collect()
+}

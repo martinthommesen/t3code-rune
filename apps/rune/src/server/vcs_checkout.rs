@@ -1,8 +1,11 @@
 mod create;
 mod diagnostic;
 mod git;
+mod hidden_changes;
 mod idle;
+mod measure_worktree;
 mod remove_worktree;
+mod restore_worktree;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -17,9 +20,12 @@ use super::thread_commands::trim_js;
 pub(super) use create::{CreateRefInput, create_ref};
 use diagnostic::FailureReason;
 pub(super) use diagnostic::GitCommandError;
+pub(super) use measure_worktree::measure_worktree;
 pub(super) use remove_worktree::{
-    RemoveWorktreeInput, automatic_candidate, remove_automatic, remove_worktree,
+    AutomaticInspectionError, RemoveWorktreeInput, inspect_automatic, remove_automatic,
+    remove_worktree,
 };
+pub(super) use restore_worktree::{restore_existing_branch, worktree_can_restore};
 
 const SERVICE: &str = "GitWorkflowService.switchRef";
 const DRIVER: &str = "GitVcsDriver.switchRef";

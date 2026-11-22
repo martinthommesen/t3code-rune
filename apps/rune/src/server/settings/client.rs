@@ -97,22 +97,8 @@ pub(super) fn project(
         fields.insert("worktreeCleanup".to_owned(), worktree_cleanup(value)?);
     }
     if let Some(value) = raw.get("storageCleanup") {
-        let configured = value.as_object()?;
         let mut rules = fields.get("storageCleanup")?.as_object()?.clone();
-        for (key, value) in configured {
-            let value = match key.as_str() {
-                "worktreeKeepWhen" => Value::from(literal(value, WORKTREE_KEEP_MODES)?),
-                "worktreeAfterDays" | "browserArtifactsAfterDays" | "logsAfterDays" => {
-                    retention_days(value, 1)?
-                }
-                "worktreeSettledAfterDays" => retention_days(value, 0)?,
-                "worktreeOnMerge" | "worktreeOnDelete" | "worktreeUnchanged" => {
-                    Value::from(value.as_bool()?)
-                }
-                _ => continue,
-            };
-            rules.insert(key.clone(), value);
-        }
+        rules.extend(storage_cleanup_rules(value)?);
         fields.insert("storageCleanup".to_owned(), Value::Object(rules));
     }
     for key in ["worktreesDirectory", "threadTitleInstructions"] {
@@ -309,6 +295,25 @@ fn project_overrides(public: &mut Fields, raw: &Fields) -> Option<()> {
     }
     public.insert("projectSettingsOverrides".to_owned(), projects.into());
     Some(())
+}
+
+pub(super) fn storage_cleanup_rules(value: &Value) -> Option<Fields> {
+    let mut normalized = Fields::new();
+    for (key, value) in value.as_object()? {
+        let value = match key.as_str() {
+            "worktreeKeepWhen" => Value::from(literal(value, WORKTREE_KEEP_MODES)?),
+            "worktreeAfterDays" | "browserArtifactsAfterDays" | "logsAfterDays" => {
+                retention_days(value, 1)?
+            }
+            "worktreeSettledAfterDays" => retention_days(value, 0)?,
+            "worktreeOnMerge" | "worktreeOnDelete" | "worktreeUnchanged" => {
+                Value::from(value.as_bool()?)
+            }
+            _ => continue,
+        };
+        normalized.insert(key.clone(), value);
+    }
+    Some(normalized)
 }
 
 pub(super) fn worktree_cleanup(value: &Value) -> Option<Value> {

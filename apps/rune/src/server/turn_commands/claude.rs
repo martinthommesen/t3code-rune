@@ -221,7 +221,6 @@ const READY: &str = "
       AND thread.archived_at IS NULL AND thread.deleted_at IS NULL
       AND project.archived_at IS NULL AND project.deleted_at IS NULL
       AND COALESCE(json_array_length(project.tracked_folders_json), 0) = 0
-      AND json_extract(thread.payload_json, '$.worktreePath') IS NULL
       AND json_extract(thread.payload_json, '$.forkedFrom') IS NULL
       AND json_extract(thread.payload_json, '$.lineage.parentThreadId') IS NULL
       AND json_extract(thread.payload_json, '$.lineage.rootThreadId') = thread.thread_id
@@ -229,7 +228,8 @@ const READY: &str = "
       AND thread.active_provider_thread_id = provider.provider_thread_id
       AND run.status = 'starting' AND run.provider_instance_id = 'claudeAgent' AND run.ordinal > 0
       AND attempt.attempt_ordinal = 1 AND attempt.status = 'pending' AND node.status = 'pending'
-      AND scope.kind = 'root_run' AND json_extract(scope.payload_json, '$.cwd') = project.workspace_root
+      AND scope.kind = 'root_run' AND json_extract(scope.payload_json, '$.cwd') =
+          COALESCE(json_extract(thread.payload_json, '$.worktreePath'), project.workspace_root)
       AND message.role = 'user' AND COALESCE(json_array_length(message.payload_json, '$.attachments'), 0) = 0
       AND provider.driver = 'claudeAgent' AND provider.provider_instance_id = 'claudeAgent'
       AND ((run.ordinal = 1 AND provider.status = 'not_loaded' AND json_extract(provider.payload_json, '$.nativeThreadRef') IS NULL)

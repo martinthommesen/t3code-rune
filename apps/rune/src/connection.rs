@@ -23,6 +23,7 @@ mod saved_reasoning;
 mod terminal;
 mod terminal_link;
 pub(crate) use terminal_link::TerminalFileLink;
+pub(crate) mod storage_cleanup;
 #[cfg(test)]
 mod tests;
 mod workspace_retry;
@@ -174,6 +175,7 @@ pub(crate) enum Event {
     Providers(ProviderCatalog),
     ProviderCatalogUnavailable,
     WorkspaceConfiguration(Option<Box<WorkspaceSetting>>),
+    StorageCleanup(storage_cleanup::Update),
     WorkspaceProjectFile {
         operation: Uuid,
         settings: ProjectFileWorkspaceSettings,
@@ -365,6 +367,7 @@ enum Command {
     },
     RefreshProviderCatalog,
     EnsureWorkspaceSettings,
+    StorageCleanup(storage_cleanup::Intent),
     ReadWorkspaceProjectFile {
         project_id: String,
         operation: Uuid,
@@ -962,6 +965,10 @@ struct Descriptor {
 
 #[derive(Default, Deserialize)]
 struct Capabilities {
+    #[serde(default, rename = "storageCleanup")]
+    storage_cleanup: bool,
+    #[serde(default, rename = "storageCleanupRun")]
+    storage_cleanup_run: bool,
     #[serde(default, rename = "commandOutputStreaming")]
     command_output_streaming: bool,
     #[serde(default, rename = "t3ReadOnly")]
@@ -1372,6 +1379,7 @@ struct Session {
     pending_worktree_removals: HashMap<String, worktree_removal::Pending>,
     providers_request_id: Option<String>,
     workspace_settings: workspace_settings::Subscription,
+    storage_cleanup: storage_cleanup::Client,
     project_clones_request_id: Option<String>,
     command_output_streaming: bool,
     command_outputs: command_output::Subscriptions,
@@ -1518,6 +1526,10 @@ impl Session {
             pending_worktree_removals: HashMap::new(),
             providers_request_id: None,
             workspace_settings: workspace_settings::Subscription::new(settings_write),
+            storage_cleanup: storage_cleanup::Client::new(
+                capabilities.storage_cleanup && capabilities.storage_cleanup_run,
+                settings_write,
+            ),
             project_clones_request_id: None,
             command_output_streaming: capabilities.command_output_streaming,
             command_outputs: command_output::Subscriptions::default(),
@@ -1904,6 +1916,7 @@ impl Session {
         events: &EventSender<impl Fn()>,
     ) -> Result<(), SessionStop> {
         match command {
+            Command::StorageCleanup(intent) => self.storage_cleanup(intent, events).await?,
             Command::EnsureWorkspaceSettings => {
                 if self.providers_request_id.is_none() {
                     self.subscribe_provider_catalog().await?;
@@ -2721,6 +2734,7 @@ impl Session {
                             can_start: self.scratch_projects,
                         });
                     }
+                    self.storage_cleanup.apply_config(&values, events);
                     if let Some(settings) = self.workspace_settings.apply(&values) {
                         events.send(Event::WorkspaceConfiguration(Some(Box::new(settings))));
                     }
@@ -2731,6 +2745,10 @@ impl Session {
                     }
                     if let Some(providers) = provider_metadata::last_catalog(values) {
                         events.send(Event::Providers(providers));
+                    }
+                } else if self.storage_cleanup.receives(&request_id) {
+                    if !self.storage_cleanup.chunk(values, events) {
+                        self.stop_invalid_cleanup_report().await?;
                     }
                 } else if let Some(attachment) = self.terminal_attachment(&request_id) {
                     self.terminal_chunk(attachment, values, events).await?;
@@ -2806,6 +2824,11 @@ impl Session {
                 }
             }
             ServerFrame::Exit { request_id, exit } => {
+                if self.storage_cleanup.receives_exit(&request_id) {
+                    self.storage_cleanup
+                        .exit(&request_id, exit.into_result(), events);
+                    return Ok(());
+                }
                 if self.matches_file_preview(&request_id) {
                     self.finish_file_preview(exit, events);
                     return Ok(());
@@ -3264,6 +3287,7 @@ async fn run(
     let mut attempt = 0;
     loop {
         let connected_at = Instant::now();
+        session.storage_cleanup.publish_access(events);
         events.send(Event::ArchiveAvailable {
             readable: !matches!(session.archive, ArchiveState::Disabled),
             archivable: session.archive_active_writes,
@@ -3278,6 +3302,7 @@ async fn run(
         session.unconfirm_workspace_retries(events);
         session.unconfirm_archive_actions(events);
         session.unconfirm_worktree_removals(events);
+        session.storage_cleanup.connection_lost(events);
         let reason = match disconnected {
             Ok(()) => return Ok(()),
             Err(SessionStop::Protocol(message)) => {

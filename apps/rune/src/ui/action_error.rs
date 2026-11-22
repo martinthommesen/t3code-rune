@@ -33,13 +33,15 @@ static CHECK: Icon = Icon {
 pub(super) enum Kind {
     AddProjectFolder,
     CreateRef,
+    StorageCleanup(String),
 }
 
 impl Kind {
-    fn presentation(&self) -> (&'static str, &'static str) {
+    fn presentation(&self) -> (&'static str, &str) {
         match self {
             Self::AddProjectFolder => ("add-project-folder-error", "Failed to add project"),
             Self::CreateRef => ("create-ref-error", "Failed to create and switch ref."),
+            Self::StorageCleanup(title) => ("storage-cleanup-error", title),
         }
     }
 }

@@ -87,6 +87,7 @@ impl State {
             return;
         };
         self.settings.project = Some(Form::new(project));
+        self.leave_maintenance();
         self.settings.page = Page::Projects;
         self.settings.error = None;
         self.settings.open = true;

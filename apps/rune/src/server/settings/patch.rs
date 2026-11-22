@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use crate::snooze;
 
 use super::{
-    Fields, favorites, project_overrides::ProjectPatch, project_scripts, text,
+    Fields, client, favorites, project_overrides::ProjectPatch, project_scripts, text,
     worktree_location_history,
 };
 
@@ -66,6 +66,12 @@ impl Patch {
                     patch.unsupported = projects.unsupported.take();
                 }
                 patch.projects = Some(projects);
+                continue;
+            }
+            if key == "storageCleanup" {
+                let rules = client::storage_cleanup_rules(value)
+                    .ok_or("Invalid cleanup rules\n  at [\"patch\"][\"storageCleanup\"]")?;
+                patch.fields.insert(key.to_owned(), Value::Object(rules));
                 continue;
             }
             if key == snooze::KEY {
@@ -141,6 +147,26 @@ impl Patch {
             favorites::apply(stored, changes)?;
         }
         for (key, value) in self.fields {
+            if key == "storageCleanup" {
+                let mut current = stored
+                    .get(&key)
+                    .and_then(Value::as_object)
+                    .cloned()
+                    .unwrap_or_default();
+                for (setting, next) in value.as_object().expect("validated cleanup patch") {
+                    if defaults["storageCleanup"][setting] == *next {
+                        current.shift_remove(setting);
+                    } else {
+                        current.insert(setting.clone(), next.clone());
+                    }
+                }
+                if current.is_empty() {
+                    stored.shift_remove(&key);
+                } else {
+                    stored.insert(key, Value::Object(current));
+                }
+                continue;
+            }
             if key == "worktreesDirectory" {
                 update_worktree_location_history(stored, value.as_str().expect("decoded location"));
             }

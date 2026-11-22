@@ -407,6 +407,7 @@ impl State {
     }
 
     fn disconnect(&mut self) {
+        self.cleanup_connection_lost(true);
         self.sidebar = sidebar::SidebarState::default();
         self.thread_actions = sidebar::thread_actions::Panel::default();
         self.history = History::default();
@@ -1256,6 +1257,7 @@ impl State {
                 }
             }
             Event::ProviderCatalogUnavailable => self.onboarding.finish_refresh(),
+            Event::StorageCleanup(update) => self.apply_storage_cleanup(update, tx),
             Event::WorkspaceConfiguration(settings) => {
                 if let Some(workspace) = &mut self.workspace {
                     workspace
@@ -1734,6 +1736,7 @@ impl State {
             } => self.project_notice = Some(message),
             event @ (Event::Reconnecting | Event::Reconnected) => {
                 if matches!(event, Event::Reconnecting) {
+                    self.cleanup_connection_lost(false);
                     self.discard_project_action_inputs();
                     self.file_preview = None;
                     self.workspace_settings_disconnected(false);
@@ -1772,6 +1775,7 @@ impl State {
                 }
             }
             Event::Disconnected(reason) => {
+                self.cleanup_connection_lost(true);
                 self.file_preview = None;
                 self.workspace_settings_disconnected(true);
                 self.reset_keybindings_panel();

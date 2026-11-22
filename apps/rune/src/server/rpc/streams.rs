@@ -122,6 +122,47 @@ impl Streams {
         self.workers.insert(id, (generation, worker));
     }
 
+    pub(super) fn start_storage_cleanup(&mut self, id: RequestId, local: &LocalOperations) {
+        self.interrupt(&id);
+        self.next_generation += 1;
+        let generation = self.next_generation;
+        let request = id.clone();
+        let send = self.send.clone();
+        let mut reports = local.storage_cleanup.subscribe();
+        let worker = tokio::spawn(async move {
+            loop {
+                let frame = {
+                    let current = reports.borrow_and_update();
+                    chunk(request.clone(), json!(current.as_deref()))
+                };
+                if send
+                    .send(Update {
+                        id: request.clone(),
+                        generation,
+                        frame,
+                        done: false,
+                    })
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                if reports.changed().await.is_err() {
+                    break;
+                }
+            }
+            let _ = send
+                .send(Update {
+                    id: request.clone(),
+                    generation,
+                    frame: success(request, Value::Null),
+                    done: true,
+                })
+                .await;
+        });
+        self.workers.insert(id, (generation, worker));
+    }
+
     pub(super) fn start_server_config(&mut self, id: RequestId, environment: SharedEnvironment) {
         self.interrupt(&id);
         self.next_generation += 1;

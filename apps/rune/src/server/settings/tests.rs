@@ -317,6 +317,25 @@ fn startup_reconciliation_leaves_invalid_stored_settings_for_repair() {
 }
 
 #[test]
+fn retention_patch_updates_one_rule_without_resetting_existing_rules() {
+    let original = r#"{"storageCleanup":{"worktreeOnDelete":true,"logsAfterDays":9}}"#;
+    let mut settings = serde_json::from_str(original).unwrap();
+    let patch = Patch::decode(
+        &serde_json::json!({"patch":{"storageCleanup":{"browserArtifactsAfterDays":2}}}),
+    )
+    .unwrap();
+    patch.apply(&mut settings, &defaults()).unwrap();
+    let patch =
+        Patch::decode(&serde_json::json!({"patch":{"storageCleanup":{"logsAfterDays":null}}}))
+            .unwrap();
+    patch.apply(&mut settings, &defaults()).unwrap();
+    let actual = SettingsSnapshot::decode(&serde_json::to_string(&settings).unwrap()).for_client();
+    assert_eq!(actual["storageCleanup"]["worktreeOnDelete"], true);
+    assert_eq!(actual["storageCleanup"]["browserArtifactsAfterDays"], 2);
+    assert!(actual["storageCleanup"]["logsAfterDays"].is_null());
+}
+
+#[test]
 fn configured_worktree_deletion_reaches_the_server_and_client_policy() {
     use crate::worktree_cleanup::{DeletePolicy, KeepWhen};
 

@@ -10,7 +10,7 @@ use std::error::Error;
 use std::ffi::OsString;
 use std::fmt;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -252,6 +252,37 @@ struct CodexMcp {
 }
 
 impl Worker {
+    async fn restore_workspace(
+        &self,
+        thread_id: &str,
+        worktree: &Path,
+    ) -> Result<(), TurnCommandError> {
+        let Some((project, branch)) = self
+            .commands
+            .workspace_for_restoration(thread_id, worktree)?
+        else {
+            return Ok(());
+        };
+        let Some(state_dir) = self.settings.path().parent() else {
+            return Ok(());
+        };
+        let default = super::named_projects::root_for(state_dir).with_file_name("worktrees");
+        let snapshot = self
+            .settings
+            .read()
+            .ok()
+            .map(|snapshot| snapshot.for_client());
+        let roots = super::thread_launch::managed_worktrees_roots(
+            self.settings.path(),
+            snapshot.as_ref().unwrap_or(&serde_json::Value::Null),
+            &default,
+        );
+        super::vcs_checkout::restore_existing_branch(&project, worktree, &branch, &roots)
+            .await
+            .map_err(|error| TurnCommandError::Worktree(error.into_detail()))?;
+        Ok(())
+    }
+
     async fn run(
         self,
         queue: TurnQueue,
@@ -430,11 +461,19 @@ impl Worker {
             else {
                 return Ok(None);
             };
-            let result = claude
-                .execute(&self.commands, &self.settings, &claim, queue, |sequence| {
-                    self.publish(&claim.thread_id, sequence)
-                })
-                .await;
+            let result = match self
+                .restore_workspace(&claim.thread_id, &claim.workspace)
+                .await
+            {
+                Ok(()) => {
+                    claude
+                        .execute(&self.commands, &self.settings, &claim, queue, |sequence| {
+                            self.publish(&claim.thread_id, sequence)
+                        })
+                        .await
+                }
+                Err(error) => Err(claude_worker::Error::Storage(error)),
+            };
             queue.wake();
             return match result {
                 Ok(sequence) => Ok(Some(sequence)),
@@ -469,6 +508,11 @@ impl Worker {
                 return Err(error);
             }
         };
+        if let Err(error) = self.restore_workspace(thread_id, &claim.thread.cwd).await {
+            let error = WorkerError::Storage(error);
+            self.fail_start(&claim, thread_id, StartFailure::SessionOpen, &error)?;
+            return Err(error);
+        }
         let _ = self.commands.capture_baseline(&claim).await;
         if self.commands.start_is_cancelled(&claim)? {
             return Ok(None);
