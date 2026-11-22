@@ -81,6 +81,12 @@ impl<'a> Capture<'a> {
         !self.partial.is_empty()
     }
 
+    pub(super) fn skip_output(&mut self) {
+        self.partial.clear();
+        self.carry.clear();
+        self.reading = false;
+    }
+
     pub(super) fn flush_partial_line(&mut self) {
         let line = std::mem::take(&mut self.partial);
         if let Some((_, suffix)) = line.split_once(self.sentinel) {

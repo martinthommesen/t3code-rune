@@ -198,7 +198,17 @@ impl Observation {
                 biased;
                 _ = self.cancelled.wait_for(|cancelled| *cancelled) => return Completion::Cancelled,
                 event = self.observed.recv() => {
-                    let Ok(event) = event else { return Completion::Exited(output.exit_code()); };
+                    let event = match event {
+                        Ok(event) => event,
+                        Err(broadcast::error::RecvError::Lagged(_)) => {
+                            output.skip_output();
+                            continue;
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
+                            output.flush_partial_line();
+                            return Completion::Exited(output.exit_code());
+                        }
+                    };
                     match event.output() {
                         OutputEvent::Output { data } => {
                             let had_exit = output.exit_code().is_some();
@@ -212,6 +222,7 @@ impl Observation {
                             }
                         }
                         OutputEvent::Exited { .. } | OutputEvent::Closed | OutputEvent::Error { .. } => {
+                            output.flush_partial_line();
                             return Completion::Exited(output.exit_code());
                         }
                         _ => (),
