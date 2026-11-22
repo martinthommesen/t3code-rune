@@ -146,6 +146,8 @@ fn present_timestamp<'de, D: serde::Deserializer<'de>>(
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ThreadProviders {
     model_selection: Option<ModelSelection>,
+    runtime_mode: Option<String>,
+    interaction_mode: Option<String>,
     latest_run_id: Option<String>,
     provider_instance_id: Option<String>,
     #[serde(default)]
@@ -153,6 +155,18 @@ pub(crate) struct ThreadProviders {
 }
 
 impl ThreadProviders {
+    pub(crate) fn plain_claude_model(&self) -> Option<&str> {
+        let selection = self.model_selection.as_ref()?;
+        if selection.instance_id() != "claudeAgent"
+            || self.current_instance() != Some("claudeAgent")
+            || self.runtime_mode.as_deref() != Some("full-access")
+            || self.interaction_mode.as_deref() != Some("default")
+        {
+            return None;
+        }
+        selection.plain_model()
+    }
+
     pub(crate) fn current_instance(&self) -> Option<&str> {
         let model = self
             .model_selection

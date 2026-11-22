@@ -119,7 +119,7 @@ pub(super) enum Incoming {
     },
     Response {
         id: String,
-        success: bool,
+        result: Result<Value, Error>,
     },
     Message(Message),
 }
@@ -141,9 +141,9 @@ impl Incoming {
                 let response = &value["response"];
                 return Ok(Self::Response {
                     id: required_string(&response["request_id"])?.to_owned(),
-                    success: match required_string(&response["subtype"])? {
-                        "success" => true,
-                        "error" => false,
+                    result: match required_string(&response["subtype"])? {
+                        "success" => Ok(response["response"].clone()),
+                        "error" => Err(Error::InitializationFailed),
                         _ => return Err(Error::InvalidFrame),
                     },
                 });

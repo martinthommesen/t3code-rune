@@ -625,16 +625,7 @@ fn validate_claude_turn(
         && model.starts_with("claude-")
         && thread.runtime_mode == RuntimeMode::FullAccess
         && thread.interaction_mode == InteractionMode::Default
-        && config.launch_args.trim().is_empty()
-        && config.auto_compact_window.is_none()
-        && !config
-            .custom_models
-            .iter()
-            .any(|entry| entry == model || entry["slug"] == model)
-        && config
-            .environment
-            .iter()
-            .all(|entry| matches!(entry.value, super::settings::EnvironmentValue::Literal(_)));
+        && supports_plain_claude_config(config, model);
     if !supported
         || text.split_whitespace().next().is_some_and(|word| {
             word.strip_prefix('/')
@@ -646,6 +637,22 @@ fn validate_claude_turn(
         ));
     }
     Ok(())
+}
+
+pub(super) fn supports_plain_claude_config(
+    config: &super::settings::ClaudeInstance,
+    model: &str,
+) -> bool {
+    config.launch_args.trim().is_empty()
+        && config.auto_compact_window.is_none()
+        && !config
+            .custom_models
+            .iter()
+            .any(|entry| entry == model || entry["slug"] == model)
+        && config
+            .environment
+            .iter()
+            .all(|entry| matches!(entry.value, super::settings::EnvironmentValue::Literal(_)))
 }
 
 pub(super) fn validate_model_selection(selection: &Value) -> Result<&str, TurnCommandError> {

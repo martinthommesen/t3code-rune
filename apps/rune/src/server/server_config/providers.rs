@@ -12,6 +12,8 @@ use crate::server::thread_commands::trim_js;
 use crate::server::turn_commands::timestamp;
 use crate::server::turn_worker::launch::process_config;
 
+mod claude;
+
 const ACCOUNT_TIMEOUT: Duration = Duration::from_secs(5);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -35,6 +37,13 @@ enum Identity {
 }
 
 pub(super) async fn initial(settings: &SettingsSnapshot, cwd: &Path) -> Vec<Value> {
+    let (mut providers, claude) =
+        tokio::join!(initial_codex(settings, cwd), claude::status(settings, cwd));
+    providers.extend(claude);
+    providers
+}
+
+async fn initial_codex(settings: &SettingsSnapshot, cwd: &Path) -> Vec<Value> {
     let public = settings.for_client();
     let instances = public["providerInstances"].as_object();
     let mut providers = Vec::new();

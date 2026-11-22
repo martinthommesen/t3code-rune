@@ -75,6 +75,7 @@ struct Conversation {
     worktree_elapsed_second: Option<i64>,
     worktree_background: worktree_setup::Disclosure,
     preparation_retries: worktree_setup::PendingRetries,
+    model_picker: Option<TextEdit>,
 }
 
 struct QueuedEdit {
@@ -518,6 +519,7 @@ impl State {
                     worktree_elapsed_second: None,
                     worktree_background: worktree_setup::Disclosure::default(),
                     preparation_retries: worktree_setup::PendingRetries::default(),
+                    model_picker: None,
                 })),
             }),
             Destination::NewThread(id) => {
@@ -893,7 +895,7 @@ impl State {
             return;
         }
         if workspace.pending_clone(&thread.project_id).is_some()
-            || composer::provider_unavailable(workspace, thread.providers.current_instance())
+            || composer::thread_provider_unavailable(workspace, thread)
         {
             return;
         }

@@ -25,6 +25,10 @@ impl ModelSelection {
     pub(super) fn is_valid(&self) -> bool {
         !self.instance_id.trim().is_empty() && !self.model.trim().is_empty()
     }
+
+    pub(super) fn plain_model(&self) -> Option<&str> {
+        self.options.is_none().then_some(self.model.as_str())
+    }
 }
 
 #[derive(Clone, Copy, Deserialize, Serialize)]

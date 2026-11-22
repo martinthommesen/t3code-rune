@@ -1,12 +1,15 @@
 use rune::color::hex;
 use rune::{Color, El, Icon, TextStyle, Tx, col, edit_access, el, icon, row, text, text_input};
 
+use crate::connection::{ProviderMetadata, SavedModel, Thread};
+
 use super::conversation::{Layout, MAX_LANE};
 use super::draft_hero;
 use super::project::clone_banner;
 use super::worktree_setup;
 use super::{Draft, Palette, Project, SMALL, State, Workspace, button, error_text};
 
+mod model_picker;
 mod resume;
 
 const FONT: TextStyle = TextStyle::new(14.0, 400.0).lh(22.75);
@@ -38,10 +41,37 @@ static STOP: Icon = Icon {
 
 pub(super) fn provider_unavailable(workspace: &Workspace, requested: Option<&str>) -> bool {
     workspace.providers.as_ref().is_some_and(|providers| {
-        !providers
-            .iter()
-            .any(|(id, metadata)| metadata.selectable(requested == Some(id.as_str())))
+        !providers.iter().any(|(id, metadata)| {
+            !metadata.native_saved_thread_turns
+                && metadata.selectable(requested == Some(id.as_str()))
+        })
     })
+}
+
+pub(super) fn thread_provider_unavailable(workspace: &Workspace, thread: &Thread) -> bool {
+    if let Some(provider) = native_claude_provider(workspace, thread) {
+        return claude_model(thread, provider).is_none();
+    }
+    provider_unavailable(workspace, thread.providers.current_instance())
+}
+
+fn native_claude_provider<'a>(
+    workspace: &'a Workspace,
+    thread: &Thread,
+) -> Option<&'a ProviderMetadata> {
+    let id = thread.providers.current_instance()?;
+    workspace
+        .providers
+        .as_ref()?
+        .get(id)
+        .filter(|provider| provider.driver == "claudeAgent" && provider.native_saved_thread_turns)
+}
+
+fn claude_model<'a>(thread: &Thread, provider: &'a ProviderMetadata) -> Option<&'a SavedModel> {
+    if thread.worktree_path.is_some() || thread.archived {
+        return None;
+    }
+    provider.saved_model(thread.providers.plain_claude_model()?)
 }
 
 pub(super) fn thread(
@@ -52,7 +82,6 @@ pub(super) fn thread(
     palette: Palette,
 ) -> El {
     let thread = workspace.thread(thread_id);
-    let requested = thread.and_then(|thread| thread.providers.current_instance());
     let target = Target::Thread {
         id: thread_id,
         label: thread.map_or_else(
@@ -66,9 +95,7 @@ pub(super) fn thread(
         .items_center()
         .px(layout.timeline_gutter())
         .pb(20.0)
-        .child(surface(
-            target, draft, workspace, requested, layout, palette,
-        ))
+        .child(surface(target, draft, workspace, thread, layout, palette))
 }
 
 pub(super) fn draft(
@@ -143,12 +170,25 @@ fn surface(
     target: Target<'_>,
     draft: &Draft,
     workspace: &Workspace,
-    requested: Option<&str>,
+    thread: Option<&Thread>,
     layout: Layout,
     palette: Palette,
 ) -> El {
     let colors = Colors::new(palette.dark);
-    let unavailable = provider_unavailable(workspace, requested);
+    let unavailable = thread.map_or_else(
+        || provider_unavailable(workspace, None),
+        |thread| thread_provider_unavailable(workspace, thread),
+    );
+    let model =
+        thread.and_then(|thread| claude_model(thread, native_claude_provider(workspace, thread)?));
+    let open_picker = workspace
+        .selection
+        .as_ref()
+        .and_then(|selection| match &selection.view {
+            super::ProjectView::Conversation(conversation) => conversation.model_picker.as_ref(),
+            _ => None,
+        });
+    let thread_id = thread.map(|thread| thread.id.as_str());
     let project_id = match &target {
         Target::Draft(id) => Some(*id),
         Target::Thread { id, .. } => workspace
@@ -256,6 +296,12 @@ fn surface(
         );
     }
     footer = footer.child(el().grow(1.0));
+    if let Some((thread_id, model)) = thread_id.zip(model) {
+        footer = footer.child(
+            model_picker::trigger(thread_id, model, open_picker.is_some(), palette)
+                .mr(if width >= 420.0 { 36.0 } else { 0.0 }),
+        );
+    }
     if unavailable && has_draft && !editing_queue {
         footer = footer.child(
             text("No provider available")
@@ -345,7 +391,13 @@ fn surface(
     if let Some(error) = &draft.failure {
         form = form.child(error_text(error, palette));
     }
-    form.child(card.child(footer))
+    card = card.child(footer);
+    if let Some(((thread_id, model), query)) = thread_id.zip(model).zip(open_picker) {
+        card = card
+            .child(model_picker::dismissal(thread_id, layout.viewport))
+            .child(model_picker::popup(thread_id, model, query, width, palette));
+    }
+    form.child(card)
 }
 
 pub(super) fn stop_button(thread_id: &str, pending: bool, size: f32, palette: Palette) -> El {

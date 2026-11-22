@@ -10,7 +10,7 @@ use t3_rune::providers::claude::{
     AssistantBlock, ContextUsage, Launch, Message, PermissionMode, ProcessLedger, Session, Usage,
 };
 
-use super::settings::{EnvironmentValue, SettingsError, SettingsFile};
+use super::settings::{ClaudeInstance, EnvironmentValue, SettingsError, SettingsFile};
 use super::turn_commands::claude::Claim;
 use super::turn_commands::{TurnCommandError, TurnCommands};
 
@@ -293,6 +293,28 @@ fn owned(committed: Option<i64>) -> Result<i64, Error> {
 fn process_config(settings: &SettingsFile, claim: &Claim) -> Result<Launch, Error> {
     let snapshot = settings.read().map_err(Error::Settings)?;
     let config = claim.config(&snapshot)?;
+    let (_, environment) = configured_process(config, &claim.workspace)?;
+    Ok(Launch {
+        executable: environment.executable,
+        working_directory: claim.workspace.clone(),
+        environment: environment.variables,
+        target: claim.target,
+        model: claim.model.clone(),
+        title: Some(claim.title.clone()),
+        append_system_prompt: RUNTIME_INSTRUCTIONS.to_owned(),
+        permission: PermissionMode::FullAccess,
+    })
+}
+
+pub(super) struct ProcessSettings {
+    pub(super) executable: PathBuf,
+    pub(super) variables: HashMap<OsString, OsString>,
+}
+
+pub(super) fn configured_process(
+    config: ClaudeInstance,
+    cwd: &std::path::Path,
+) -> Result<(Option<PathBuf>, ProcessSettings), Error> {
     let mut environment = HashMap::new();
     for entry in config.environment {
         let EnvironmentValue::Literal(value) = entry.value else {
@@ -302,23 +324,34 @@ fn process_config(settings: &SettingsFile, claim: &Claim) -> Result<Launch, Erro
         };
         environment.insert(OsString::from(entry.name), OsString::from(value));
     }
-    if !config.home_path.is_empty() {
+    let configured_home = if !config.home_path.is_empty() {
         let home = expand_home(&config.home_path)?;
         let absolute = std::path::absolute(home).map_err(|_| {
             Error::Unavailable("The Claude Code configuration directory is invalid.")
         })?;
-        environment.insert("CLAUDE_CONFIG_DIR".into(), absolute.into_os_string());
-    }
-    Ok(Launch {
-        executable: expand_home(&config.binary_path)?,
-        working_directory: claim.workspace.clone(),
-        environment,
-        target: claim.target,
-        model: claim.model.clone(),
-        title: Some(claim.title.clone()),
-        append_system_prompt: RUNTIME_INSTRUCTIONS.to_owned(),
-        permission: PermissionMode::FullAccess,
-    })
+        environment.insert(
+            "CLAUDE_CONFIG_DIR".into(),
+            absolute.clone().into_os_string(),
+        );
+        Some(absolute)
+    } else {
+        None
+    };
+    let home = configured_home.or_else(|| {
+        environment
+            .get(std::ffi::OsStr::new("CLAUDE_CONFIG_DIR"))
+            .cloned()
+            .or_else(|| std::env::var_os("CLAUDE_CONFIG_DIR"))
+            .filter(|value| !value.is_empty())
+            .map(|path| cwd.join(path))
+    });
+    Ok((
+        home,
+        ProcessSettings {
+            executable: expand_home(&config.binary_path)?,
+            variables: environment,
+        },
+    ))
 }
 
 fn expand_home(value: &str) -> Result<PathBuf, Error> {

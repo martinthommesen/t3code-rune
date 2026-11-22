@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use tokio::process::Command;
 use uuid::Uuid;
@@ -57,7 +57,7 @@ const INHERITED_SESSION_VARIABLES: &[&str] = &[
 
 impl Launch {
     pub(super) fn command(&self) -> Command {
-        let mut command = Command::new(&self.executable);
+        let mut command = command(&self.executable, &self.working_directory, &self.environment);
         command
             .args([
                 "--output-format",
@@ -104,13 +104,22 @@ impl Launch {
             "--settings",
             r#"{"showThinkingSummaries":true}"#,
         ]);
-        command.current_dir(&self.working_directory);
-        for name in INHERITED_SESSION_VARIABLES {
-            command.env_remove(name);
-        }
-        command
-            .env("CLAUDE_CODE_ENTRYPOINT", "t3-code")
-            .envs(&self.environment);
         command
     }
+}
+
+pub(super) fn command(
+    executable: &Path,
+    cwd: &Path,
+    environment: &HashMap<OsString, OsString>,
+) -> Command {
+    let mut command = Command::new(executable);
+    command.current_dir(cwd);
+    for name in INHERITED_SESSION_VARIABLES {
+        command.env_remove(name);
+    }
+    command
+        .env("CLAUDE_CODE_ENTRYPOINT", "t3-code")
+        .envs(environment);
+    command
 }

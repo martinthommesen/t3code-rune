@@ -46,7 +46,7 @@ pub(crate) use projection::{
     Project, ProjectIcon, QueuedMessage, Thread, TodoListEntry, TodoStepStatus,
 };
 use projection::{Conversation, Shell};
-pub(crate) use provider_metadata::{ProviderCatalog, ProviderMetadata, ProviderReadiness};
+pub(crate) use provider_metadata::{ProviderCatalog, ProviderMetadata, ProviderReadiness, SavedModel};
 pub(crate) use queue_mutation::QueueMutation;
 #[cfg(test)]
 pub(crate) use runtime_approval::ApprovalChoice;
