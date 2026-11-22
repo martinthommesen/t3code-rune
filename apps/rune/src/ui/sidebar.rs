@@ -326,7 +326,7 @@ fn toolbar(
                 })
                 .child(scope.map_or_else(
                     || icon(&FILTER, 16.0).color(icon_color).a11y_hidden(),
-                    |project| project_badge::view(&project.name, dark),
+                    |project| project_badge::view(project, dark),
                 )),
         );
     }
@@ -522,7 +522,7 @@ fn project_picker(
                 format!("project-option-{id}"),
                 &project.name,
                 scope.is_some_and(|current| current.id == id),
-                Some(project_badge::view(&project.name, dark)),
+                Some(project_badge::view(project, dark)),
                 colors,
             )
             .on_press_tx(move |state: &mut State, tx| {
@@ -680,7 +680,7 @@ fn thread_list(
                             .selection
                             .as_ref()
                             .is_some_and(|selection| selection.id == id),
-                        Some(project_badge::view(&project.name, dark)),
+                        Some(project_badge::view(project, dark)),
                         colors,
                     )
                     .on_press(move |state: &mut State| state.select_project(&id))
@@ -757,7 +757,7 @@ fn thread_card(
         .gap(6.0)
         .grow(1.0)
         .min_w(0.0)
-        .child(project_badge::view(&project.name, dark))
+        .child(project_badge::view(project, dark))
         .child(
             text(project.name.as_str())
                 .font(SMALL)

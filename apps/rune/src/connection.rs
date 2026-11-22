@@ -33,7 +33,7 @@ pub(crate) use browse::FolderListing;
 pub(crate) use launch::Workspace as LaunchWorkspace;
 use projection::{Conversation, Shell};
 pub(crate) use projection::{
-    ConversationEntry, Message, Project, Thread, TodoListEntry, TodoStepStatus,
+    ConversationEntry, Message, Project, ProjectIcon, Thread, TodoListEntry, TodoStepStatus,
 };
 pub(crate) use provider_metadata::{ProviderCatalog, ProviderMetadata};
 #[cfg(test)]

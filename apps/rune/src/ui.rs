@@ -1841,6 +1841,7 @@ mod tests {
                 id: "project".into(),
                 name: "Example".into(),
                 path: "/example".into(),
+                icon: None,
             }],
             threads: vec![Thread {
                 id: thread_id.into(),

@@ -1,6 +1,15 @@
 use rune::color::oklch;
-use rune::{El, Family, TextStyle, el, text};
+use rune::{Color, El, Family, Icon, TextStyle, el, icon, text};
 use unicode_normalization::UnicodeNormalization;
+
+use crate::connection::{Project, ProjectIcon};
+
+mod lucide;
+
+const COLOR_NAMES: [&str; 18] = [
+    "gray", "red", "orange", "amber", "yellow", "lime", "green", "emerald", "teal", "cyan", "sky",
+    "blue", "indigo", "violet", "purple", "fuchsia", "pink", "rose",
+];
 
 const COLORS: [([f32; 3], [f32; 3]); 18] = [
     ([0.707, 0.022, 261.325], [0.446, 0.030, 256.802]),
@@ -61,15 +70,65 @@ fn project_identity(title: &str) -> (String, usize) {
     (monogram, color)
 }
 
-pub(super) fn view(title: &str, dark: bool) -> El {
-    view_at(title, dark, 16.0)
+pub(super) fn view(project: &Project, dark: bool) -> El {
+    view_at(project, dark, 16.0)
 }
 
-pub(in crate::ui) fn view_at(title: &str, dark: bool, size: f32) -> El {
-    let (monogram, index) = project_identity(title);
+pub(in crate::ui) fn view_at(project: &Project, dark: bool, size: f32) -> El {
+    match &project.icon {
+        Some(ProjectIcon::Monogram { text, color }) => {
+            monogram(text, named_color(color, dark), size)
+        }
+        Some(ProjectIcon::Emoji { emoji }) => el().size(size, size).center().a11y_hidden().child(
+            text(emoji)
+                .font(TextStyle::new(size * 0.8, 400.0).lh(size * 0.8))
+                .color(if dark { Color::WHITE } else { Color::BLACK }),
+        ),
+        Some(ProjectIcon::Lucide { name, color }) => {
+            let shape = lookup_icon(name)
+                .or_else(|| lookup_icon("FolderCode"))
+                .expect("folder code icon");
+            icon(shape, size)
+                .color(named_color(color, dark))
+                .a11y_hidden()
+        }
+        None | Some(ProjectIcon::Unknown) => {
+            let (initials, index) = project_identity(&project.name);
+            monogram(&initials, palette_color(index, dark), size)
+        }
+    }
+}
+
+fn lookup_icon(name: &str) -> Option<&'static Icon> {
+    let mut pascal = String::with_capacity(name.len());
+    for part in name.split('-') {
+        let mut characters = part.chars();
+        if let Some(first) = characters.next() {
+            pascal.extend(first.to_uppercase());
+            pascal.push_str(characters.as_str());
+        }
+    }
+    let position = lucide::NAMES
+        .binary_search_by_key(&pascal.as_str(), |(name, _)| *name)
+        .ok()?;
+    lucide::ICONS.get(lucide::NAMES[position].1)
+}
+
+fn named_color(name: &str, dark: bool) -> Color {
+    let index = COLOR_NAMES
+        .iter()
+        .position(|color| *color == name)
+        .unwrap_or(0);
+    palette_color(index, dark)
+}
+
+fn palette_color(index: usize, dark: bool) -> Color {
     let (dark_color, light_color) = COLORS[index];
     let [lightness, chroma, hue] = if dark { dark_color } else { light_color };
-    let foreground = oklch(lightness, chroma, hue);
+    oklch(lightness, chroma, hue)
+}
+
+fn monogram(monogram: &str, foreground: Color, size: f32) -> El {
     el().size(size, size)
         .center()
         .radius(size * 0.25)
@@ -88,7 +147,7 @@ pub(in crate::ui) fn view_at(title: &str, dark: bool, size: f32) -> El {
 
 #[cfg(test)]
 mod tests {
-    use super::project_identity;
+    use super::{lookup_icon, project_identity};
 
     #[test]
     fn project_badges_normalize_names_and_use_the_same_deterministic_palette() {
@@ -100,5 +159,16 @@ mod tests {
         );
         assert_eq!(project_identity("t3code desktop").0, "T3");
         assert_eq!(project_identity(" — ").0, "PR");
+    }
+
+    #[test]
+    fn saved_lucide_names_resolve_canonical_and_deprecated_exports() {
+        assert_eq!(
+            lookup_icon("git-pull-request-draft").unwrap().name,
+            "GitPullRequestDraft"
+        );
+        assert_eq!(lookup_icon("folder-code-icon").unwrap().name, "FolderCode");
+        assert_eq!(lookup_icon("alert-circle").unwrap().name, "CircleAlert");
+        assert!(lookup_icon("not-a-project-icon").is_none());
     }
 }

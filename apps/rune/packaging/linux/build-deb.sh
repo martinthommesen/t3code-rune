@@ -37,6 +37,7 @@ sed '/<launchable /s/t3code\.desktop/com.t3tools.T3Code.desktop/' \
   > "$stage/usr/share/metainfo/com.t3tools.t3code.metainfo.xml"
 install -Dm644 "$root/LICENSE" "$stage/usr/share/doc/t3code/copyright"
 install -Dm644 "$root/apps/rune/assets/fonts/Inter-LICENSE.txt" "$stage/usr/share/doc/t3code/Inter-LICENSE.txt"
+install -Dm644 "$root/apps/rune/assets/Lucide-LICENSE.txt" "$stage/usr/share/doc/t3code/Lucide-LICENSE.txt"
 
 glibc_version=$(LC_ALL=C readelf --version-info "$binary" \
   | awk 'match($0, /Name: GLIBC_[0-9.]+/) {print substr($0, RSTART + 12, RLENGTH - 12)}' \

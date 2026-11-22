@@ -19,6 +19,26 @@ pub(crate) struct Project {
     pub(crate) name: String,
     #[serde(rename = "workspaceRoot")]
     pub(crate) path: String,
+    #[serde(rename = "projectIcon")]
+    pub(crate) icon: Option<ProjectIcon>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum ProjectIcon {
+    Monogram {
+        text: String,
+        color: String,
+    },
+    Emoji {
+        emoji: String,
+    },
+    Lucide {
+        name: String,
+        color: String,
+    },
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Deserialize, PartialEq, Eq)]
@@ -198,7 +218,10 @@ enum ShellItem {
         resolved_repository_identity_roots: Option<Vec<String>>,
     },
     #[serde(rename = "project.updated")]
-    ProjectUpdated { sequence: u64, project: ProjectRow },
+    ProjectUpdated {
+        sequence: u64,
+        project: Box<ProjectRow>,
+    },
     #[serde(rename = "project.removed")]
     ProjectRemoved { sequence: u64, project_id: String },
     #[serde(rename = "thread.updated")]
@@ -269,7 +292,7 @@ impl Shell {
                 mut project,
             } => self.apply_delta(sequence, |shell| {
                 project.retain_repository_identity(shell.project(&project.project.id));
-                upsert(&mut shell.projects, project, |row| &row.project.id)
+                upsert(&mut shell.projects, *project, |row| &row.project.id)
             }),
             ShellItem::ProjectRemoved {
                 sequence,
