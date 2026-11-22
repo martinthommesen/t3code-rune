@@ -23,6 +23,7 @@ mod settings;
 mod sidebar;
 mod sidebar_header;
 mod terminal;
+mod window_chrome;
 mod window_placement;
 mod worktree_setup;
 
@@ -230,6 +231,7 @@ struct State {
     terminal: Option<terminal::Pane>,
     terminal_tabs: terminal::TabsByThread,
     window_focused: bool,
+    window_chrome: window_chrome::ChromeState,
     window_placement: window_placement::Tracker,
 }
 
@@ -259,6 +261,7 @@ impl Default for State {
             terminal: None,
             terminal_tabs: terminal::TabsByThread::default(),
             window_focused: true,
+            window_chrome: window_chrome::ChromeState::default(),
             window_placement: window_placement::Tracker::default(),
         }
     }
@@ -746,7 +749,7 @@ impl State {
     fn poll(&mut self, clock: f64, tx: &mut Tx) -> bool {
         self.window_placement.poll(tx);
         self.update_terminal_focus(tx);
-        let mut changed = false;
+        let mut changed = self.window_chrome.poll(tx);
         while let Some(event) = self.connection.as_ref().and_then(Connection::try_recv) {
             self.apply_event(event, tx);
             changed = true;
@@ -1253,7 +1256,7 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
         } else {
             chrome_layout.content_left()
         },
-        native_trailing: chrome.trailing,
+        native_trailing: chrome.trailing.max(state.window_chrome.trailing_inset()),
         pane_width: pane_size[0],
         viewport: [
             pane_size[0]
@@ -1331,12 +1334,32 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
                 )),
         );
     }
+    if !modal_open
+        && state
+            .workspace
+            .as_ref()
+            .is_none_or(|workspace| workspace.selection.is_none())
+    {
+        let left = if state.workspace.is_none() {
+            0.0
+        } else if state.sidebar_open {
+            sidebar_header::WIDTH
+        } else {
+            chrome_layout.content_left()
+        };
+        if let Some(band) = state.window_chrome.drag_band(left) {
+            body = body.child(band);
+        }
+    }
     if let Some(dialog) = modal {
         body = body.child(dialog);
     } else if let Some(form) = &state.add_project {
         body = body.child(project::dialog(form, palette));
     } else if let Some(overlays) = worktree_setup::overlay(state, palette, width) {
         body = body.children(overlays);
+    }
+    if let Some(caption) = state.window_chrome.overlay(palette.dark) {
+        body = body.child(caption);
     }
     body
 }
@@ -1790,7 +1813,7 @@ pub(crate) fn run(
             }
             state
         });
-    window_placement::run(app, rune_args, state_dir)
+    window_placement::run(window_chrome::configure(app), rune_args, state_dir)
 }
 
 #[cfg(test)]

@@ -123,14 +123,15 @@ pub(super) fn surface_grain() -> Option<&'static Pixels> {
 }
 
 pub(super) fn view(state: &State, layout: Layout, colors: Colors) -> El {
-    let mut header = row()
-        .key("sidebar-titlebar")
-        .w_full()
-        .h(layout.height)
-        .window_drag()
-        .clip_rounded(0.0)
-        .center_y()
-        .pl(layout.content_left());
+    let mut header = state.window_chrome.drag_region(
+        row()
+            .key("sidebar-titlebar")
+            .w_full()
+            .h(layout.height)
+            .clip_rounded(0.0)
+            .center_y()
+            .pl(layout.content_left()),
+    );
     if let Some(grain) = surface_grain() {
         header = header.child(
             el().absolute(0.0, 0.0)

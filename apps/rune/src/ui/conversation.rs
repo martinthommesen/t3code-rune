@@ -190,15 +190,18 @@ pub(super) fn header(
                 .truncate(),
         );
     }
-    let mut header = row()
-        .key("conversation-topbar")
-        .w_full()
-        .h(layout.header_height)
-        .pl(layout.header_left)
-        .pr(layout.header_right())
-        .gap(8.0)
-        .center_y()
-        .window_drag()
+    let mut header = state
+        .window_chrome
+        .drag_region(
+            row()
+                .key("conversation-topbar")
+                .w_full()
+                .h(layout.header_height)
+                .pl(layout.header_left)
+                .pr(layout.header_right())
+                .gap(8.0)
+                .center_y(),
+        )
         .child(breadcrumb);
     if let Some(thread) = thread.filter(|_| workspace.terminal && !workspace.reconnecting) {
         let open = state

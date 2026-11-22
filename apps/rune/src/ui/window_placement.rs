@@ -117,20 +117,22 @@ pub(super) fn run(
     rune_args: Vec<String>,
     state_dir: Option<&Path>,
 ) -> Result<(), String> {
-    let Some(state_dir) = state_dir else {
-        return app.args(rune_args).try_run();
-    };
     if rune::tooling::Args::parse_from(rune_args.clone()).headless() {
         return app.args(rune_args).try_run();
     }
-    let store = Store::at_state_dir(state_dir);
-    let saved = match store.load() {
-        Ok(placement) => placement,
-        Err(error) => {
-            eprintln!("Could not read the main window placement. {error}");
-            return app.args(rune_args).try_run();
+    let persistence = state_dir.and_then(|state_dir| {
+        let store = Store::at_state_dir(state_dir);
+        match store.load() {
+            Ok(placement) => Some((store, placement)),
+            Err(error) => {
+                eprintln!("Could not read the main window placement. {error}");
+                None
+            }
         }
-    };
+    });
+    if !cfg!(target_os = "linux") && persistence.is_none() {
+        return app.args(rune_args).try_run();
+    }
     rune::try_run_windows_with_args(RunOptions::default(), rune_args, move |displays| {
         let x11 = displays.iter().any(|display| {
             matches!(
@@ -138,6 +140,12 @@ pub(super) fn run(
                 Some(NativeDisplayId::X11Crtc(_) | NativeDisplayId::X11Output(_))
             )
         });
+        let borderless = cfg!(target_os = "linux") && x11;
+        let Some((store, saved)) = persistence else {
+            let mut spec = WindowSpec::from_app("main", app);
+            spec.options.borderless = borderless;
+            return [spec];
+        };
         let displays: Vec<_> = displays.iter().map(Monitor::new).collect();
         let restored = saved.and_then(|placement| {
             displays
@@ -186,6 +194,7 @@ pub(super) fn run(
             .on_close(|state, _| state.window_placement.flush(true))
             .on_quit(|state, _| state.window_placement.flush(false));
         let mut spec = WindowSpec::from_app("main", app);
+        spec.options.borderless = borderless;
         if let Some((position, size)) = restored {
             spec.options.position = Some(position);
             spec.options.physical_size = Some(size);
