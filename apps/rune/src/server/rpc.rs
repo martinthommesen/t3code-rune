@@ -347,7 +347,9 @@ pub(super) async fn serve(
                         | "projectClone.start"
                         | "projectClone.cancel"
                         | "projectClone.retry"
-                ) || (tag == "projects.mutate" && payload["type"] == "project.delete") =>
+                ) || (tag == "projects.mutate" && payload["type"] == "project.delete")
+                    || (tag == "orchestration.dispatchCommand"
+                        && payload["type"] == thread_launch::RETRY_COMMAND) =>
             {
                 let clone_operation = tag.starts_with("projectClone.");
                 let git_write = matches!(tag.as_str(), "vcs.switchRef" | "vcs.createRef");
@@ -378,6 +380,9 @@ pub(super) async fn serve(
                             "orchestration.launchThread" => {
                                 launch_thread(&local, &store, id.clone(), payload).await
                             }
+                            "orchestration.dispatchCommand" => {
+                                retry_preparation(&local, &store, id.clone(), payload).await
+                            }
                             "worktreeSetup.cancel" => {
                                 cancel_worktree_setup(&store, id.clone(), payload).await
                             }
@@ -404,7 +409,10 @@ pub(super) async fn serve(
                             "message":"The authenticated token is missing required scope: source-control:write."
                         }),
                     ))
-                } else if tag == "projects.mutate" {
+                } else if matches!(
+                    tag.as_str(),
+                    "projects.mutate" | "orchestration.dispatchCommand"
+                ) {
                     Ok(failure(
                         id,
                         json!({
@@ -762,6 +770,38 @@ async fn launch_thread(
     .await
     {
         Ok(result) => success(id, result),
+        Err(error) => failure(id, error),
+    }
+}
+
+async fn retry_preparation(
+    local: &LocalOperations,
+    store: &Store,
+    id: RequestId,
+    payload: Value,
+) -> Value {
+    let input = match serde_json::from_value::<thread_launch::RetryInput>(payload) {
+        Ok(input) => input,
+        Err(error) => return defect(id, error.to_string()),
+    };
+    let context = LaunchContext {
+        database: store.path(),
+        scratch_root: &local.named_projects_root.with_file_name("scratch"),
+        codex_enabled: true,
+        settings_path: Some(local.settings.path()),
+        terminals: Some(Arc::clone(&local.terminals)),
+    };
+    let changes = local.projection_changes.clone();
+    let queue = local.turn_queue.clone();
+    match thread_launch::retry_preparation(input, context, move |thread_id, start_turn| {
+        let _ = changes.send(ProjectionChange::Thread(thread_id.to_owned()));
+        if start_turn {
+            queue.wake();
+        }
+    })
+    .await
+    {
+        Ok(sequence) => success(id, json!({"sequence": sequence})),
         Err(error) => failure(id, error),
     }
 }

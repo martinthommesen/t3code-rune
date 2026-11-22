@@ -8,7 +8,7 @@ use super::super::turn_commands::{
     ThreadEventStream, allocate_turn_item_in_run, encode_id_part, record_projected_sequence,
     timestamp, validate_model_selection,
 };
-use super::{LaunchCommit, LaunchError, PreparedLaunch, WorkspacePreparation, state};
+use super::{LaunchCommit, LaunchError, PreparedLaunch, WorkspacePreparation, retry, state};
 
 const WORKSPACE_COMMAND: &str = "thread.metadata.update";
 const RELEASE_COMMAND: &str = "prepared-run.release";
@@ -417,14 +417,28 @@ pub(super) fn record_failure(
     stream.append("turn-item.updated", &now, &metadata, &prepared.item)?;
     stream.append("turn-item.updated", &now, &metadata, &failure_item)?;
     let sequence = stream.append("run.updated", &now, &metadata, &prepared.run)?;
-    commit_command(
-        transaction,
+    let should_hold = prepared.run["workspacePreparation"]["type"] == "worktree"
+        && state::thread(&transaction, thread_id)?
+            .is_some_and(|thread| thread.worktree_path.is_none())
+        && retry::latest_executed_run(&transaction, thread_id)?.as_deref() == Some(run_id);
+    let projected_sequence = if should_hold {
+        let system = ThreadEventStream::server(&transaction, thread_id);
+        retry::change_queued_holds(&transaction, &system, thread_id, &now, true)?
+            .unwrap_or(sequence)
+    } else {
+        sequence
+    };
+    record_projected_sequence(&transaction, projected_sequence, &now)?;
+    state::record_receipt(
+        &transaction,
         &command_id,
         thread_id,
         FAILURE_COMMAND,
-        sequence,
+        u64::try_from(sequence).map_err(|_| rusqlite::Error::InvalidQuery)?,
         &now,
+        None,
     )?;
+    transaction.commit()?;
     Ok(true)
 }
 

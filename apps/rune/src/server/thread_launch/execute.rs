@@ -15,7 +15,7 @@ use super::{
 };
 use crate::server::terminal::TerminalKey;
 
-type CommitObserver = Arc<dyn Fn(&str, bool) + Send + Sync>;
+pub(super) type CommitObserver = Arc<dyn Fn(&str, bool) + Send + Sync>;
 
 pub(in super::super) async fn launch(
     input: LaunchInput,
@@ -48,17 +48,7 @@ pub(in super::super) async fn launch(
             let commit = commit_initial_actions(&plan, codex_enabled, on_commit.as_ref())?;
             let projection = read_projection(&plan, &commit.thread_id);
             let result = projection.and_then(|projection| plan.result(&commit, projection));
-            if commit.schedule_preparation
-                && let Some(reservation) = PreparationReservation::new(&plan, &commit.thread_id)
-            {
-                tokio::spawn(prepare_in_background(
-                    plan,
-                    commit,
-                    codex_enabled,
-                    on_commit,
-                    reservation,
-                ));
-            }
+            schedule_preparation(plan, commit, codex_enabled, on_commit);
             result
         })
         .await
@@ -66,6 +56,25 @@ pub(in super::super) async fn launch(
     })
     .await
     .map_err(|_| interrupted)?
+}
+
+pub(super) fn schedule_preparation(
+    plan: PreparedLaunch,
+    commit: LaunchCommit,
+    codex_enabled: bool,
+    on_commit: CommitObserver,
+) {
+    if commit.schedule_preparation
+        && let Some(reservation) = PreparationReservation::new(&plan, &commit.thread_id)
+    {
+        tokio::spawn(prepare_in_background(
+            plan,
+            commit,
+            codex_enabled,
+            on_commit,
+            reservation,
+        ));
+    }
 }
 
 async fn prepare_in_background(
