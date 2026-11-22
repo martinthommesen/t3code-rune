@@ -30,6 +30,8 @@ pub(crate) fn mime_type(path: &str) -> Option<&'static str> {
         Some("image/png")
     } else if extension.eq_ignore_ascii_case("jpeg") || extension.eq_ignore_ascii_case("jpg") {
         Some("image/jpeg")
+    } else if extension.eq_ignore_ascii_case("gif") {
+        Some("image/gif")
     } else if extension.eq_ignore_ascii_case("webp") {
         Some("image/webp")
     } else {
@@ -47,6 +49,11 @@ impl Source {
                 .await
                 .ok()?
                 .map(Self::Decoded);
+        }
+        if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+            return tokio::task::spawn_blocking(move || decode_gif(bytes))
+                .await
+                .ok()?;
         }
         if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
             return tokio::task::spawn_blocking(move || decode_webp(bytes))
@@ -72,6 +79,13 @@ fn decode_jpeg(bytes: &[u8]) -> Option<Raster> {
     decode_still(decoder)
 }
 
+fn decode_gif(bytes: Vec<u8>) -> Option<Source> {
+    let mut decoder = image::codecs::gif::GifDecoder::new(Cursor::new(&bytes)).ok()?;
+    limit_image(&mut decoder)?;
+    let frame = decoder.into_frames().next()?.ok()?.into_buffer();
+    Some(animation(bytes, frame))
+}
+
 fn decode_webp(bytes: Vec<u8>) -> Option<Source> {
     let mut decoder = image::codecs::webp::WebPDecoder::new(Cursor::new(&bytes)).ok()?;
     limit_image(&mut decoder)?;
@@ -80,11 +94,15 @@ fn decode_webp(bytes: Vec<u8>) -> Option<Source> {
     }
     decoder.set_background_color(Rgba([0, 0, 0, 0])).ok()?;
     let frame = decoder.into_frames().next()?.ok()?.into_buffer();
-    Some(Source::Animated(Animation {
+    Some(animation(bytes, frame))
+}
+
+fn animation(bytes: Vec<u8>, frame: RgbaImage) -> Source {
+    Source::Animated(Animation {
         bytes: bytes.into(),
         size: frame.dimensions(),
         clipboard: clipboard_png(&frame),
-    }))
+    })
 }
 
 fn decode_still(mut decoder: impl ImageDecoder) -> Option<Raster> {
