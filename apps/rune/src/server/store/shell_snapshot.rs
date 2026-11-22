@@ -20,6 +20,11 @@ const FAMILY_THREADS: &str = "WHERE t.deleted_at IS NULL AND t.archived_at IS NU
         FROM orchestration_v2_projection_threads member WHERE member.thread_id = ?1
     )
     ORDER BY t.updated_at ASC, t.thread_id ASC";
+const WORKTREE_THREAD_IDS: &str = "SELECT t.thread_id FROM orchestration_v2_projection_threads t
+    WHERE t.deleted_at IS NULL AND t.archived_at IS NULL
+      AND CASE WHEN json_valid(t.payload_json)
+        THEN json_extract(t.payload_json, '$.worktreePath') END = ?1
+    ORDER BY t.updated_at ASC, t.thread_id ASC";
 const ACTIVE_THREAD: &str = "WHERE t.deleted_at IS NULL AND t.archived_at IS NULL
     AND t.thread_id = ?1";
 const PROJECTS: &str = "
@@ -99,6 +104,16 @@ pub(super) fn read_family_threads(
     thread_id: &str,
 ) -> rusqlite::Result<Vec<Value>> {
     read_threads(database, FAMILY_THREADS, [thread_id])
+}
+
+pub(super) fn read_worktree_thread_ids(
+    database: &Connection,
+    path: &str,
+) -> rusqlite::Result<Vec<String>> {
+    database
+        .prepare(WORKTREE_THREAD_IDS)?
+        .query_map([path], |row| row.get(0))?
+        .collect()
 }
 
 fn read_threads(

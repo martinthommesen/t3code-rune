@@ -948,9 +948,9 @@ fn response(
             }
         }
         "orchestration.getThreadFamily" => {
-            let subject = match family_member_id(&payload) {
+            let subject = match shell_lookup_key(&payload, "threadId") {
                 Ok(subject) => subject,
-                Err(message) => return defect(id, message.into()),
+                Err(message) => return defect(id, message),
             };
             match store.thread_family(subject) {
                 Ok(family) => success(id, family),
@@ -958,6 +958,21 @@ fn response(
                     id,
                     RpcError::OrchestrationV2GetShellSnapshotError {
                         message: "Failed to load the thread family",
+                    },
+                ),
+            }
+        }
+        "orchestration.getWorktreeThreadIds" => {
+            let path = match shell_lookup_key(&payload, "worktreePath") {
+                Ok(path) => path,
+                Err(message) => return defect(id, message),
+            };
+            match store.worktree_thread_ids(path) {
+                Ok(threads) => success(id, json!({"threadIds": threads})),
+                Err(_) => failure(
+                    id,
+                    RpcError::OrchestrationV2GetShellSnapshotError {
+                        message: "Failed to load the worktree's threads",
                     },
                 ),
             }
@@ -1097,17 +1112,19 @@ fn browse(id: RequestId, allowed: bool, payload: Value) -> Value {
     }
 }
 
-fn family_member_id(payload: &Value) -> Result<&str, &'static str> {
+fn shell_lookup_key<'a>(payload: &'a Value, field: &str) -> Result<&'a str, String> {
     let fields = payload.as_object().ok_or("Expected object")?;
-    let id = fields
-        .get("threadId")
-        .ok_or("Missing key\n  at [\"threadId\"]")?;
-    let id = id.as_str().ok_or("Expected string\n  at [\"threadId\"]")?;
-    let id = super::thread_commands::trim_js(id);
-    if id.is_empty() {
-        return Err("Expected a non-blank string\n  at [\"threadId\"]");
+    let value = fields
+        .get(field)
+        .ok_or_else(|| format!("Missing key\n  at [\"{field}\"]"))?;
+    let value = value
+        .as_str()
+        .ok_or_else(|| format!("Expected string\n  at [\"{field}\"]"))?;
+    let value = super::thread_commands::trim_js(value);
+    if value.is_empty() {
+        return Err(format!("Expected a non-blank string\n  at [\"{field}\"]"));
     }
-    Ok(id)
+    Ok(value)
 }
 
 fn defect(id: RequestId, message: String) -> Value {

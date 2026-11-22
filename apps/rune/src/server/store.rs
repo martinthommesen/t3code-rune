@@ -269,6 +269,11 @@ impl Store {
         Ok(json!({"snapshotSequence": sequence, "threads": threads}))
     }
 
+    pub(super) fn worktree_thread_ids(&self, path: &str) -> rusqlite::Result<Vec<String>> {
+        let database = open_readonly(&self.path)?;
+        shell_snapshot::read_worktree_thread_ids(&database, path)
+    }
+
     pub(super) fn older_settled_threads(
         &self,
         input: &OlderSettledRequest,
