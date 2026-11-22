@@ -105,6 +105,7 @@ pub(crate) enum Event {
         threads: Vec<Thread>,
     },
     ScratchProjectsAvailable,
+    ProjectOrganizationAvailable,
     ProjectFavicon {
         target: FaviconTarget,
         image: Option<FaviconBytes>,
@@ -195,6 +196,10 @@ pub(crate) enum Event {
         command_id: String,
         result: Result<ProjectCreated, String>,
     },
+    ProjectPinSettled {
+        project_id: String,
+        result: Result<Box<Project>, String>,
+    },
     ProjectClones(Vec<ProjectClone>),
     ProjectCloneError(String),
     FolderBrowsed {
@@ -268,6 +273,10 @@ enum Command {
         name: String,
     },
     StartScratchProject(String),
+    SetProjectPinned {
+        project_id: String,
+        pinned: bool,
+    },
     CloneProject {
         project_id: String,
         remote_url: String,
@@ -363,6 +372,12 @@ pub(crate) enum ProjectCloneAction {
 impl Connection {
     pub(crate) fn start_scratch_project(&self, command_id: String) {
         let _ = self.commands.send(Command::StartScratchProject(command_id));
+    }
+
+    pub(crate) fn set_project_pinned(&self, project_id: String, pinned: bool) {
+        let _ = self
+            .commands
+            .send(Command::SetProjectPinned { project_id, pinned });
     }
 
     pub(crate) fn load_project_favicons(&self, targets: Vec<FaviconTarget>) {
@@ -653,6 +668,8 @@ struct Capabilities {
     named_projects: Option<bool>,
     #[serde(default, rename = "t3ScratchProjects")]
     scratch_projects: bool,
+    #[serde(default, rename = "projectOrganization")]
+    project_organization: bool,
     #[serde(rename = "t3CloneProjects")]
     clone_projects: Option<bool>,
     #[serde(rename = "t3PromptWrites")]
@@ -1024,6 +1041,7 @@ struct Session {
     pending_setup_cancels: HashMap<String, (String, Instant)>,
     pending_workspace_retries: HashMap<String, (WorkspaceRetry, Instant)>,
     pending_projects: HashMap<String, (String, Instant, ProjectCreation)>,
+    pending_project_pins: HashMap<String, (String, Instant)>,
     pending_folder: Option<(String, Uuid, Instant)>,
     pending_launches: HashMap<String, (LaunchStage, Instant)>,
     pending_git_refs: HashMap<String, GitRefsRequest>,
@@ -1045,6 +1063,7 @@ struct Session {
     filesystem_read: bool,
     named_projects: bool,
     scratch_projects: bool,
+    project_organization: bool,
     clone_writes: bool,
     thread_visits: bool,
     terminals_enabled: bool,
@@ -1132,6 +1151,7 @@ impl Session {
             pending_setup_cancels: HashMap::new(),
             pending_workspace_retries: HashMap::new(),
             pending_projects: HashMap::new(),
+            pending_project_pins: HashMap::new(),
             pending_folder: None,
             pending_launches: HashMap::new(),
             pending_git_refs: HashMap::new(),
@@ -1191,6 +1211,8 @@ impl Session {
                 .named_projects
                 .unwrap_or(!environment.descriptor.capabilities.read_only),
             scratch_projects: capabilities.scratch_projects && scope.is_some_and(can_operate),
+            project_organization: capabilities.project_organization
+                && scope.is_some_and(can_operate),
             clone_writes: capabilities
                 .clone_projects
                 .unwrap_or(!capabilities.read_only)
@@ -1623,6 +1645,28 @@ impl Session {
                         (command_id, Instant::now(), ProjectCreation::Scratch),
                     );
                     self.send_request(&request, "projects.ensureScratch", json!({}))
+                        .await?;
+                }
+            }
+            Command::SetProjectPinned { project_id, pinned } => {
+                if !self.project_writes
+                    || !self.project_organization
+                    || self
+                        .shell
+                        .project(&project_id)
+                        .is_none_or(|project| project.is_archived())
+                {
+                    events.send(Event::ProjectPinSettled {
+                        project_id,
+                        result: Err("The project is no longer available for pinning.".into()),
+                    });
+                } else {
+                    let request = self.allocate_id();
+                    let payload = json!({"type":"project.update", "projectId":project_id,
+                                         "commandId":Uuid::new_v4().to_string(), "pinned":pinned});
+                    self.pending_project_pins
+                        .insert(request.clone(), (project_id, Instant::now()));
+                    self.send_request(&request, "projects.mutate", payload)
                         .await?;
                 }
             }
@@ -2303,6 +2347,19 @@ impl Session {
                     events.send(Event::ProjectAdded { command_id, result });
                     return Ok(());
                 }
+                if let Some((project_id, _)) = self.pending_project_pins.remove(&request_id) {
+                    let result = exit.into_result().and_then(|value| {
+                        serde_json::from_value::<Project>(value)
+                            .ok()
+                            .filter(|project| project.id == project_id)
+                            .map(Box::new)
+                            .ok_or_else(|| {
+                                "The environment returned an invalid project pin result.".to_owned()
+                            })
+                    });
+                    events.send(Event::ProjectPinSettled { project_id, result });
+                    return Ok(());
+                }
                 if self
                     .pending_folder
                     .as_ref()
@@ -2453,6 +2510,9 @@ async fn run(
     if session.scratch_projects && session.project_writes && session.launch_writes {
         events.send(Event::ScratchProjectsAvailable);
     }
+    if session.project_organization && session.project_writes {
+        events.send(Event::ProjectOrganizationAvailable);
+    }
 
     let mut attempt = 0;
     loop {
@@ -2513,6 +2573,12 @@ async fn run(
         }
         for (_, (command_id, ..)) in session.pending_projects.drain() {
             events.send(Event::ProjectAdded { command_id, result: Err("Project creation could not be confirmed. Check the project list before retrying.".into()) });
+        }
+        for (_, (project_id, _)) in session.pending_project_pins.drain() {
+            events.send(Event::ProjectPinSettled {
+                project_id,
+                result: Err("The connection closed before confirming the project pin.".into()),
+            });
         }
         if let Some((_, browse_id, _)) = session.pending_folder.take() {
             events.send(Event::FolderBrowsed {
@@ -2599,6 +2665,12 @@ async fn run_socket(
                         return true;
                     }
                     events.send(Event::ProjectAdded { command_id: command_id.clone(), result: Err("Project creation could not be confirmed. Check the project list before retrying.".into()) });
+                    false
+                });
+                session.pending_project_pins.retain(|_, (project_id, started)| {
+                    if started.elapsed() < REQUEST_TIMEOUT { return true; }
+                    events.send(Event::ProjectPinSettled { project_id: project_id.clone(),
+                        result: Err("The environment did not confirm the project pin in time.".into()) });
                     false
                 });
                 session.pending_project_clone_actions.retain(|_, started| {

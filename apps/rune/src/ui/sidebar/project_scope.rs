@@ -1,5 +1,5 @@
 use std::cmp::Reverse;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rune::color::hex;
 use rune::{Align, Color, El, Key, KeyEvent, ScrollSpec, Shadow, Side, TextEdit, TextStyle, Tx};
@@ -30,6 +30,10 @@ static CHECK: rune::Icon = rune::Icon {
 #[derive(Default)]
 pub(super) struct ProjectScope {
     pub(super) selected: Vec<String>,
+    pub(super) organize_projects: bool,
+    order: Vec<String>,
+    pending_pins: HashSet<String>,
+    hovered_pin: Option<String>,
     query: TextEdit,
     highlighted: Option<String>,
 }
@@ -42,6 +46,16 @@ impl ProjectScope {
     fn reset_search(&mut self) {
         self.query = TextEdit::default();
         self.highlighted = None;
+        self.order.clear();
+        self.hovered_pin = None;
+    }
+
+    pub(super) fn remember_order(&mut self, shell: &Shell) {
+        for project in ordered_projects(shell, true) {
+            if !self.order.contains(&project.id) {
+                self.order.push(project.id.clone());
+            }
+        }
     }
 }
 
@@ -103,12 +117,25 @@ pub(super) fn ordered_projects(shell: &Shell, pinned_first: bool) -> Vec<&Projec
 
 fn choices<'a>(scope: &ProjectScope, shell: &'a Shell) -> Vec<Choice<'a>> {
     let query = normalized_search(scope.query.text.trim());
+    let order: HashMap<_, _> = scope
+        .order
+        .iter()
+        .enumerate()
+        .map(|(i, id)| (id.as_str(), i))
+        .collect();
+    let mut projects = ordered_projects(shell, true);
+    projects.sort_by_key(|project| {
+        order
+            .get(project.id.as_str())
+            .copied()
+            .unwrap_or(usize::MAX)
+    });
     query
         .is_empty()
         .then_some(Choice::All)
         .into_iter()
         .chain(
-            ordered_projects(shell, true)
+            projects
                 .into_iter()
                 .filter(|project| {
                     query.is_empty() || normalized_search(&project.name).contains(&query)
@@ -194,6 +221,13 @@ pub(super) fn view_trigger(
             } else {
                 state.sidebar.scope.reset_search();
                 state.sidebar.picker = Some(ProjectPicker::Filter);
+                if let Some(shell) = state
+                    .workspace
+                    .as_ref()
+                    .and_then(|workspace| workspace.shell.as_ref())
+                {
+                    state.sidebar.scope.remember_order(shell);
+                }
                 tx.focus_when_shown(SEARCH_FIELD, false);
             }
         })
@@ -298,39 +332,44 @@ pub(in crate::ui) fn overlay(state: &State, palette: Palette, height: f32) -> Op
             );
         }
         let highlighted = active_index == Some(index);
-        list = list.child(
-            row()
-                .key(key)
-                .role("option")
-                .label(name)
-                .focus_selected(selected)
-                .w_full()
-                .h(32.0)
-                .px(8.0)
-                .gap(8.0)
-                .center_y()
-                .radius(4.0)
-                .fill(if highlighted {
-                    ink.alpha(0.09)
-                } else {
-                    Color::TRANSPARENT
-                })
-                .on_hover(move |state: &mut State| {
-                    state.sidebar.scope.highlighted = Some(hover.clone())
-                })
-                .on_press_tx(move |state: &mut State, tx| {
-                    choose(state, id.as_deref(), tx.mods().shift, tx)
-                })
-                .child(glyph)
-                .child(
-                    text(name)
-                        .font(OPTION_FONT)
-                        .color(ink)
-                        .truncate()
-                        .grow(1.0)
-                        .min_w(0.0),
-                ),
-        );
+        let mut option = row()
+            .key(key)
+            .role("option")
+            .label(name)
+            .focus_selected(selected)
+            .w_full()
+            .h(32.0)
+            .px(8.0)
+            .gap(8.0)
+            .center_y()
+            .radius(4.0)
+            .fill(if highlighted {
+                ink.alpha(0.09)
+            } else {
+                Color::TRANSPARENT
+            })
+            .on_hover(move |state: &mut State| {
+                state.sidebar.scope.highlighted = Some(hover.clone())
+            })
+            .on_press_tx(move |state: &mut State, tx| {
+                choose(state, id.as_deref(), tx.mods().shift, tx)
+            })
+            .child(glyph)
+            .child(
+                text(name)
+                    .font(OPTION_FONT)
+                    .color(ink)
+                    .truncate()
+                    .grow(1.0)
+                    .min_w(0.0),
+            );
+        if let Choice::Project(project) = choice
+            && scope.organize_projects
+            && (highlighted || project.pinned_at.is_some())
+        {
+            option = option.child(pin_button(scope, project, muted));
+        }
+        list = list.child(option);
     }
     let outside = el()
         .key("project-scope-dismiss")
@@ -378,11 +417,13 @@ fn key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
         close(state, tx, true);
         return true;
     }
-    if !matches!(event.key, Key::Up | Key::Down | Key::Enter)
-        || event.mods.ctrl
-        || event.mods.alt
-        || event.mods.cmd
-        || event.mods.logo
+    let pin_shortcut = event.mods.shift && event.is_command('p') && !event.mods.alt;
+    if !pin_shortcut
+        && (!matches!(event.key, Key::Up | Key::Down | Key::Enter)
+            || event.mods.ctrl
+            || event.mods.alt
+            || event.mods.cmd
+            || event.mods.logo)
     {
         return false;
     }
@@ -398,6 +439,13 @@ fn key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
     let Some(index) = highlighted(scope, &items) else {
         return true;
     };
+    if pin_shortcut {
+        if let Choice::Project(project) = items[index] {
+            let id = project.id.clone();
+            toggle_pin(state, &id, tx);
+        }
+        return true;
+    }
     match event.key {
         Key::Enter => {
             let project = match items[index] {
@@ -420,6 +468,84 @@ fn key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
         _ => unreachable!("key type checked above"),
     }
     true
+}
+
+fn pin_button(scope: &ProjectScope, project: &Project, ink: Color) -> El {
+    let id = project.id.clone();
+    let hover = id.clone();
+    let pinned = project.pinned_at.is_some();
+    let label = if pinned { "Unpin" } else { "Pin" };
+    let symbol = if pinned && scope.hovered_pin.as_ref() == Some(&id) {
+        "PinOff"
+    } else {
+        "Pin"
+    };
+    let symbol = project_badge::lookup_icon(symbol).expect("built-in project pin icon");
+    el().key(format!("pin-project-{id}"))
+        .label(format!("{label} {}", project.name))
+        .role("button")
+        .help(format!("{label} {}", project.name))
+        .size(24.0, 24.0)
+        .radius(5.0)
+        .center()
+        .hover(ink.alpha(0.12))
+        .disabled(scope.pending_pins.contains(&id))
+        .on_hover_change(move |state: &mut State, active, _| {
+            state.sidebar.scope.hovered_pin = active.then(|| hover.clone());
+        })
+        .on_press_tx(move |state: &mut State, tx| toggle_pin(state, &id, tx))
+        .child(icon(symbol, 14.0).color(ink).a11y_hidden())
+}
+
+fn toggle_pin(state: &mut State, id: &str, tx: &mut Tx) {
+    let Some(project) = state
+        .workspace
+        .as_ref()
+        .filter(|workspace| workspace.project_writes && !workspace.reconnecting)
+        .and_then(|workspace| workspace.shell.as_ref())
+        .and_then(|shell| {
+            shell
+                .projects
+                .iter()
+                .find(|project| project.id == id && project.archived_at.is_none())
+        })
+    else {
+        return;
+    };
+    if let Some(connection) = &state.connection
+        && state.sidebar.scope.organize_projects
+        && state.sidebar.scope.pending_pins.insert(id.to_owned())
+    {
+        connection.set_project_pinned(id.to_owned(), project.pinned_at.is_none());
+        tx.focus(SEARCH_FIELD, false);
+    }
+}
+
+pub(in crate::ui) fn settle_project_pin(
+    state: &mut State,
+    project_id: &str,
+    result: Result<Box<Project>, String>,
+) {
+    state.sidebar.scope.pending_pins.remove(project_id);
+    match result {
+        Ok(updated) => {
+            if let Some(project) = state
+                .workspace
+                .as_mut()
+                .and_then(|workspace| workspace.shell.as_mut())
+                .and_then(|shell| {
+                    shell
+                        .projects
+                        .iter_mut()
+                        .find(|project| project.id == project_id)
+                })
+            {
+                project.pinned_at = updated.pinned_at;
+                project.updated_at = updated.updated_at;
+            }
+        }
+        Err(message) => state.project_notice = Some(message),
+    }
 }
 
 fn choose(state: &mut State, project: Option<&str>, toggle: bool, tx: &mut Tx) {

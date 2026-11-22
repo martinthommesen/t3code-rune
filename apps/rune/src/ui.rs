@@ -979,6 +979,7 @@ impl State {
                     workspace.scratch_projects = true;
                 }
             }
+            Event::ProjectOrganizationAvailable => self.sidebar.enable_project_organization(),
             Event::ProjectFavicon { target, image } => {
                 if let (Some(workspace), Some(cache)) = (&mut self.workspace, &self.image_cache) {
                     workspace.favicons.loaded(target, image, cache);
@@ -988,6 +989,9 @@ impl State {
                 if let Some(workspace) = &mut self.workspace {
                     workspace.providers = Some(providers);
                 }
+            }
+            Event::ProjectPinSettled { project_id, result } => {
+                sidebar::settle_project_pin(self, &project_id, result);
             }
             Event::FolderBrowsed { browse_id, result } => self.folder_browsed(browse_id, result),
             Event::Thread { thread_id, entries } => {
@@ -1418,7 +1422,7 @@ impl State {
         let Some(workspace) = &mut self.workspace else {
             return;
         };
-        self.sidebar.update_project_scope(&shell.projects);
+        self.sidebar.update_project_scope(&shell);
         if let Some(project) = &mut workspace.selection {
             let project_present = shell.projects.iter().any(|entry| entry.id == project.id);
             if let ProjectView::Conversation(conversation) = &project.view

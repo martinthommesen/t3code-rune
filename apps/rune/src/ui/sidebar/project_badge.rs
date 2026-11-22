@@ -112,7 +112,7 @@ pub(in crate::ui) fn view_at(
     }
 }
 
-fn lookup_icon(name: &str) -> Option<&'static Icon> {
+pub(super) fn lookup_icon(name: &str) -> Option<&'static Icon> {
     let mut pascal = String::with_capacity(name.len());
     for part in name.split('-') {
         let mut characters = part.chars();
