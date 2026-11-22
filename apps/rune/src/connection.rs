@@ -5,6 +5,7 @@ mod project_favicon;
 mod projection;
 mod provider_metadata;
 mod queue_mutation;
+mod resume;
 mod runtime_approval;
 mod runtime_question;
 mod runtime_response;
@@ -123,6 +124,12 @@ pub(crate) enum Event {
     QueuedMessages {
         thread_id: String,
         messages: Vec<QueuedMessage>,
+        resumable_run: Option<String>,
+    },
+    ResumeSettled {
+        thread_id: String,
+        operation: Uuid,
+        result: Result<(), String>,
     },
     QueueMutationSettled {
         thread_id: String,
@@ -241,6 +248,11 @@ enum Command {
     MutateQueue {
         thread_id: String,
         mutation: QueueMutation,
+        operation: Uuid,
+    },
+    ResumeThread {
+        thread_id: String,
+        source_run: String,
         operation: Uuid,
     },
     StopThread(String),
@@ -996,6 +1008,7 @@ struct ThreadSubscription {
     thread_id: String,
     conversation: Conversation,
     reported_queue: Vec<QueuedMessage>,
+    reported_resumable_run: Option<String>,
     reported_approvals: Vec<PendingApproval>,
     reported_questions: Option<Vec<PendingQuestion>>,
     reported_stop: Option<bool>,
@@ -1067,6 +1080,7 @@ struct Session {
     draft_setup: Option<(String, String)>,
     pending_prompts: HashMap<String, String>,
     pending_queue_changes: HashMap<String, (String, QueueMutation, Uuid)>,
+    pending_resumes: HashMap<String, resume::PendingResume>,
     pending_runtime_responses: HashMap<String, (RuntimeResponse, Instant)>,
     pending_stops: HashMap<String, (String, Instant)>,
     pending_title_edits: HashMap<String, (String, Instant)>,
@@ -1177,6 +1191,7 @@ impl Session {
             draft_setup: None,
             pending_prompts: HashMap::new(),
             pending_queue_changes: HashMap::new(),
+            pending_resumes: HashMap::new(),
             pending_runtime_responses: HashMap::new(),
             pending_stops: HashMap::new(),
             pending_title_edits: HashMap::new(),
@@ -1390,6 +1405,7 @@ impl Session {
             thread_id: thread_id.clone(),
             conversation: Conversation::default(),
             reported_queue: Vec::new(),
+            reported_resumable_run: None,
             reported_approvals: Vec::new(),
             reported_questions: None,
             reported_stop: None,
@@ -1892,6 +1908,14 @@ impl Session {
                         .await?;
                 }
             }
+            Command::ResumeThread {
+                thread_id,
+                source_run,
+                operation,
+            } => {
+                self.submit_resume(thread_id, source_run, operation, events)
+                    .await?;
+            }
         }
         Ok(())
     }
@@ -2139,11 +2163,17 @@ impl Session {
                                 thread_id: thread.thread_id.clone(),
                                 entries: thread.conversation.entries(),
                             });
-                            if thread.reported_queue != thread.conversation.queued() {
+                            if thread.reported_queue != thread.conversation.queued()
+                                || thread.reported_resumable_run.as_deref()
+                                    != thread.conversation.resumable_run()
+                            {
                                 thread.reported_queue = thread.conversation.queued().to_vec();
+                                thread.reported_resumable_run =
+                                    thread.conversation.resumable_run().map(str::to_owned);
                                 events.send(Event::QueuedMessages {
                                     thread_id: thread.thread_id.clone(),
                                     messages: thread.reported_queue.clone(),
+                                    resumable_run: thread.reported_resumable_run.clone(),
                                 });
                             }
                             let approvals = thread.conversation.approvals.visible();
@@ -2431,6 +2461,9 @@ impl Session {
                     });
                     return Ok(());
                 }
+                if let Some(resume) = self.pending_resumes.remove(&request_id) {
+                    return self.finish_resume(resume, exit.into_result(), events).await;
+                }
                 let error = exit.into_result().err();
                 if request_id == self.shell_request_id {
                     return Err(SessionStop::Protocol(
@@ -2581,6 +2614,11 @@ async fn run(
         events.send(Event::Reconnecting);
         session.unconfirm_runtime_responses(events);
         session.finish_interrupted_ref_requests(events);
+        for (_, resume) in session.pending_resumes.drain() {
+            events.send(resume.finish(Err(
+                "The connection closed before resuming the thread was confirmed.".into(),
+            )));
+        }
         for (_, (thread_id, mutation, operation)) in session.pending_queue_changes.drain() {
             events.send(Event::QueueMutationSettled {
                 thread_id,

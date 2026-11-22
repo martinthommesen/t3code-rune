@@ -683,6 +683,7 @@ pub(crate) struct Conversation {
     sequence: u64,
     transcript: Transcript,
     queued: Vec<QueuedMessage>,
+    resumable_run: Option<String>,
     pub(super) approvals: ApprovalProjection,
     pub(super) questions: QuestionProjection,
 }
@@ -693,14 +694,20 @@ impl Conversation {
             && value["snapshotSequence"]
                 .as_u64()
                 .is_some_and(|sequence| sequence >= self.sequence))
-        .then(|| queue::snapshot(&value["projection"]));
+        .then(|| {
+            let projection = &value["projection"];
+            (
+                queue::snapshot(projection),
+                queue::resumable_run(projection),
+            )
+        });
         let changed = match serde_json::from_value(value)? {
             ThreadItem::Snapshot {
                 snapshot_sequence,
                 mut projection,
             } if snapshot_sequence >= self.sequence => {
                 self.sequence = snapshot_sequence;
-                self.queued = queued.unwrap_or_default();
+                (self.queued, self.resumable_run) = queued.unwrap_or_default();
                 (self.approvals, self.questions) = projection.take_runtime_requests();
                 let runs = std::mem::take(&mut projection.runs);
                 self.transcript.replace(projection.visible_entries(), runs);
@@ -764,6 +771,10 @@ impl Conversation {
 
     pub(crate) fn queued(&self) -> &[QueuedMessage] {
         &self.queued
+    }
+
+    pub(super) fn resumable_run(&self) -> Option<&str> {
+        self.resumable_run.as_deref()
     }
 
     pub(super) fn can_retry_workspace_preparation(&self, thread_id: &str, run_id: &str) -> bool {

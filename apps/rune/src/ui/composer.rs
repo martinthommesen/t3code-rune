@@ -7,6 +7,8 @@ use super::project::clone_banner;
 use super::worktree_setup;
 use super::{Draft, Palette, Project, SMALL, State, Workspace, button, error_text};
 
+mod resume;
+
 const FONT: TextStyle = TextStyle::new(14.0, 400.0).lh(22.75);
 const PROVIDER_UNAVAILABLE: &str = "Enable a provider in Settings to send a message";
 
@@ -165,6 +167,22 @@ fn surface(
             .map(|pending| (id.to_string(), pending)),
         Target::Draft(_) => None,
     };
+    let resume = match &target {
+        Target::Thread { id, .. } if !has_draft && !editing_queue && stop.is_none() => {
+            resume::button(
+                workspace,
+                id,
+                draft,
+                palette,
+                unavailable || clone.is_some(),
+            )
+        }
+        _ => None,
+    };
+    let resuming = match &target {
+        Target::Thread { id, .. } => resume::pending(workspace, id),
+        Target::Draft(_) => false,
+    };
     let starting_thread = matches!(&target, Target::Draft(_));
     let workspace_ready = !starting_thread
         || (!draft.refs.switching
@@ -173,6 +191,7 @@ fn surface(
     let can_send = has_draft
         && !workspace.reconnecting
         && !draft.pending
+        && !resuming
         && (editing_queue || (!unavailable && clone.is_none()))
         && workspace_ready;
     let gutter = if starting_thread && draft.worktree_launch.is_none() {
@@ -218,7 +237,7 @@ fn surface(
                     .on_edit(edit_access(move |state: &mut State| {
                         &mut state.drafts.entry(id.clone()).or_default().edit
                     }));
-            submit = State::send_prompt;
+            submit = State::submit_thread_prompt;
         }
     }
     let editor = editor.on_submit(submit);
@@ -300,7 +319,9 @@ fn surface(
                 })
                 .a11y_hidden(),
         );
-    if has_draft || editing_queue || stop.is_none() {
+    if let Some(resume) = resume {
+        footer = footer.child(resume);
+    } else if has_draft || editing_queue || stop.is_none() {
         footer = footer.child(send);
     }
     if let Some((thread_id, pending)) = stop.filter(|(_, pending)| !has_draft || *pending) {

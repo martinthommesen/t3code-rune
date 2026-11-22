@@ -54,6 +54,9 @@ struct Conversation {
     transcript: Transcript,
     expanded_messages: HashSet<String>,
     queued: Vec<QueuedMessage>,
+    resumable_run: Option<String>,
+    resume_pending: Option<uuid::Uuid>,
+    resume_focused: bool,
     show_all_queued: bool,
     queue_change_pending: Option<uuid::Uuid>,
     queued_edit: Option<QueuedEdit>,
@@ -491,6 +494,9 @@ impl State {
                     transcript: Transcript::Loading,
                     expanded_messages: HashSet::new(),
                     queued: Vec::new(),
+                    resumable_run: None,
+                    resume_pending: None,
+                    resume_focused: false,
                     show_all_queued: false,
                     queue_change_pending: None,
                     queued_edit: None,
@@ -891,6 +897,7 @@ impl State {
         self.update_terminal_focus(tx);
         let mut changed = self.window_chrome.poll(tx);
         changed |= self.thread_details.observe_focus(tx);
+        changed |= self.observe_resume_focus(tx);
         while let Some(event) = self.connection.as_ref().and_then(Connection::try_recv) {
             self.apply_event(event, tx);
             changed = true;
@@ -1025,9 +1032,11 @@ impl State {
             Event::QueuedMessages {
                 thread_id,
                 messages,
+                resumable_run,
             } => {
                 if let Some(conversation) = self.conversation_mut(&thread_id) {
                     conversation.queued = messages;
+                    conversation.resumable_run = resumable_run;
                     if conversation.queue_change_pending.is_none()
                         && let Some(edit) = &conversation.queued_edit
                         && !conversation
@@ -1036,6 +1045,26 @@ impl State {
                             .any(|queued| queued.run_id == edit.run_id)
                     {
                         self.end_queued_edit(&thread_id);
+                    }
+                }
+            }
+            Event::ResumeSettled {
+                thread_id,
+                operation,
+                result,
+            } => {
+                if let Some(conversation) = self
+                    .conversation_mut(&thread_id)
+                    .filter(|conversation| conversation.resume_pending == Some(operation))
+                {
+                    conversation.resume_pending = None;
+                    if result.is_ok() {
+                        conversation.resumable_run = None;
+                    }
+                    if let Err(message) = result
+                        && let Some(draft) = self.drafts.get_mut(&thread_id)
+                    {
+                        draft.failure = Some(message);
                     }
                 }
             }

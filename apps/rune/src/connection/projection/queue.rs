@@ -102,3 +102,36 @@ fn attached_stopped_worktree(projection: &Value, run: &Value) -> bool {
             })
         })
 }
+
+pub(super) fn resumable_run(projection: &Value) -> Option<String> {
+    let runs = projection["runs"].as_array()?;
+    let first = runs.iter().find(|run| run["ordinal"] == 1)?;
+    let thread = &projection["thread"];
+    let run_id = first["id"].as_str()?;
+    let ordinary_source = projection["messages"].as_array()?.iter().any(|message| {
+        message["id"] == first["userMessageId"]
+            && message["role"] == "user"
+            && message["text"]
+                .as_str()
+                .is_some_and(|text| !text.is_empty())
+            && message["attachments"].as_array().is_none_or(Vec::is_empty)
+            && message["notification"].is_null()
+    });
+    (first["workspacePreparation"]["type"] == "worktree"
+        && attached_stopped_worktree(projection, first)
+        && ordinary_source
+        && thread["forkedFrom"].is_null()
+        && thread["lineage"]["parentThreadId"].is_null()
+        && thread["lineage"]["rootThreadId"] == thread["id"]
+        && thread["modelSelection"]["instanceId"] == "codex"
+        && thread["modelSelection"].as_object()?.len() == 2
+        && thread["interactionMode"] == "default"
+        && runs.iter().all(|run| {
+            run["id"] == run_id || matches!(run["status"].as_str(), Some("queued" | "cancelled"))
+        })
+        && !projection["runtimeRequests"]
+            .as_array()?
+            .iter()
+            .any(|request| request["status"] == "pending"))
+    .then(|| run_id.to_owned())
+}
