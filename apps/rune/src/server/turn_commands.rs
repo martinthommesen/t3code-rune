@@ -315,7 +315,6 @@ impl TurnCommands {
             .iter()
             .any(|value| value.trim().is_empty())
             || !attachments.is_empty()
-            || title_seed.is_some()
         {
             return Err(TurnCommandError::Unsupported(
                 "This command starts a Codex turn with a nonempty text message and no attachments.",
@@ -366,23 +365,30 @@ impl TurnCommands {
                 ));
             }
         };
-        if let Some(requested) = &model_selection {
-            let native_thread = provider_thread.as_ref();
-            let can_resume = match provider {
-                NativeProvider::Codex => model_selection::has_native_codex_thread(native_thread),
-                NativeProvider::Claude => native_thread
-                    .filter(|thread| thread["driver"] == CLAUDE_INSTANCE)
-                    .and_then(|thread| thread["nativeThreadRef"]["nativeId"].as_str())
-                    .is_some_and(|id| Uuid::parse_str(id).is_ok()),
-            };
-            if requested != &thread.model_selection || !can_resume {
-                return Err(TurnCommandError::Unsupported(
-                    "The prompt's model selection must match the saved model on a resumable thread.",
-                ));
-            }
+        let can_resume = model_selection::has_native_thread(provider, provider_thread.as_ref());
+        if let Some(requested) = &model_selection
+            && (requested != &thread.model_selection || !can_resume)
+        {
+            return Err(TurnCommandError::Unsupported(
+                "The prompt's model selection must match the saved model on a resumable thread.",
+            ));
         }
-        let model_switch = if model_selection::has_native_codex_thread(provider_thread.as_ref()) {
-            model_selection::model_change(&transaction, &thread_id, &thread.model_selection)?
+        if title_seed.is_some()
+            && (provider != NativeProvider::Claude
+                || !can_resume
+                || !has_ordinary_user_message(&transaction, &thread_id)?)
+        {
+            return Err(TurnCommandError::Unsupported(
+                "This command cannot generate a new title for this thread.",
+            ));
+        }
+        let model_switch = if can_resume {
+            model_selection::model_change(
+                &transaction,
+                &thread_id,
+                provider,
+                &thread.model_selection,
+            )?
         } else {
             None
         };
@@ -642,21 +648,38 @@ fn idle_workspace(
     }))
 }
 
+fn has_ordinary_user_message(database: &Connection, thread_id: &str) -> rusqlite::Result<bool> {
+    let mut statement = database.prepare(
+        "SELECT json_extract(payload_json, '$.text'),
+                COALESCE(json_array_length(payload_json, '$.attachments'), 0)
+         FROM orchestration_v2_projection_messages WHERE thread_id = ?1 AND role = 'user'",
+    )?;
+    let mut rows = statement.query([thread_id])?;
+    while let Some(row) = rows.next()? {
+        let text: Option<String> = row.get(0)?;
+        if row.get::<_, i64>(1)? > 0
+            || text.as_deref().is_some_and(|body| {
+                let body = super::thread_commands::trim_js(body);
+                !body.is_empty()
+                    && !body.eq_ignore_ascii_case("/compact")
+                    && !body.eq_ignore_ascii_case("/logout")
+            })
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn validate_claude_turn(
     thread: &ThreadProjection,
     text: &str,
     config: &super::settings::ClaudeInstance,
 ) -> Result<(), TurnCommandError> {
-    let model = thread.model_selection["model"].as_str().unwrap_or_default();
-    let supported = thread.model_selection["instanceId"] == CLAUDE_INSTANCE
-        && thread
-            .model_selection
-            .as_object()
-            .is_some_and(|selection| selection.len() == 2)
-        && model.starts_with("claude-")
-        && thread.runtime_mode == RuntimeMode::FullAccess
+    let supported = thread.runtime_mode == RuntimeMode::FullAccess
         && thread.interaction_mode == InteractionMode::Default
-        && supports_plain_claude_config(config, model);
+        && model_selection::plain_claude_model(&thread.model_selection)
+            .is_some_and(|model| supports_plain_claude_config(config, model));
     if !supported || claude_slash_command(text) {
         return Err(TurnCommandError::Unsupported(
             "This Claude Code turn requires a plain text prompt, a default model configuration, and Full access mode.",

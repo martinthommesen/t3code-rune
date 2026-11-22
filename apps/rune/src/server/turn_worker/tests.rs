@@ -2587,12 +2587,10 @@ set -eu
                 .can_change_saved_codex_model(THREAD, &settings)
                 .unwrap()
         );
-        let (sequence, committed) = commands
-            .set_saved_codex_model(input.clone(), &settings)
-            .unwrap();
+        let (sequence, committed) = commands.set_saved_model(input.clone(), &settings).unwrap();
         assert!(committed);
         assert_eq!(
-            commands.set_saved_codex_model(input, &settings).unwrap(),
+            commands.set_saved_model(input, &settings).unwrap(),
             (sequence, false)
         );
         assert_eq!(connection.query_row(

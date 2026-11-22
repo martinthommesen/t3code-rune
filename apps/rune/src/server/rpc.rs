@@ -1697,7 +1697,7 @@ fn dispatch_thread(
             .and_then(|settings| {
                 local
                     .turns
-                    .set_saved_codex_model(payload, &settings)
+                    .set_saved_model(payload, &settings)
                     .map_err(|error| error.to_string())
             });
         return match result {
