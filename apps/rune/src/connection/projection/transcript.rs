@@ -3,26 +3,29 @@ use std::collections::{HashMap, HashSet};
 use serde::Deserialize;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
-use super::Message;
 use super::command::{CommandEntry, CommandGroup, CommandOutputTarget, CommandStatus};
+use super::{Message, WorkspaceFailure};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ConversationEntry {
     Message(Message),
     TodoList(TodoListEntry),
     Command(Box<CommandEntry>),
+    WorkspaceFailure(Box<WorkspaceFailure>),
 }
 
 impl ConversationEntry {
     pub(crate) fn message(&self) -> Option<&Message> {
         match self {
             Self::Message(message) => Some(message),
-            Self::TodoList(_) | Self::Command(_) => None,
+            Self::TodoList(_) | Self::Command(_) | Self::WorkspaceFailure(_) => None,
         }
     }
 
     pub(crate) fn continues_work_before(&self, next: &Self) -> bool {
-        self.message().is_none() && next.message().is_none() && self.run_id() == next.run_id()
+        matches!(self, Self::TodoList(_) | Self::Command(_))
+            && matches!(next, Self::TodoList(_) | Self::Command(_))
+            && self.run_id() == next.run_id()
     }
 
     fn key(&self) -> EntryKey {
@@ -30,6 +33,7 @@ impl ConversationEntry {
             Self::Message(message) => EntryKey::Message(message.id.clone()),
             Self::TodoList(list) => EntryKey::TodoList(list.id.clone()),
             Self::Command(command) => EntryKey::Command(command.target()),
+            Self::WorkspaceFailure(failure) => EntryKey::WorkspaceFailure(failure.id.clone()),
         }
     }
 
@@ -37,6 +41,7 @@ impl ConversationEntry {
         match self {
             Self::TodoList(list) => list.run_id.as_deref(),
             Self::Command(command) => command.run_id.as_deref(),
+            Self::WorkspaceFailure(failure) => failure.run_id.as_deref(),
             Self::Message(_) => None,
         }
     }
@@ -45,7 +50,7 @@ impl ConversationEntry {
         match self {
             Self::TodoList(list) => Some(&mut list.completed_work),
             Self::Command(command) => Some(&mut command.completed_work),
-            Self::Message(_) => None,
+            Self::Message(_) | Self::WorkspaceFailure(_) => None,
         }
     }
 }
@@ -73,6 +78,7 @@ pub(super) struct TimelineRun {
     status: String,
     started_at: Option<String>,
     completed_at: Option<String>,
+    workspace_preparation: Option<serde_json::Value>,
 }
 
 impl TimelineRun {
@@ -104,6 +110,7 @@ enum EntryKey {
     Message(String),
     TodoList(String),
     Command(CommandOutputTarget),
+    WorkspaceFailure(String),
 }
 
 #[derive(Default)]
@@ -112,6 +119,7 @@ pub(super) struct Transcript {
     index: HashMap<EntryKey, usize>,
     completed_runs: HashMap<String, Option<i128>>,
     active_runs: HashSet<String>,
+    failed_preparations: HashSet<String>,
 }
 
 impl Transcript {
@@ -120,6 +128,7 @@ impl Transcript {
         self.index.clear();
         self.completed_runs.clear();
         self.active_runs.clear();
+        self.failed_preparations.clear();
         for run in runs {
             self.update_run(run);
         }
@@ -129,6 +138,11 @@ impl Transcript {
     }
 
     pub(super) fn update_run(&mut self, run: TimelineRun) -> bool {
+        let retry_changed = if run.status == "failed" && run.workspace_preparation.is_some() {
+            self.failed_preparations.insert(run.id.clone())
+        } else {
+            self.failed_preparations.remove(&run.id)
+        };
         let active_changed = if run.status == "running" {
             self.active_runs.insert(run.id.clone())
         } else {
@@ -140,7 +154,7 @@ impl Transcript {
         } else {
             self.completed_runs.remove(&run.id).is_some()
         };
-        (active_changed || completed_changed)
+        (active_changed || completed_changed || retry_changed)
             && self
                 .entries
                 .iter()
@@ -164,8 +178,15 @@ impl Transcript {
 
     pub(super) fn entries(&self) -> Vec<ConversationEntry> {
         let mut entries = self.entries.clone();
+        entries.retain(|entry| !matches!(entry, ConversationEntry::WorkspaceFailure(failure) if !failure.is_failed()));
         let mut folded = HashSet::new();
         for entry in &mut entries {
+            if let ConversationEntry::WorkspaceFailure(failure) = entry {
+                failure.retryable = failure
+                    .run_id
+                    .as_ref()
+                    .is_some_and(|id| self.failed_preparations.contains(id));
+            }
             if let Some(run_id) = entry.run_id()
                 && let Some(&elapsed_ms) = self.completed_runs.get(run_id)
             {
@@ -180,6 +201,15 @@ impl Transcript {
         }
         group_commands(&mut entries, &self.active_runs);
         entries
+    }
+
+    pub(super) fn can_retry_workspace_preparation(&self, thread_id: &str, run_id: &str) -> bool {
+        self.failed_preparations.contains(run_id)
+            && self.entries.iter().any(|entry| {
+                matches!(entry, ConversationEntry::WorkspaceFailure(failure)
+                if failure.is_failed() && failure.run_id.as_deref() == Some(run_id)
+                    && failure.thread_id.as_deref().is_none_or(|id| id == thread_id))
+            })
     }
 }
 

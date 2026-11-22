@@ -273,6 +273,13 @@ pub(super) fn transcript(
             colors,
         )),
         ConversationEntry::Message(message) => Some(response(message, colors)),
+        ConversationEntry::WorkspaceFailure(failure) => Some(worktree_setup::failure_row(
+            conversation,
+            failure,
+            workspace,
+            layout.viewport[0],
+            colors.fallbacks,
+        )),
         ConversationEntry::TodoList(list) => todo_list::view(
             conversation,
             list,

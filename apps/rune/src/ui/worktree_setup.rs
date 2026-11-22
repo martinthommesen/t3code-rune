@@ -11,9 +11,11 @@ use super::{Conversation, Message, Palette, ProjectView, State, Workspace};
 
 mod background;
 mod draft;
+mod retry;
 
 pub(super) use background::{Disclosure, overlay};
 pub(super) use draft::{DraftLaunch, draft_transcript};
+pub(super) use retry::{PendingRetries, failure_row};
 
 const BODY: TextStyle = TextStyle::new(14.0, 400.0).lh(22.75);
 const SMALL: TextStyle = TextStyle::new(12.0, 400.0).lh(16.0);

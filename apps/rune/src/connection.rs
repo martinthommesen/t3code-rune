@@ -11,6 +11,7 @@ mod runtime_response;
 mod terminal;
 #[cfg(test)]
 mod tests;
+mod workspace_retry;
 pub(crate) mod worktree_setup;
 
 use std::cell::Cell;
@@ -36,6 +37,7 @@ pub(crate) use browse::FolderListing;
 pub(crate) use command_output::{CommandInspection, CommandOutput};
 pub(crate) use launch::Workspace as LaunchWorkspace;
 pub(crate) use project_favicon::{FaviconBytes, FaviconTarget};
+pub(crate) use projection::WorkspaceFailure;
 pub(crate) use projection::{
     CommandEntry, CommandOutputTarget, CommandStatus, CompletedWork, ConversationEntry, Message,
     Project, ProjectIcon, QueuedMessage, Thread, TodoListEntry, TodoStepStatus,
@@ -54,6 +56,7 @@ pub(crate) use runtime_response::RuntimeResponseOutcome;
 pub(crate) use terminal::{
     TerminalAttach, TerminalSnapshot, TerminalStatus, TerminalTarget, TerminalUpdate,
 };
+pub(crate) use workspace_retry::WorkspaceRetry;
 pub(crate) use worktree_setup::WorktreeSetup;
 
 const PROTOCOL_VERSION: u32 = 2;
@@ -183,6 +186,10 @@ pub(crate) enum Event {
         thread_id: String,
         result: Result<bool, String>,
     },
+    WorkspaceRetrySettled {
+        retry: WorkspaceRetry,
+        outcome: RuntimeResponseOutcome,
+    },
     ProjectAdded {
         command_id: String,
         result: Result<ProjectCreated, String>,
@@ -236,6 +243,7 @@ enum Command {
     },
     CancelWorktreeSetup(String),
     ObserveDraftWorktree(Option<String>),
+    RetryWorkspacePreparation(WorkspaceRetry),
     RespondToRuntimeRequest(RuntimeResponse),
     LaunchThread(launch::Draft),
     ListGitRefs {
@@ -455,6 +463,12 @@ impl Connection {
 
     pub(crate) fn cancel_worktree_setup(&self, thread_id: String) {
         let _ = self.commands.send(Command::CancelWorktreeSetup(thread_id));
+    }
+
+    pub(crate) fn retry_workspace_preparation(&self, retry: WorkspaceRetry) {
+        let _ = self
+            .commands
+            .send(Command::RetryWorkspacePreparation(retry));
     }
 
     pub(crate) fn respond_to_approval(&self, response: ApprovalResponse) {
@@ -999,6 +1013,7 @@ struct Session {
     pending_stops: HashMap<String, (String, Instant)>,
     pending_title_edits: HashMap<String, (String, Instant)>,
     pending_setup_cancels: HashMap<String, (String, Instant)>,
+    pending_workspace_retries: HashMap<String, (WorkspaceRetry, Instant)>,
     pending_projects: HashMap<String, (String, Instant, ProjectCreation)>,
     pending_folder: Option<(String, Uuid, Instant)>,
     pending_launches: HashMap<String, (LaunchStage, Instant)>,
@@ -1105,6 +1120,7 @@ impl Session {
             pending_stops: HashMap::new(),
             pending_title_edits: HashMap::new(),
             pending_setup_cancels: HashMap::new(),
+            pending_workspace_retries: HashMap::new(),
             pending_projects: HashMap::new(),
             pending_folder: None,
             pending_launches: HashMap::new(),
@@ -1449,6 +1465,9 @@ impl Session {
             Command::CloseThread => self.close_thread().await?,
             Command::ObserveDraftWorktree(thread_id) => {
                 self.observe_draft_worktree(thread_id).await?;
+            }
+            Command::RetryWorkspacePreparation(retry) => {
+                self.submit_workspace_retry(retry, events).await?;
             }
             Command::CancelWorktreeSetup(thread_id) => {
                 if self.worktree_setup && self.worktree_launch {
@@ -2068,6 +2087,10 @@ impl Session {
                 }
             }
             ServerFrame::Exit { request_id, exit } => {
+                if self.pending_workspace_retries.contains_key(&request_id) {
+                    self.workspace_retry_exit(&request_id, exit, events);
+                    return Ok(());
+                }
                 if self.favicons.has_grant(&request_id) {
                     self.favicons
                         .resolve(&request_id, exit.into_result(), events);
@@ -2406,6 +2429,7 @@ async fn run(
             Ok(()) => run_socket(&mut session, &mut commands, events).await,
             Err(error) => Err(error),
         };
+        session.unconfirm_workspace_retries(events);
         let reason = match disconnected {
             Ok(()) => return Ok(()),
             Err(SessionStop::Protocol(message)) => {
@@ -2573,6 +2597,7 @@ async fn run_socket(
                     session.interrupt(&id).await?;
                 }
                 session.expire_terminal(events).await?;
+                session.expire_workspace_retries(events);
                 session.favicons.expire(events);
                 session.request_project_favicons().await?;
                 session.expire_command_outputs(events).await?;

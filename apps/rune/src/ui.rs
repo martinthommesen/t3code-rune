@@ -68,6 +68,7 @@ struct Conversation {
     worktree_details_open: bool,
     worktree_elapsed_second: Option<i64>,
     worktree_background: worktree_setup::Disclosure,
+    preparation_retries: worktree_setup::PendingRetries,
 }
 
 struct QueuedEdit {
@@ -495,6 +496,7 @@ impl State {
                     worktree_details_open: false,
                     worktree_elapsed_second: None,
                     worktree_background: worktree_setup::Disclosure::default(),
+                    preparation_retries: worktree_setup::PendingRetries::default(),
                 })),
             }),
             Destination::NewThread(id) => {
@@ -982,6 +984,9 @@ impl State {
                     if matches!(conversation.transcript, Transcript::Loading) {
                         tx.scroll_to_bottom(format!("transcript-{thread_id}"));
                     }
+                    conversation
+                        .preparation_retries
+                        .observe(&thread_id, &entries);
                     conversation.transcript = Transcript::Loaded(entries);
                 }
             }
@@ -1240,6 +1245,9 @@ impl State {
                         self.project_notice = Some(message);
                     }
                 }
+            }
+            Event::WorkspaceRetrySettled { retry, outcome } => {
+                self.settle_workspace_retry(retry, outcome)
             }
             Event::ThreadActions {
                 thread_id,

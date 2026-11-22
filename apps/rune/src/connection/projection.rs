@@ -1,6 +1,7 @@
 mod command;
 mod queue;
 mod transcript;
+mod workspace_failure;
 
 use std::collections::{HashMap, HashSet};
 
@@ -15,6 +16,7 @@ pub(crate) use command::{CommandEntry, CommandOutputTarget, CommandStatus};
 pub(crate) use queue::QueuedMessage;
 pub(crate) use transcript::{CompletedWork, ConversationEntry, TodoListEntry, TodoStepStatus};
 use transcript::{TimelineRun, Transcript};
+pub(crate) use workspace_failure::WorkspaceFailure;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub(crate) struct Project {
@@ -560,6 +562,11 @@ impl ThreadProjection {
                     TimelineItem::UserMessage(entry) => ("user", entry),
                     TimelineItem::AssistantMessage(entry) => ("assistant", entry),
                     TimelineItem::TodoList(list) => return Some(ConversationEntry::TodoList(list)),
+                    TimelineItem::WorkspaceFailure(failure)
+                        if failure.is_workspace_preparation() =>
+                    {
+                        return Some(ConversationEntry::WorkspaceFailure(failure));
+                    }
                     TimelineItem::CommandExecution(mut command) => {
                         if command.is_workspace_preparation() {
                             return None;
@@ -597,6 +604,8 @@ enum TimelineItem {
     UserMessage(TimelineMessage),
     AssistantMessage(TimelineMessage),
     TodoList(TodoListEntry),
+    #[serde(rename = "error")]
+    WorkspaceFailure(Box<WorkspaceFailure>),
     CommandExecution(Box<CommandEntry>),
     ApprovalRequest(ApprovalDetails),
     UserInputRequest(QuestionDetails),
@@ -710,6 +719,14 @@ impl Conversation {
                         payload: TimelineItem::TodoList(list),
                     } => self.transcript.upsert(ConversationEntry::TodoList(list)),
                     ThreadEvent::ItemUpdated {
+                        payload: TimelineItem::WorkspaceFailure(failure),
+                    } => {
+                        failure.is_workspace_preparation()
+                            && self
+                                .transcript
+                                .upsert(ConversationEntry::WorkspaceFailure(failure))
+                    }
+                    ThreadEvent::ItemUpdated {
                         payload: TimelineItem::CommandExecution(command),
                     } => {
                         !command.is_workspace_preparation()
@@ -744,6 +761,11 @@ impl Conversation {
 
     pub(crate) fn queued(&self) -> &[QueuedMessage] {
         &self.queued
+    }
+
+    pub(super) fn can_retry_workspace_preparation(&self, thread_id: &str, run_id: &str) -> bool {
+        self.transcript
+            .can_retry_workspace_preparation(thread_id, run_id)
     }
 
     #[cfg(test)]
