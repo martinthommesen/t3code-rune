@@ -3,6 +3,7 @@ use std::cmp::Reverse;
 use rune::Tx;
 
 use super::ranking::{Query, Rank};
+use crate::ui::settings::search as settings_search;
 use crate::ui::sidebar::{most_recent_project, project_scope::ordered_projects};
 use crate::ui::{Project, ProjectView, State, Thread, Workspace};
 
@@ -13,7 +14,9 @@ pub(super) enum Choice<'a> {
     Scratch,
     NewProject,
     AddProject,
+    ChangeAppearance,
     Settings,
+    Setting(settings_search::Item<'a>),
     ProjectSettings(&'a Project),
     Thread(&'a Thread, &'a Project),
     Project(&'a Project),
@@ -28,7 +31,9 @@ impl<'a> Choice<'a> {
             Self::Scratch => "command-palette-no-project".into(),
             Self::NewProject => "command-palette-new-project".into(),
             Self::AddProject => "command-palette-add-project".into(),
+            Self::ChangeAppearance => "command-palette-change-appearance".into(),
             Self::Settings => "command-palette-settings".into(),
+            Self::Setting(item) => item.key(),
             Self::ProjectSettings(_) => "command-palette-project-settings".into(),
             Self::Thread(thread, _) => format!("command-palette-thread-{}", thread.id),
             Self::Project(project) => format!("command-palette-project-{}", project.id),
@@ -45,7 +50,9 @@ impl<'a> Choice<'a> {
             Self::Scratch => "New thread without a project".into(),
             Self::NewProject => "New project".into(),
             Self::AddProject => "Add project".into(),
+            Self::ChangeAppearance => "Change appearance".into(),
             Self::Settings => "Open settings".into(),
+            Self::Setting(item) => item.title(),
             Self::ProjectSettings(_) => "Project settings".into(),
             Self::Thread(thread, _) => thread.title.clone(),
             Self::Project(project) => project.name.clone(),
@@ -57,7 +64,8 @@ impl<'a> Choice<'a> {
             Self::NewHere(_) | Self::ChooseProject => "SquarePen",
             Self::Scratch => "MessageSquareDashed",
             Self::NewProject | Self::AddProject => "FolderPlus",
-            Self::Settings | Self::ProjectSettings(_) => "Settings",
+            Self::ChangeAppearance => "Palette",
+            Self::Settings | Self::ProjectSettings(_) | Self::Setting(_) => "Settings",
             Self::Thread(..) => "MessageSquare",
             Self::Project(_) | Self::NewIn(..) => "Folder",
         }
@@ -69,6 +77,7 @@ impl<'a> Choice<'a> {
                 Some(format!("{environment} · {}", project.path))
             }
             Self::ProjectSettings(project) => Some(project.name.clone()),
+            Self::Setting(item) => Some(format!("Settings · {}", item.page_label())),
             Self::Thread(_, project) => Some(format!("{} · {environment}", project.name)),
             _ => None,
         }
@@ -90,7 +99,20 @@ impl<'a> Choice<'a> {
         }
     }
 
+    fn secondary(self) -> bool {
+        matches!(self, Self::Setting(item) if item.secondary())
+    }
+
     fn rank(self, query: &Query, typos: bool) -> Option<Rank> {
+        if let Self::Setting(item) = self {
+            let keywords = item.keywords();
+            let words: Vec<_> = keywords.iter().map(String::as_str).collect();
+            let mut rank = query.rank(&item.title(), &words, typos)?;
+            if item.secondary() {
+                rank.group_class = 0;
+            }
+            return Some(rank);
+        }
         let keywords: Vec<&str> = match self {
             Self::NewHere(project) | Self::NewIn(project, _) => {
                 vec![project.name.as_str(), project.path.as_str()]
@@ -99,6 +121,8 @@ impl<'a> Choice<'a> {
             Self::Scratch => vec!["no project", "scratch", "without folder"],
             Self::NewProject => vec!["create project"],
             Self::AddProject => vec!["open folder workspace", "repository"],
+            Self::ChangeAppearance => vec!["light dark system color mode"],
+            Self::Setting(_) => unreachable!("indexed settings are ranked above"),
             Self::Settings => vec!["settings", "preferences", "configuration", "keybindings"],
             Self::ProjectSettings(project) => {
                 vec![&project.name, "project settings", "name icon model scripts"]
@@ -118,7 +142,9 @@ pub(super) enum Selection {
     Scratch,
     NewProject,
     AddProject,
+    ChangeAppearance,
     Settings,
+    Setting(settings_search::Destination),
     ProjectSettings(String),
     Thread(String),
     Project(String),
@@ -134,7 +160,9 @@ impl From<Choice<'_>> for Selection {
             Choice::Scratch => Self::Scratch,
             Choice::NewProject => Self::NewProject,
             Choice::AddProject => Self::AddProject,
+            Choice::ChangeAppearance => Self::ChangeAppearance,
             Choice::Settings => Self::Settings,
+            Choice::Setting(item) => Self::Setting(item.destination()),
             Choice::ProjectSettings(project) => Self::ProjectSettings(project.id.clone()),
             Choice::Thread(thread, _) => Self::Thread(thread.id.clone()),
             Choice::Project(project) => Self::Project(project.id.clone()),
@@ -143,15 +171,20 @@ impl From<Choice<'_>> for Selection {
 }
 
 pub(super) fn select(state: &mut State, tx: &mut Tx, selection: &Selection) {
-    if matches!(selection, Selection::ChooseProject) {
-        super::show_project_choices(state, tx);
+    let submenu = match selection {
+        Selection::ChooseProject => Some(super::Page::Projects),
+        Selection::ChangeAppearance => Some(super::Page::Appearance),
+        _ => None,
+    };
+    if let Some(page) = submenu {
+        super::show_submenu(state, page, tx);
         return;
     }
     state.command_palette = None;
     if state.settings.is_open()
         && !matches!(
             selection,
-            Selection::Settings | Selection::ProjectSettings(_)
+            Selection::Settings | Selection::ProjectSettings(_) | Selection::Setting(_)
         )
     {
         state.close_client_settings(tx);
@@ -165,6 +198,7 @@ pub(super) fn select(state: &mut State, tx: &mut Tx, selection: &Selection) {
         }
         Selection::AddProject => state.show_add_project(tx),
         Selection::Settings => state.open_client_settings(tx),
+        Selection::Setting(destination) => state.open_settings_destination(destination, tx),
         Selection::ProjectSettings(id) => state.open_project_settings(id, tx),
         Selection::Thread(id) => open_thread(state, tx, id),
         Selection::Project(id) => {
@@ -192,7 +226,7 @@ pub(super) fn select(state: &mut State, tx: &mut Tx, selection: &Selection) {
                 state.select_project(id);
             }
         }
-        Selection::ChooseProject => unreachable!(),
+        Selection::ChooseProject | Selection::ChangeAppearance => unreachable!(),
     }
 }
 
@@ -206,7 +240,11 @@ pub(super) struct Section<'a> {
     pub(super) entries: Vec<Choice<'a>>,
 }
 
-pub(super) fn sections<'a>(workspace: &'a Workspace, raw: &str) -> Vec<Section<'a>> {
+pub(super) fn sections<'a>(
+    state: &'a State,
+    workspace: &'a Workspace,
+    raw: &str,
+) -> Vec<Section<'a>> {
     let query = Query::new(raw);
     let Some(shell) = &workspace.shell else {
         return vec![Section {
@@ -236,6 +274,7 @@ pub(super) fn sections<'a>(workspace: &'a Workspace, raw: &str) -> Vec<Section<'
         }
         actions.push(Choice::AddProject);
     }
+    actions.push(Choice::ChangeAppearance);
     actions.push(Choice::Settings);
     if let Some(project) = current {
         actions.push(Choice::ProjectSettings(project));
@@ -311,6 +350,13 @@ pub(super) fn sections<'a>(workspace: &'a Workspace, raw: &str) -> Vec<Section<'
         label: "Projects",
         entries: projects.into_iter().map(Choice::Project).collect(),
     });
+    sections.push(Section {
+        label: "Settings",
+        entries: settings_search::items(state)
+            .into_iter()
+            .map(Choice::Setting)
+            .collect(),
+    });
     search(sections, &query)
 }
 
@@ -351,7 +397,7 @@ fn search<'a>(sections: Vec<Section<'a>>, query: &Query) -> Vec<Section<'a>> {
     ranked
         .into_iter()
         .map(|(label, mut entries)| {
-            entries.sort_by_cached_key(|(_, rank)| Reverse(rank.score));
+            entries.sort_by_cached_key(|(entry, rank)| (entry.secondary(), Reverse(rank.score)));
             let limit = match label {
                 "Threads" => 20,
                 "Suggestions" => 3,

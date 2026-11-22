@@ -123,7 +123,17 @@ pub(super) fn page(state: &State, palette: Palette, width: f32, large: bool) -> 
             .child(location)
             .child(rune::el().w_full().h(1.0).fill(palette.line));
     }
-    section = section.child(rows.child(row.key("start-from-origin").w_full().px(16.0).py(12.0)));
+    section = section.child(
+        rows.child(
+            row.key("start-from-origin")
+                .focusable(true)
+                .tab_index(-1)
+                .no_focus_ring()
+                .w_full()
+                .px(16.0)
+                .py(12.0),
+        ),
+    );
     if let Some(error) = settings.error() {
         section = section.child(error_text(error, palette));
     }

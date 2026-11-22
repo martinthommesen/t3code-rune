@@ -733,7 +733,10 @@ fn binding_row(
         row().items_center().gap(8.0).child(info).child(controls)
     };
     let mut node = col()
-        .key(format!("keybinding-row-{}", row_key(rule)))
+        .key(search_row_key(rule))
+        .focusable(true)
+        .tab_index(-1)
+        .no_focus_ring()
         .role("listitem")
         .label(&entry.label)
         .min_h(72.0)
@@ -890,6 +893,10 @@ fn editor(draft: &Draft, pending: bool, palette: Palette, compact: bool) -> El {
 
 fn action_key(rule: &KeybindingRule) -> String {
     format!("actions-{}", row_key(rule))
+}
+
+pub(super) fn search_row_key(rule: &KeybindingRule) -> String {
+    format!("keybinding-row-{}", row_key(rule))
 }
 
 fn row_key(rule: &KeybindingRule) -> String {

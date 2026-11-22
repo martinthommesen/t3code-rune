@@ -5,6 +5,7 @@ use rune::{
 };
 use uuid::Uuid;
 
+use crate::client_settings::AppearanceMode;
 use crate::connection::Keybindings;
 
 use super::sidebar::{normalized_search, project_badge, project_scope::ordered_projects};
@@ -46,6 +47,7 @@ static NO_PROJECT: Icon = Icon {
 enum Page {
     Commands,
     Projects,
+    Appearance,
 }
 
 pub(super) struct Picker {
@@ -61,6 +63,7 @@ enum Choice<'a> {
     Project(&'a Project, usize),
     Scratch,
     AddProject,
+    Appearance(AppearanceMode),
     Command(commands::Choice<'a>),
 }
 
@@ -70,6 +73,11 @@ impl Choice<'_> {
             Self::Project(..) => "Project",
             Self::Scratch => "No project",
             Self::AddProject => "Add project",
+            Self::Appearance(mode) => match mode {
+                AppearanceMode::System => "System",
+                AppearanceMode::Light => "Light",
+                AppearanceMode::Dark => "Dark",
+            },
             Self::Command(_) => unreachable!("command choices use their own labels"),
         }
     }
@@ -88,6 +96,7 @@ impl Choice<'_> {
             Self::Project(project, _) => format!("new-thread-project-{}", project.id),
             Self::Scratch => "new-thread-no-project".to_owned(),
             Self::AddProject => "new-thread-add-project".to_owned(),
+            Self::Appearance(mode) => format!("command-palette-appearance-{}", mode.as_str()),
             Self::Command(command) => command.key(),
         }
     }
@@ -138,7 +147,7 @@ impl State {
             self.open_fresh_project_draft(&project, tx);
             return;
         }
-        show_project_choices(self, tx);
+        show_submenu(self, Page::Projects, tx);
     }
 
     pub(super) fn open_command_palette(&mut self, tx: &mut Tx) {
@@ -228,7 +237,9 @@ fn project_choices<'a>(workspace: &'a Workspace, query: &str) -> Vec<Choice<'a>>
             }
             Choice::Scratch => "no project without project none".to_owned(),
             Choice::AddProject => normalized_search(choice.label()),
-            Choice::Command(_) => unreachable!("command choices are ranked separately"),
+            Choice::Appearance(_) | Choice::Command(_) => {
+                unreachable!("only project choices are ranked here")
+            }
         };
         query.split_whitespace().all(|word| content.contains(word))
     });
@@ -244,7 +255,9 @@ fn project_choices<'a>(workspace: &'a Workspace, query: &str) -> Vec<Choice<'a>>
 
 impl Picker {
     fn default_highlight(&self) -> Option<usize> {
-        (self.page == Page::Commands || self.previous_query.is_some()).then_some(0)
+        (self.page == Page::Commands
+            || (self.page == Page::Projects && self.previous_query.is_some()))
+        .then_some(0)
     }
 }
 
@@ -253,44 +266,57 @@ struct Section<'a> {
     items: Vec<Choice<'a>>,
 }
 
-fn sections<'a>(workspace: &'a Workspace, picker: &Picker) -> Vec<Section<'a>> {
-    match picker.page {
-        Page::Commands => commands::sections(workspace, &picker.query.text)
+fn command_sections<'a>(
+    state: &'a State,
+    workspace: &'a Workspace,
+    query: &str,
+) -> Vec<Section<'a>> {
+    commands::sections(state, workspace, query)
+        .into_iter()
+        .map(|section| Section {
+            label: section.label,
+            items: section.entries.into_iter().map(Choice::Command).collect(),
+        })
+        .collect()
+}
+
+fn sections<'a>(state: &'a State, workspace: &'a Workspace, picker: &Picker) -> Vec<Section<'a>> {
+    let query = &picker.query.text;
+    let (label, items) = match picker.page {
+        Page::Commands => return command_sections(state, workspace, query),
+        Page::Projects => ("Projects", project_choices(workspace, query)),
+        Page::Appearance => {
+            let query = ranking::Query::new(query);
+            let items = [
+                AppearanceMode::System,
+                AppearanceMode::Light,
+                AppearanceMode::Dark,
+            ]
             .into_iter()
-            .map(|section| Section {
-                label: section.label,
-                items: section.entries.into_iter().map(Choice::Command).collect(),
-            })
-            .collect(),
-        Page::Projects => {
-            let options = project_choices(workspace, &picker.query.text);
-            if options.is_empty() {
-                commands::sections(workspace, &picker.query.text)
-                    .into_iter()
-                    .map(|section| Section {
-                        label: section.label,
-                        items: section.entries.into_iter().map(Choice::Command).collect(),
-                    })
-                    .collect()
-            } else {
-                vec![Section {
-                    label: "Projects",
-                    items: options,
-                }]
-            }
+            .map(Choice::Appearance)
+            .filter(|choice| query.is_empty() || query.rank(choice.label(), &[], true).is_some())
+            .collect();
+            ("Change appearance", items)
         }
+    };
+    if items.is_empty() {
+        command_sections(state, workspace, query)
+    } else {
+        vec![Section { label, items }]
     }
 }
 
-fn show_project_choices(state: &mut State, tx: &mut Tx) {
+fn show_submenu(state: &mut State, page: Page, tx: &mut Tx) {
     if let Some(picker) = &mut state.command_palette {
-        picker.previous_query = Some(picker.query.text.clone());
-        picker.page = Page::Projects;
+        if picker.page == Page::Commands {
+            picker.previous_query = Some(picker.query.text.clone());
+        }
+        picker.page = page;
         picker.query.clear();
         picker.highlighted = None;
         tx.focus_when_shown(SEARCH, false);
     } else {
-        state.show_palette(Page::Projects, tx);
+        state.show_palette(page, tx);
     }
 }
 
@@ -317,6 +343,7 @@ enum Selection {
     Project(String),
     Scratch,
     AddProject,
+    Appearance(AppearanceMode),
     Command(commands::Selection),
 }
 
@@ -326,6 +353,7 @@ impl From<Choice<'_>> for Selection {
             Choice::Project(project, _) => Self::Project(project.id.clone()),
             Choice::Scratch => Self::Scratch,
             Choice::AddProject => Self::AddProject,
+            Choice::Appearance(mode) => Self::Appearance(mode),
             Choice::Command(command) => Self::Command(command.into()),
         }
     }
@@ -336,6 +364,11 @@ fn select(state: &mut State, tx: &mut Tx, selection: &Selection) {
         commands::select(state, tx, selection);
         return;
     }
+    if let Selection::Appearance(mode) = selection {
+        dismiss(state, tx);
+        state.set_appearance_mode(*mode);
+        return;
+    }
     state.command_palette = None;
     if state.settings.is_open() {
         state.close_client_settings(tx);
@@ -344,7 +377,7 @@ fn select(state: &mut State, tx: &mut Tx, selection: &Selection) {
         Selection::Project(id) => state.open_fresh_project_draft(id, tx),
         Selection::Scratch => state.start_scratch_from_command_palette(),
         Selection::AddProject => state.show_add_project(tx),
-        Selection::Command(_) => unreachable!(),
+        Selection::Appearance(_) | Selection::Command(_) => unreachable!(),
     }
 }
 
@@ -362,7 +395,7 @@ fn palette_context(flag: &str) -> bool {
 fn keyboard(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
     let bindings = picker_bindings(state.keybindings.as_ref());
     let command = bindings.command(event, tx, palette_context);
-    let Some(picker) = &mut state.command_palette else {
+    let Some(picker) = &state.command_palette else {
         return false;
     };
     if event.key == Key::Escape || command == Some("commandPalette.toggle") {
@@ -371,7 +404,7 @@ fn keyboard(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
         }
         return true;
     }
-    if event.key == Key::Backspace && picker.query.text.is_empty() && picker.page == Page::Projects
+    if event.key == Key::Backspace && picker.query.text.is_empty() && picker.page != Page::Commands
     {
         if !tx.key_repeat() {
             back(state, tx);
@@ -387,7 +420,7 @@ fn keyboard(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
     let Some(workspace) = &state.workspace else {
         return false;
     };
-    let items: Vec<_> = sections(workspace, picker)
+    let items: Vec<_> = sections(state, workspace, picker)
         .into_iter()
         .flat_map(|section| section.items)
         .collect();
@@ -403,8 +436,11 @@ fn keyboard(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
                 (false, None) => 0,
                 (false, Some(index)) => (index + 1) % items.len(),
             };
-            picker.highlighted = Some(next);
-            tx.scroll_into_view(items[next].key());
+            let key = items[next].key();
+            if let Some(picker) = &mut state.command_palette {
+                picker.highlighted = Some(next);
+            }
+            tx.scroll_into_view(key);
         }
         return true;
     }
@@ -458,8 +494,8 @@ pub(super) fn overlay(state: &State, palette: Palette, width: f32, height: f32) 
     let picker = state.command_palette.as_ref()?;
     let workspace = state.workspace.as_ref()?;
     let colors = Colors::new(palette.dark);
-    let submenu = picker.page == Page::Projects;
-    let sections = sections(workspace, picker);
+    let submenu = picker.page != Page::Commands;
+    let sections = sections(state, workspace, picker);
     let highlighted = picker.highlighted.or(picker.default_highlight());
     let highlighted_choice = highlighted.and_then(|index| {
         sections
@@ -526,10 +562,10 @@ pub(super) fn overlay(state: &State, palette: Palette, width: f32, height: f32) 
     let mut search = text_input(&picker.query, BODY)
         .key(SEARCH)
         .role("combobox")
-        .label(if submenu {
-            "Search projects"
-        } else {
-            "Search commands, projects, and threads"
+        .label(match picker.page {
+            Page::Commands => "Search commands, projects, and threads",
+            Page::Projects => "Search projects",
+            Page::Appearance => "Search appearance modes",
         })
         .placeholder(
             if submenu {
@@ -576,10 +612,10 @@ pub(super) fn overlay(state: &State, palette: Palette, width: f32, height: f32) 
             .child(icon(&MAGNIFIER, 14.0).color(colors.muted).a11y_hidden())
     };
     let dialog = col()
-        .key(if submenu {
-            "new-thread-project-picker"
-        } else {
-            "command-palette"
+        .key(match picker.page {
+            Page::Commands => "command-palette",
+            Page::Projects => "new-thread-project-picker",
+            Page::Appearance => "command-palette-appearance",
         })
         .role("dialog")
         .label("Command palette")
@@ -651,6 +687,18 @@ fn option(
             icon(&NO_PROJECT, 16.0).color(colors.muted).a11y_hidden(),
         ),
         Choice::AddProject => (choice.label().to_owned(), None, el().size(16.0, 16.0)),
+        Choice::Appearance(mode) => {
+            let icon_name = match mode {
+                AppearanceMode::System => "Monitor",
+                AppearanceMode::Light => "Sun",
+                AppearanceMode::Dark => "Moon",
+            };
+            let badge = project_badge::lookup_icon(icon_name).map_or_else(
+                || el().size(16.0, 16.0),
+                |glyph| icon(glyph, 16.0).color(colors.muted).a11y_hidden(),
+            );
+            (choice.label().to_owned(), None, badge)
+        }
         Choice::Command(command) => {
             let badge = if let Some(project) = command.project_badge() {
                 project_badge::view_at(project, &workspace.favicons, dark, 16.0)
@@ -667,7 +715,11 @@ fn option(
         .command()
         .and_then(|command| bindings.shortcut_label(&command, palette_context));
     let selection = Selection::from(choice);
-    let submenu = matches!(choice, Choice::Command(commands::Choice::ChooseProject));
+    let submenu = matches!(
+        choice,
+        Choice::Command(commands::Choice::ChooseProject | commands::Choice::ChangeAppearance)
+    );
+    let current_mode = matches!(choice, Choice::Appearance(mode) if state.client_settings.appearance_mode() == mode);
     let mut labels = col()
         .grow(1.0)
         .min_w(0.0)
@@ -698,6 +750,7 @@ fn option(
         .child(badge)
         .child(labels)
         .children(hint.map(|hint| text(hint).font(SMALL).color(colors.muted)))
+        .children(current_mode.then(|| text("Current").font(SMALL).color(colors.muted)))
         .children(submenu.then(|| icon(&CHEVRON, 14.0).color(colors.muted).a11y_hidden()))
 }
 

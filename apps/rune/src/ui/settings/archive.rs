@@ -160,7 +160,13 @@ pub(super) fn page(state: &State, palette: Palette, width: f32) -> El {
         .and_then(|threads| threads.as_ref().ok());
     let collation = Collator::try_new(locale!("en-US").into(), CollatorOptions::default())
         .expect("English collation data");
-    let mut sections = col().w_full().gap(34.0);
+    let mut sections = col()
+        .key("archive-settings-threads")
+        .focusable(true)
+        .tab_index(-1)
+        .no_focus_ring()
+        .w_full()
+        .gap(34.0);
     let mut has_sections = false;
     if let (Some(workspace), Some(threads)) = (workspace, threads) {
         let now = OffsetDateTime::now_utc();

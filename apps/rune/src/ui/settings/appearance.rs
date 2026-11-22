@@ -9,7 +9,7 @@ const PREVIEW_HEIGHT: f32 = 140.0;
 const MODE_LABEL: TextStyle = TextStyle::new(12.0, 500.0).lh(16.0);
 
 impl State {
-    fn set_appearance_mode(&mut self, mode: AppearanceMode) {
+    pub(in crate::ui) fn set_appearance_mode(&mut self, mode: AppearanceMode) {
         self.settings.error = self
             .client_settings
             .set_appearance_mode(mode)
@@ -84,6 +84,10 @@ pub(super) fn page(state: &State, palette: Palette, content_width: f32) -> El {
         choices = choices.child(tile);
     }
     let mut section = col()
+        .key("appearance")
+        .focusable(true)
+        .tab_index(-1)
+        .no_focus_ring()
         .w(page_width)
         .gap(12.0)
         .child(

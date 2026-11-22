@@ -216,6 +216,9 @@ pub(super) fn setting_row(state: &State, palette: Palette, width: f32) -> El {
     };
     layout
         .key("new-threads-permissions")
+        .focusable(true)
+        .tab_index(-1)
+        .no_focus_ring()
         .hover_group()
         .w_full()
         .px(16.0)

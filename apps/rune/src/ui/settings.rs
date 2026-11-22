@@ -31,6 +31,7 @@ macro_rules! glyph {
 mod archive;
 mod keybindings;
 pub(super) mod path_input;
+pub(super) mod search;
 pub(super) use archive::settle as settle_archive_action;
 pub(super) use workspace::project_start::{
     poll as poll_add_project_base_directory, warning as add_project_base_scope_warning,
@@ -610,7 +611,14 @@ fn confirmation_row(
     } else {
         col().gap(12.0).child(label).child(switch)
     };
-    control.key(key).w_full().px(16.0).py(12.0)
+    control
+        .key(key)
+        .focusable(true)
+        .tab_index(-1)
+        .no_focus_ring()
+        .w_full()
+        .px(16.0)
+        .py(12.0)
 }
 
 fn confirmation_switch(enabled: bool, large: bool, palette: Palette) -> El {

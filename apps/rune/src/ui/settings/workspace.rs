@@ -434,6 +434,9 @@ pub(super) fn page(state: &State, palette: Palette, width: f32) -> El {
     };
     let mut section = col()
         .key("settings-new-threads")
+        .focusable(true)
+        .tab_index(-1)
+        .no_focus_ring()
         .w_full()
         .max_w(800.0)
         .gap(10.0)
