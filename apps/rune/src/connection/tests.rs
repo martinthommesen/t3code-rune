@@ -34,6 +34,17 @@ async fn next_event(connection: &Connection, wake: &mut UnboundedReceiver<()>) -
     connection.try_recv().unwrap()
 }
 
+async fn expect_archive_unavailable(connection: &Connection, wake: &mut UnboundedReceiver<()>) {
+    assert!(matches!(
+        next_event(connection, wake).await,
+        Event::ArchiveAvailable {
+            readable: false,
+            writable: false,
+            deletable: false,
+        }
+    ));
+}
+
 #[tokio::test]
 async fn publishes_the_http_snapshot_before_replaying_the_socket() {
     let router = Router::new()
@@ -112,6 +123,7 @@ async fn publishes_the_http_snapshot_before_replaying_the_socket() {
         next_event(&connection, &mut wake_rx).await,
         Event::Connected { .. }
     ));
+    expect_archive_unavailable(&connection, &mut wake_rx).await;
     for name in ["Project", "Updated project"] {
         assert!(matches!(
             next_event(&connection, &mut wake_rx).await,
@@ -167,6 +179,7 @@ async fn pairs_reads_sends_launches_and_recovers_without_replaying_mutations() {
     assert!(
         matches!(next_event(&connection, &mut wake_rx).await, Event::Connected { environment_id, read_only: false, .. } if environment_id == "test-host")
     );
+    expect_archive_unavailable(&connection, &mut wake_rx).await;
     assert!(
         matches!(next_event(&connection, &mut wake_rx).await, Event::Shell { projects, threads } if projects[0].name == "Project" && threads[0].title == "Thread")
     );
@@ -213,6 +226,7 @@ async fn pairs_reads_sends_launches_and_recovers_without_replaying_mutations() {
         next_event(&connection, &mut wake_rx).await,
         Event::Reconnected
     ));
+    expect_archive_unavailable(&connection, &mut wake_rx).await;
     assert!(matches!(
         next_event(&connection, &mut wake_rx).await,
         Event::Shell { .. }

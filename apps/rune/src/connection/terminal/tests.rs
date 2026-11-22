@@ -54,6 +54,17 @@ async fn next(connection: &Connection, wake: &mut UnboundedReceiver<()>) -> Even
     connection.try_recv().unwrap()
 }
 
+async fn expect_archive_disabled(connection: &Connection, wake: &mut UnboundedReceiver<()>) {
+    assert!(matches!(
+        next(connection, wake).await,
+        Event::ArchiveAvailable {
+            readable: false,
+            writable: false,
+            deletable: false,
+        }
+    ));
+}
+
 async fn read(socket: &mut WebSocket) -> Value {
     loop {
         let message = socket.recv().await.unwrap().unwrap();
@@ -238,6 +249,7 @@ async fn terminal_stream_resumes_the_latest_grid_without_replaying_input_or_stal
             ..
         }
     ));
+    expect_archive_disabled(&connection, &mut wake).await;
     connection.open_thread("thread".to_owned());
     let old = connection.attach_terminal(target("thread"));
     assert!(
@@ -263,6 +275,7 @@ async fn terminal_stream_resumes_the_latest_grid_without_replaying_input_or_stal
         next(&connection, &mut wake).await,
         Event::Reconnected
     ));
+    expect_archive_disabled(&connection, &mut wake).await;
     assert!(
         matches!(next(&connection, &mut wake).await, Event::Terminal { attachment, update: TerminalUpdate::Snapshot { snapshot } } if attachment == old && snapshot.history == "restored")
     );
@@ -312,6 +325,7 @@ async fn terminal_stream_resumes_the_latest_grid_without_replaying_input_or_stal
         next(&connection, &mut wake).await,
         Event::Reconnected
     ));
+    expect_archive_disabled(&connection, &mut wake).await;
     let fresh = connection.attach_terminal(target("new-thread"));
     assert!(
         matches!(next(&connection, &mut wake).await, Event::Terminal { attachment, update: TerminalUpdate::Snapshot { snapshot } } if attachment == fresh && snapshot.history == "fresh attachment")
