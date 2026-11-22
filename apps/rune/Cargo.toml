@@ -16,6 +16,7 @@ icu_collator = "=2.3.0"
 icu_locale_core = "=2.4.0"
 icu_properties = "=2.3.0"
 portable-pty = "0.9"
+regex-lite = "=0.1.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 ring = "0.17"
 rune = { git = "https://github.com/anomalyco/rune", rev = "dd672fc8257a1bfb55d2e8595f585fc411e709df", features = [
@@ -41,6 +42,7 @@ tokio = { version = "1", features = [
 ] }
 tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
 unicode-normalization = "0.1"
+unicode-segmentation = "=1.13.3"
 uuid = { version = "1", features = ["v4"] }
 vt100 = "0.16"
 

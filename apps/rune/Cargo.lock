@@ -3226,6 +3226,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "regex-lite"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d942b98df5e658f56f20d592c7f868833fe38115e65c33003d8cd224b0155da"
+
+[[package]]
 name = "renderdoc-sys"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4218,6 +4224,7 @@ dependencies = [
  "icu_locale_core",
  "icu_properties",
  "portable-pty",
+ "regex-lite",
  "reqwest",
  "ring",
  "rune",
@@ -4232,6 +4239,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "unicode-normalization",
+ "unicode-segmentation",
  "uuid",
  "vt100",
  "x11rb",

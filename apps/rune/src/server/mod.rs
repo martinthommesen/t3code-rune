@@ -10,6 +10,7 @@ mod migrations;
 mod named_projects;
 mod project_clone;
 mod project_commands;
+mod project_favicon;
 mod repository_identity;
 mod rpc;
 mod settings;
@@ -81,6 +82,7 @@ type SharedEnvironment = Arc<Environment>;
 
 struct LocalOperations {
     projects: ProjectCommands,
+    project_favicons: project_favicon::Service,
     named_projects_root: PathBuf,
     project_clones: ProjectClones,
     repository_identities: repository_identity::Identities,
@@ -142,6 +144,7 @@ impl LocalHost {
         let turns = TurnCommands::new(database.clone());
         let threads = ThreadCommands::open(database.clone())?;
         let projects = ProjectCommands::open(database.clone())?;
+        let project_favicons = project_favicon::Service::new(state_dir.clone());
         let projection_changes = broadcast::channel(64).0;
         TurnWorker::recover_before_spawn(&turns, &projection_changes)?;
         initial_title::recover(&database)?;
@@ -186,6 +189,7 @@ impl LocalHost {
                     );
                     let local = LocalOperations {
                         projects,
+                        project_favicons,
                         named_projects_root,
                         project_clones: project_clones.clone(),
                         repository_identities,
@@ -331,6 +335,7 @@ fn router(environment: SharedEnvironment) -> Router {
         .route("/oauth/token", post(exchange))
         .route("/api/auth/websocket-ticket/rpc", post(issue_ticket))
         .route("/api/orchestration/shell", get(shell_http::snapshot))
+        .route("/api/assets/{*tail}", get(project_favicon::get))
         .route("/ws", get(upgrade))
         .layer(DefaultBodyLimit::max(8 * 1024))
         .layer(middleware::from_fn_with_state(
@@ -360,10 +365,13 @@ async fn local_requests(
     if !local_host || headers.contains_key(header::ORIGIN) {
         return Err(StatusCode::FORBIDDEN);
     }
+    let asset = request.uri().path().starts_with("/api/assets/");
     let mut response = next.run(request).await;
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    if !asset {
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
     Ok(response)
 }
 

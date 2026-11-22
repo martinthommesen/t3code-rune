@@ -153,6 +153,18 @@ impl ProjectClones {
         self.0.published.subscribe()
     }
 
+    pub(super) fn checkout_ready(&self, project_id: &str, workspace: &str) -> Option<bool> {
+        let state = self.0.state.lock().expect("clone state lock");
+        state
+            .entries
+            .iter()
+            .find(|entry| {
+                entry.snapshot.project_id == project_id
+                    && entry.snapshot.destination_path == workspace
+            })
+            .map(|entry| entry.snapshot.phase == Phase::Done)
+    }
+
     pub(super) async fn start(&self, input: StartInput) -> Result<StartResult, CloneError> {
         let tracker = self.clone();
         tokio::spawn(async move { tracker.start_owned(input).await })

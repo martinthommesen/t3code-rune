@@ -920,6 +920,19 @@ fn response(
         }
         "filesystem.browse" => browse(id, local.is_some() && permissions.filesystem_read, payload),
         "projects.mutate" => mutate_project(local, permissions.orchestration_operate, id, payload),
+        "assets.createUrl" if local.is_some() => {
+            let Some(input) = super::project_favicon::Input::decode(payload) else {
+                return defect(id, "Invalid project favicon resource.".to_owned());
+            };
+            let local = local.expect("local operations are present");
+            match local
+                .project_favicons
+                .issue(store.path(), &local.project_clones, input)
+            {
+                Ok(value) => success(id, value),
+                Err(error) => failure(id, error),
+            }
+        }
         "server.getSettings" if local.is_some() => {
             let settings = &local.expect("local operations are present").settings;
             match settings.read() {
@@ -1046,13 +1059,29 @@ fn mutate_project(
             },
         );
     }
+    let refresh_favicon =
+        payload["type"] == "project.update" && payload.get("faviconPath").is_some();
     match local.projects.dispatch(payload) {
         Ok(result) => {
+            if refresh_favicon {
+                local
+                    .project_favicons
+                    .invalidate(result.project.workspace());
+            }
             if result.committed {
                 let _ = local.projection_changes.send(ProjectionChange::Project);
             }
             success(id, result.project)
         }
+        Err(ProjectCommandError::InvalidProject(detail)) => failure(
+            id,
+            json!({
+                "_tag": "ProjectMutationError",
+                "commandId": command_id,
+                "message": detail,
+                "cause": { "name": "ProjectInvalidError", "message": detail },
+            }),
+        ),
         Err(error) => failure(
             id,
             RpcError::ProjectMutationError {

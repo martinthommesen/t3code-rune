@@ -13,6 +13,10 @@ use serde_json::{Value, json};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+mod project_icon;
+
+use project_icon::ProjectIcon;
+
 use super::turn_commands::encode_id_part;
 
 const SELECT_PROJECT: &str = "
@@ -60,8 +64,10 @@ const UPDATE_PROJECT: &str = "
         has_custom_title = CASE WHEN ?1 IS NULL THEN has_custom_title ELSE 1 END,
         pinned_at = CASE WHEN ?2 THEN ?3 ELSE pinned_at END,
         archived_at = CASE WHEN ?4 THEN ?5 ELSE archived_at END,
-        updated_at = ?6
-    WHERE project_id = ?7";
+        favicon_path = CASE WHEN ?6 THEN ?7 ELSE favicon_path END,
+        project_icon_json = CASE WHEN ?8 THEN ?9 ELSE project_icon_json END,
+        updated_at = ?10
+    WHERE project_id = ?11";
 
 const MARK_PROJECT_DELETED: &str = "
     UPDATE projection_projects
@@ -110,9 +116,16 @@ pub(super) struct Project {
     deleted_at: Option<String>,
 }
 
+impl Project {
+    pub(super) fn workspace(&self) -> &Path {
+        Path::new(&self.workspace_root)
+    }
+}
+
 #[derive(Debug)]
 pub(super) enum CommandError {
     InvalidRequest(String),
+    InvalidProject(String),
     Rejected(String),
     ProjectNotFound { project_id: String },
     ProjectNotEmpty { project_id: String },
@@ -122,7 +135,9 @@ pub(super) enum CommandError {
 impl fmt::Display for CommandError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidRequest(message) | Self::Rejected(message) => formatter.write_str(message),
+            Self::InvalidRequest(message)
+            | Self::InvalidProject(message)
+            | Self::Rejected(message) => formatter.write_str(message),
             Self::ProjectNotFound { project_id } => {
                 write!(formatter, "Project {project_id} was not found.")
             }
@@ -166,6 +181,22 @@ impl TryFrom<String> for NonBlank {
 }
 
 #[derive(Deserialize)]
+#[serde(try_from = "String")]
+struct FaviconPath(String);
+
+impl TryFrom<String> for FaviconPath {
+    type Error = &'static str;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        let path = super::project_favicon::trim(&value);
+        if path.is_empty() {
+            return Err("Expected a non-blank project favicon path.");
+        }
+        Ok(Self(path.to_owned()))
+    }
+}
+
+#[derive(Deserialize)]
 struct ModelSelection {
     #[serde(rename = "instanceId", alias = "provider")]
     _instance_id: NonBlank,
@@ -197,6 +228,10 @@ enum ProjectCommand {
         pinned: Option<bool>,
         #[serde(default, deserialize_with = "present")]
         archived: Option<bool>,
+        #[serde(default, deserialize_with = "present")]
+        favicon_path: Option<Option<FaviconPath>>,
+        #[serde(default, deserialize_with = "present")]
+        project_icon: Option<Option<ProjectIcon>>,
     },
     #[serde(rename = "project.delete")]
     Delete {
@@ -277,7 +312,7 @@ enum Rejection {
 impl Rejection {
     fn into_error(self) -> CommandError {
         match self {
-            Self::Invariant { detail, .. } => CommandError::Rejected(detail),
+            Self::Invariant { detail, .. } => CommandError::InvalidProject(detail),
             Self::Missing {
                 command_type,
                 project_id,
@@ -468,6 +503,8 @@ impl ProjectCommands {
                 title,
                 pinned,
                 archived,
+                favicon_path,
+                project_icon,
                 ..
             } => {
                 let Some(project) = transaction
@@ -480,10 +517,32 @@ impl ProjectCommands {
                         identity.project_id
                     )));
                 };
+                if project_icon
+                    .as_ref()
+                    .and_then(Option::as_ref)
+                    .is_some_and(ProjectIcon::exceeds_monogram_limit)
+                {
+                    return reject(
+                        transaction,
+                        &identity,
+                        occurred_at,
+                        Rejection::Invariant {
+                            command_type: identity.command_type.to_owned(),
+                            detail: "Project monograms must contain at most two characters."
+                                .to_owned(),
+                        },
+                    );
+                }
                 let title = title.as_ref().map(|title| title.0.as_str());
                 let pinned_at = flag_timestamp(*pinned, project.pinned_at.as_deref(), occurred_at);
                 let archived_at =
                     flag_timestamp(*archived, project.archived_at.as_deref(), occurred_at);
+                let favicon = favicon_path
+                    .as_ref()
+                    .map(|path| path.as_ref().map(|path| path.0.as_str()));
+                let icon = project_icon
+                    .as_ref()
+                    .map(|icon| icon.as_ref().map(|icon| json!(icon)));
                 let mut payload =
                     json!({"projectId": identity.project_id, "updatedAt": occurred_at});
                 if let Some(title) = title {
@@ -494,6 +553,12 @@ impl ProjectCommands {
                 }
                 if let Some(archived_at) = archived_at {
                     payload["archivedAt"] = json!(archived_at);
+                }
+                if let Some(favicon) = favicon {
+                    payload["faviconPath"] = json!(favicon);
+                }
+                if let Some(icon) = &icon {
+                    payload["projectIcon"] = json!(icon);
                 }
                 let sequence = append_event(
                     &transaction,
@@ -510,6 +575,10 @@ impl ProjectCommands {
                         pinned_at.flatten(),
                         archived.is_some(),
                         archived_at.flatten(),
+                        favicon.is_some(),
+                        favicon.flatten(),
+                        icon.is_some(),
+                        icon.flatten().map(|icon| icon.to_string()),
                         occurred_at,
                         identity.project_id,
                     ],
