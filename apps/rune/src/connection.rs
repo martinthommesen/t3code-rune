@@ -41,7 +41,7 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 use uuid::Uuid;
 
 pub(crate) use archive::ArchiveAction;
-pub(crate) use browse::FolderListing;
+pub(crate) use browse::{FolderBrowseError, FolderListing};
 pub(crate) use command_output::{CommandInspection, CommandOutput};
 pub(crate) use draft_defaults::WorkspaceMode;
 pub(crate) use keybindings::{
@@ -278,7 +278,7 @@ pub(crate) enum Event {
     ProjectCloneError(String),
     FolderBrowsed {
         browse_id: Uuid,
-        result: Result<FolderListing, String>,
+        result: Result<FolderListing, FolderBrowseError>,
     },
     ProjectImages {
         search_id: Uuid,
@@ -1167,6 +1167,8 @@ enum RpcCause {
 struct RpcError {
     message: Option<String>,
     detail: Option<String>,
+    #[serde(default, rename = "pathMissing")]
+    path_missing: bool,
     #[serde(flatten)]
     file: file_preview::FailureFields,
 }
@@ -1946,7 +1948,7 @@ impl Session {
                     let payload = json!({
                         "type": "project.create",
                         "commandId": command_id,
-                        "projectId": command_id,
+                        "projectId": Uuid::new_v4(),
                         "workspaceRoot": workspace_root,
                         "title": title,
                         "createWorkspaceRootIfMissing": true,
@@ -2913,11 +2915,7 @@ impl Session {
                         .pending_folder
                         .take()
                         .expect("matched a folder request");
-                    let result = exit.into_result().and_then(|value| {
-                        serde_json::from_value(value).map_err(|_| {
-                            "The environment returned an invalid folder listing.".into()
-                        })
-                    });
+                    let result = exit.into_folder_result();
                     events.send(Event::FolderBrowsed { browse_id, result });
                     return Ok(());
                 }

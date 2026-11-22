@@ -1,12 +1,13 @@
 use rune::{Color, El, Key, KeyEvent, ScrollSpec, TextEdit, Tx, col, el, row, text};
 use uuid::Uuid;
 
-use crate::connection::{FolderListing, ProjectCreated};
+use crate::connection::{FolderBrowseError, FolderListing, ProjectCreated};
 
 use super::settings::path_input;
 use super::{BODY, Palette, SMALL, State, TITLE, button, error_text, form_field, input};
 
 pub(super) mod clone_banner;
+mod folder;
 mod git_url;
 mod home;
 
@@ -61,6 +62,7 @@ struct Browse {
     active_row: usize,
     parent: Option<String>,
     exact_entry: bool,
+    path_missing: bool,
 }
 
 impl Browse {
@@ -236,6 +238,11 @@ impl State {
         browse.active_row = 0;
         browse.parent = None;
         browse.exact_entry = false;
+        browse.path_missing = false;
+        if form.clone.is_none() && folder::is_relative(path) && browse.cwd.is_none() {
+            browse.error = Some("Relative paths require an active project.".into());
+            return true;
+        }
         if !path.is_empty() && path.encode_utf16().count() <= 512 {
             let id = Uuid::new_v4();
             browse.pending = Some(id);
@@ -251,7 +258,7 @@ impl State {
     pub(super) fn folder_browsed(
         &mut self,
         browse_id: Uuid,
-        result: Result<FolderListing, String>,
+        result: Result<FolderListing, FolderBrowseError>,
     ) {
         let Some(form) = self.add_project.as_mut() else {
             return;
@@ -270,10 +277,24 @@ impl State {
                     browse.parent =
                         git_url::browse_parent(&browse.requested_path, &listing.parent_path);
                     browse.exact_entry = clone.filter_entries(&browse.requested_path, &mut listing);
+                } else {
+                    browse.parent = folder::parent(&browse.requested_path);
+                    browse.exact_entry =
+                        folder::existing(&browse.requested_path, &listing).is_some();
+                    let leaf_is_hidden = folder::leaf(&browse.requested_path).starts_with('.');
+                    if !leaf_is_hidden {
+                        listing.entries.retain(|entry| !entry.name.starts_with('.'));
+                    }
                 }
                 browse.listing = Some(listing);
             }
-            Err(error) => browse.error = Some(error),
+            Err(FolderBrowseError::Missing(_)) if form.clone.is_none() => {
+                browse.parent = folder::parent(&browse.requested_path);
+                browse.path_missing = true;
+            }
+            Err(FolderBrowseError::Missing(error) | FolderBrowseError::Other(error)) => {
+                browse.error = Some(error);
+            }
         }
     }
 
@@ -315,8 +336,12 @@ impl State {
             .map_or(&[][..], |listing| listing.entries.as_slice());
         match event.key {
             Key::Escape => self.add_project = None,
-            Key::Enter if event.mods.cmd && matches!(form.step, ProjectStep::GitDestination) => {
-                self.submit_git_project(tx);
+            Key::Enter if event.mods.cmd => {
+                if matches!(form.step, ProjectStep::GitDestination) {
+                    self.submit_git_project(tx);
+                } else {
+                    self.submit_project(tx);
+                }
             }
             Key::Up | Key::Down if !event.mods.cmd && !event.mods.alt && !event.mods.shift => {
                 browse.active_row = if event.key == Key::Up {
@@ -361,6 +386,7 @@ impl State {
     }
 
     fn submit_project(&mut self, _: &mut Tx) {
+        let cwd = self.project_browse_cwd();
         let Some(form) = self
             .add_project
             .as_mut()
@@ -375,36 +401,19 @@ impl State {
         if typed_path.is_empty() {
             return;
         }
-        let workspace_root = form
-            .browse
-            .as_ref()
+        let browse = form.browse.as_ref();
+        let existing = browse
             .filter(|browse| browse.requested_path == typed_path)
             .and_then(|browse| browse.listing.as_ref())
-            .and_then(|listing| {
-                if typed_path == "~" || typed_path.ends_with(['/', '\\']) {
-                    Some(listing.parent_path.clone())
-                } else {
-                    let leaf = typed_path.rsplit(['/', '\\']).next()?;
-                    listing
-                        .entries
-                        .iter()
-                        .find(|entry| entry.name == leaf)
-                        .map(|entry| entry.full_path.clone())
-                }
-            })
-            .unwrap_or_else(|| typed_path.to_owned());
-        let title = workspace_root
-            .trim_end_matches(['/', '\\'])
-            .rsplit(['/', '\\'])
-            .next()
-            .filter(|segment| !segment.is_empty())
-            .unwrap_or(&workspace_root);
+            .and_then(|listing| folder::existing(typed_path, listing));
+        let cwd = browse.map_or(cwd.as_deref(), |browse| browse.cwd.as_deref());
+        let Some(workspace_root) = folder::resolve(existing.unwrap_or(typed_path), cwd) else {
+            form.error = Some("Relative paths require an active project.".into());
+            return;
+        };
+        let title = folder::title(&workspace_root).to_owned();
         let command_id = Uuid::new_v4().to_string();
-        connection.add_project(
-            command_id.clone(),
-            workspace_root.to_owned(),
-            title.to_owned(),
-        );
+        connection.add_project(command_id.clone(), workspace_root, title);
         form.pending = Some(command_id);
         form.error = None;
     }
@@ -448,7 +457,7 @@ impl State {
         };
         match result {
             Ok(project) => {
-                let destination = if matches!(form.step, ProjectStep::GitDestination) {
+                let destination = if matches!(form.step, ProjectStep::Folder | ProjectStep::GitDestination) {
                     ProjectDestination::Draft
                 } else {
                     ProjectDestination::Project
@@ -711,14 +720,42 @@ fn project_dialog(contents: El, palette: Palette) -> El {
 
 fn browse_dialog(form: &AddProject, browse: &Browse, palette: Palette) -> El {
     let busy = form.pending.is_some();
+    let typed_path = form.path.text.trim();
+    let can_submit = !busy
+        && !typed_path.is_empty()
+        && (!folder::is_relative(typed_path) || browse.cwd.is_some());
+    let will_create = can_submit
+        && browse.requested_path == typed_path
+        && browse.pending.is_none()
+        && browse.active_row == 0
+        && (browse.path_missing || browse.listing.is_some() && !browse.exact_entry);
     let mut options = col().w_full();
-    if let Some(listing) = &browse.listing
-        && !listing.entries.is_empty()
-    {
+    if browse.row_count() > 0 {
         options = options.child(text("Directories").font(SMALL).color(palette.muted));
+    }
+    if let Some(parent) = &browse.parent {
+        let path = parent.clone();
+        options = options.child(
+            button(
+                &format!("project-entry-{parent}"),
+                "..",
+                palette,
+                false,
+                !busy,
+                move |state, tx| state.navigate_project_folder(&path, tx),
+            )
+            .fill(if browse.active_row == 1 {
+                palette.selected
+            } else {
+                Color::TRANSPARENT
+            })
+            .w_full(),
+        );
+    }
+    if let Some(listing) = &browse.listing {
         for (index, entry) in listing.entries.iter().enumerate() {
             let path = entry.full_path.clone();
-            let selected = browse.active_row == index + 1;
+            let selected = browse.active_row == index + 1 + usize::from(browse.parent.is_some());
             options = options.child(
                 button(
                     &format!("project-entry-{}", entry.full_path),
@@ -763,10 +800,16 @@ fn browse_dialog(form: &AddProject, browse: &Browse, palette: Palette) -> El {
         .child(
             button(
                 "submit-project",
-                if busy { "Adding…" } else { "Add" },
+                if busy {
+                    "Adding…"
+                } else if will_create {
+                    "Create & Add"
+                } else {
+                    "Add"
+                },
                 palette,
                 false,
-                !busy && !form.path.text.trim().is_empty(),
+                can_submit,
                 State::submit_project,
             )
             .fill(if browse.active_row == 0 && !busy {
