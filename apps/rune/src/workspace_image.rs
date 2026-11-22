@@ -1,3 +1,4 @@
+use std::cmp::Reverse;
 use std::io::{self, Cursor, Write};
 use std::sync::Arc;
 
@@ -32,6 +33,8 @@ pub(crate) fn mime_type(path: &str) -> Option<&'static str> {
         Some("image/jpeg")
     } else if extension.eq_ignore_ascii_case("bmp") {
         Some("image/bmp")
+    } else if extension.eq_ignore_ascii_case("ico") {
+        Some("image/x-icon")
     } else if extension.eq_ignore_ascii_case("gif") {
         Some("image/gif")
     } else if extension.eq_ignore_ascii_case("webp") {
@@ -61,6 +64,12 @@ impl Source {
             .ok()?
             .map(Self::Decoded);
         }
+        if bytes.starts_with(b"\x00\x00\x01\x00") {
+            return tokio::task::spawn_blocking(move || decode_ico(bytes))
+                .await
+                .ok()?
+                .map(Self::Decoded);
+        }
         if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
             return tokio::task::spawn_blocking(move || decode_gif(bytes))
                 .await
@@ -86,6 +95,39 @@ fn limit_image(decoder: &mut impl ImageDecoder) -> Option<()> {
 
 fn decode_jpeg(bytes: &[u8]) -> Option<Raster> {
     let decoder = image::codecs::jpeg::JpegDecoder::new(Cursor::new(bytes)).ok()?;
+    decode_still(decoder)
+}
+
+fn decode_ico(mut bytes: Vec<u8>) -> Option<Raster> {
+    const HEADER_SIZE: usize = 6;
+    const ENTRY_SIZE: usize = 16;
+
+    let count = usize::from(u16::from_le_bytes(bytes.get(4..6)?.try_into().ok()?));
+    let directory = bytes.get(HEADER_SIZE..HEADER_SIZE + count * ENTRY_SIZE)?;
+    let (index, _) = directory
+        .as_chunks::<ENTRY_SIZE>()
+        .0
+        .iter()
+        .enumerate()
+        .max_by_key(|(index, entry)| {
+            let dimension = |encoded| {
+                if encoded == 0 {
+                    256
+                } else {
+                    u32::from(encoded)
+                }
+            };
+            let area = dimension(entry[0]) * dimension(entry[1]);
+            let depth = u16::from_le_bytes([entry[6], entry[7]]);
+            (area, depth, Reverse(*index))
+        })?;
+
+    // The preview uses the largest entry. The decoder otherwise picks by depth first.
+    // Keep its original data offset when presenting it as a single-entry directory.
+    let start = HEADER_SIZE + index * ENTRY_SIZE;
+    bytes.copy_within(start..start + ENTRY_SIZE, HEADER_SIZE);
+    bytes[4..6].copy_from_slice(&1u16.to_le_bytes());
+    let decoder = image::codecs::ico::IcoDecoder::new(Cursor::new(bytes)).ok()?;
     decode_still(decoder)
 }
 

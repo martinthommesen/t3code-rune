@@ -20,6 +20,7 @@ icu_properties = "=2.3.0"
 image = { version = "0.25", default-features = false, features = [
   "bmp",
   "gif",
+  "ico",
   "jpeg",
   "png",
   "webp",
