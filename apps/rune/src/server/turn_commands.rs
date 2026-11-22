@@ -376,6 +376,11 @@ impl TurnCommands {
                 ));
             }
         };
+        let model_switch = if model_selection::has_native_codex_thread(provider_thread.as_ref()) {
+            model_selection::reasoning_change(&transaction, &thread_id, &thread.model_selection)?
+        } else {
+            None
+        };
         let trimmed_text = text.trim();
         if trimmed_text.eq_ignore_ascii_case("/logout")
             || trimmed_text.eq_ignore_ascii_case("/compact")
@@ -425,6 +430,7 @@ impl TurnCommands {
                 message_id: &message_id,
                 start: DispatchStart::Immediate {
                     workspace_root: &workspace_root,
+                    model_switch,
                 },
                 run_ordinal,
                 provider_thread,
@@ -756,6 +762,7 @@ struct DispatchEvents<'a> {
 enum DispatchStart<'a> {
     Immediate {
         workspace_root: &'a Path,
+        model_switch: Option<Value>,
     },
     ManualContinuation {
         workspace_root: &'a Path,
@@ -883,7 +890,7 @@ fn append_dispatch(
         "contextHandoffId": null,
     });
     let checkpoint_workspace = match &start {
-        DispatchStart::Immediate { workspace_root } => Some(*workspace_root),
+        DispatchStart::Immediate { workspace_root, .. } => Some(*workspace_root),
         DispatchStart::ManualContinuation {
             workspace_root,
             source_run_id,
@@ -1042,7 +1049,7 @@ fn append_dispatch(
     }
     let mut sequence = stream.append("message.updated", now, &run_metadata, &message)?;
     if let Some(ordinal) = ordinal {
-        let item = if matches!(start, DispatchStart::ManualContinuation { .. }) {
+        let mut item = if matches!(start, DispatchStart::ManualContinuation { .. }) {
             json!({
                 "id": ids.user_turn_item_id, "threadId": thread_id, "runId": ids.run_id,
                 "nodeId": ids.root_node_id, "providerThreadId": ids.provider_thread_id,
@@ -1055,6 +1062,13 @@ fn append_dispatch(
         } else {
             user_message_item(ids, &message, ordinal, now, "turn_start")
         };
+        if let DispatchStart::Immediate {
+            model_switch: Some(change),
+            ..
+        } = &start
+        {
+            item["modelSwitch"] = change.clone();
+        }
         sequence = stream.append("turn-item.updated", now, &run_metadata, &item)?;
     }
     if let DispatchStart::Preparing {

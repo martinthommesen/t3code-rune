@@ -161,10 +161,15 @@ impl Transcript {
                 .any(|entry| entry.run_id() == Some(run.id.as_str()))
     }
 
-    pub(super) fn upsert(&mut self, entry: ConversationEntry) -> bool {
+    pub(super) fn upsert(&mut self, mut entry: ConversationEntry) -> bool {
         let identity = entry.key();
         if let Some(&index) = self.index.get(&identity) {
             let existing = &mut self.entries[index];
+            if let (ConversationEntry::Message(previous), ConversationEntry::Message(next)) =
+                (&*existing, &mut entry)
+            {
+                next.reasoning_change = next.reasoning_change.or(previous.reasoning_change);
+            }
             if *existing == entry {
                 return false;
             }
@@ -173,6 +178,24 @@ impl Transcript {
             self.index.insert(identity, self.entries.len());
             self.entries.push(entry);
         }
+        true
+    }
+
+    pub(super) fn set_reasoning_change(
+        &mut self,
+        id: &str,
+        change: super::model_switch::ReasoningChange,
+    ) -> bool {
+        let Some(&index) = self.index.get(&EntryKey::Message(id.to_owned())) else {
+            return false;
+        };
+        let ConversationEntry::Message(message) = &mut self.entries[index] else {
+            return false;
+        };
+        if message.reasoning_change == Some(change) {
+            return false;
+        }
+        message.reasoning_change = Some(change);
         true
     }
 

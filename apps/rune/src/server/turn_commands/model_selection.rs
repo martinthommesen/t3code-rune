@@ -131,3 +131,44 @@ pub(super) fn has_native_codex_thread(provider: Option<&Value>) -> bool {
                 .is_some_and(|id| !id.is_empty())
     })
 }
+
+pub(super) fn reasoning_change(
+    database: &Connection,
+    thread_id: &str,
+    selection: &Value,
+) -> Result<Option<Value>, TurnCommandError> {
+    let Some(to) = validate_model_selection(selection)
+        .ok()
+        .and_then(|model| model.reasoning_effort)
+    else {
+        return Ok(None);
+    };
+    let encoded = database.query_row(
+        "SELECT json_extract(run.payload_json, '$.modelSelection')
+         FROM orchestration_v2_projection_runs AS run
+         WHERE run.thread_id = ?1 AND run.status NOT IN ('rolled_back', 'queued')
+           AND (json_extract(run.payload_json, '$.contextHandoffId') IS NOT NULL OR EXISTS (
+                 SELECT 1 FROM orchestration_v2_projection_turn_items AS item
+                 WHERE item.thread_id = run.thread_id AND item.run_id = run.run_id
+                   AND item.type = 'user_message'
+                   AND json_extract(item.payload_json, '$.messageId') = json_extract(run.payload_json, '$.userMessageId')
+                   AND NOT (item.status = 'pending' AND json_extract(item.payload_json, '$.inputIntent') IS 'queued_turn')
+                   AND substr(json_extract(item.payload_json, '$.messageId'), 1, 13) <> 'async-answer:'
+                   AND NOT (lower(trim(json_extract(item.payload_json, '$.text'))) = '/compact'
+                           AND COALESCE(json_array_length(item.payload_json, '$.attachments'), 0) = 0)
+               ))
+         ORDER BY run.completed_at IS NULL DESC, run.completed_at DESC, run.ordinal DESC LIMIT 1",
+        [thread_id],
+        |row| row.get::<_, Option<String>>(0),
+    ).optional()?.flatten();
+    let Some(encoded) = encoded else {
+        return Ok(None);
+    };
+    let previous: Value = serde_json::from_str(&encoded)?;
+    let from = validate_model_selection(&previous)
+        .ok()
+        .and_then(|model| model.reasoning_effort);
+    Ok(from
+        .filter(|from| *from != to)
+        .map(|_| json!({"from":previous,"to":selection})))
+}

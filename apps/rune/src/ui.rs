@@ -2780,6 +2780,7 @@ mod tests {
                         text: "First line.\nSecond line.".into(),
                         context: None,
                         created_by: Some("agent".into()),
+                        reasoning_change: None,
                     },
                     Message {
                         id: "ordinary-prompt".into(),
@@ -2787,6 +2788,7 @@ mod tests {
                         text: "Ordinary prompt".into(),
                         context: None,
                         created_by: None,
+                        reasoning_change: None,
                     },
                     Message {
                         id: "response".into(),
@@ -2794,6 +2796,7 @@ mod tests {
                         text: response.into(),
                         context: None,
                         created_by: Some("agent".into()),
+                        reasoning_change: None,
                     },
                 ]
                 .map(ConversationEntry::Message)

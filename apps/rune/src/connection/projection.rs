@@ -1,4 +1,5 @@
 mod command;
+mod model_switch;
 mod queue;
 mod transcript;
 mod workspace_failure;
@@ -274,6 +275,8 @@ pub(crate) struct Message {
     pub(crate) context: Option<crate::composer_context::MessageContext>,
     #[serde(rename = "createdBy")]
     pub(crate) created_by: Option<String>,
+    #[serde(skip)]
+    pub(crate) reasoning_change: Option<model_switch::ReasoningChange>,
 }
 
 #[derive(Deserialize, PartialEq, Eq)]
@@ -678,6 +681,9 @@ impl ThreadProjection {
                     if entry.context.is_some() {
                         message.context = entry.context;
                     }
+                    message.reasoning_change = entry
+                        .model_switch
+                        .and_then(|change| change.reasoning_change());
                     Some(ConversationEntry::Message(message))
                 } else {
                     entry.into_message(role).map(ConversationEntry::Message)
@@ -727,6 +733,7 @@ struct TimelineMessage {
     text: Option<String>,
     context: Option<crate::composer_context::MessageContext>,
     created_by: Option<String>,
+    model_switch: Option<Box<model_switch::ModelSwitch>>,
 }
 
 impl TimelineMessage {
@@ -737,6 +744,9 @@ impl TimelineMessage {
             text: self.text?,
             context: self.context,
             created_by: self.created_by,
+            reasoning_change: self
+                .model_switch
+                .and_then(|change| change.reasoning_change()),
         })
     }
 }
@@ -823,6 +833,15 @@ impl Conversation {
                         self.transcript.upsert(ConversationEntry::Message(message))
                     }),
                     ThreadEvent::ItemUpdated {
+                        payload: TimelineItem::UserMessage(entry),
+                    } => entry
+                        .model_switch
+                        .and_then(|change| change.reasoning_change())
+                        .is_some_and(|change| {
+                            self.transcript
+                                .set_reasoning_change(&entry.message_id, change)
+                        }),
+                    ThreadEvent::ItemUpdated {
                         payload: TimelineItem::TodoList(list),
                     } => self.transcript.upsert(ConversationEntry::TodoList(list)),
                     ThreadEvent::ItemUpdated {
@@ -896,6 +915,39 @@ mod tests {
     use crate::connection::{Answer, QuestionResponse};
     use serde_json::json;
     use uuid::Uuid;
+
+    #[test]
+    fn attaches_saved_reasoning_change_to_its_user_message_without_duplicating_it() {
+        let mut conversation = Conversation::default();
+        let message = json!({"id":"user-two", "role":"user", "text":"next"});
+        let item = json!({"type":"user_message", "messageId":"user-two", "text":"next",
+        "modelSwitch": {
+            "from": {"instanceId":"codex", "model":"gpt-5.4", "options":[{"id":"reasoningEffort", "value":"high"}]},
+            "to": {"instanceId":"codex", "model":"gpt-5.4", "options":[{"id":"reasoningEffort", "value":"low"}]},
+        }});
+        assert!(
+            conversation
+                .apply(json!({"kind":"event", "sequence":1,
+            "event":{"type":"message.updated", "payload":message}}))
+                .unwrap()
+        );
+        assert!(
+            conversation
+                .apply(json!({"kind":"event", "sequence":2,
+            "event":{"type":"turn-item.updated", "payload":item}}))
+                .unwrap()
+        );
+        let current = conversation.messages();
+        assert_eq!(current.len(), 1);
+        assert_eq!(current[0].reasoning_change.unwrap().label(), "High → Low");
+        assert!(
+            conversation
+                .apply(json!({"kind":"snapshot", "snapshotSequence":3,
+            "projection":{"messages":[message], "visibleTurnItems":[{"item":item}]}}))
+                .unwrap()
+        );
+        assert_eq!(conversation.messages(), current);
+    }
 
     #[test]
     fn live_question_waits_for_its_details_and_rejects_invalid_or_stale_responses() {

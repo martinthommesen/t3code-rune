@@ -2383,6 +2383,23 @@ set -eu
             .dispatch(serde_json::from_value(next).unwrap())
             .unwrap();
         assert_ne!(first.run_id, next.run_id);
+        if let Some(effort) = changed_effort {
+            let change: String = connection
+                .query_row(
+                    "SELECT json_extract(payload_json, '$.modelSwitch')
+                 FROM orchestration_v2_projection_turn_items
+                 WHERE run_id = ?1 AND type = 'user_message'",
+                    [&next.run_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&change).unwrap(),
+                json!({
+                    "from":reasoning_selection(ReasoningEffort::High), "to":reasoning_selection(effort),
+                })
+            );
+        }
         worker.sender().wake();
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {

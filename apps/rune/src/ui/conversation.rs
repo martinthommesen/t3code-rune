@@ -288,13 +288,38 @@ pub(super) fn transcript(
         .map_or(entries.len(), |first_user| first_user + 1);
     let (before, after) = entries.split_at(split);
     let entry_row = |entry: &ConversationEntry, index: usize| match entry {
-        ConversationEntry::Message(message) if message.role == "user" => Some(user_message(
-            Some(conversation),
-            message,
-            bubble_width,
-            layout.viewport[0],
-            colors,
-        )),
+        ConversationEntry::Message(message) if message.role == "user" => {
+            let bubble = user_message(
+                Some(conversation),
+                message,
+                bubble_width,
+                layout.viewport[0],
+                colors,
+            );
+            let Some(change) = message.reasoning_change else {
+                return Some(bubble);
+            };
+            let rule = || {
+                el().h(1.0)
+                    .grow(1.0)
+                    .fill(colors.fallbacks.line.alpha(0.7))
+                    .a11y_hidden()
+            };
+            let divider = row()
+                .key(format!("message-reasoning-change-{}", message.id))
+                .w_full()
+                .h(38.0)
+                .center_y()
+                .gap(16.0)
+                .child(rule())
+                .child(
+                    text(change.label())
+                        .font(TextStyle::new(11.0, 500.0).lh(14.0))
+                        .color(colors.muted),
+                )
+                .child(rule());
+            Some(col().w_full().child(divider).child(bubble))
+        }
         ConversationEntry::Message(message) => {
             Some(response(message, conversation, workspace, colors))
         }
@@ -381,6 +406,7 @@ pub(super) fn draft_prompt(thread_id: &str, prompt: &str, layout: Layout, palett
             text: prompt.to_owned(),
             context: None,
             created_by: None,
+            reasoning_change: None,
         },
         layout.max_bubble_width(),
         layout.viewport[0],
