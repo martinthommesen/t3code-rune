@@ -22,6 +22,7 @@ const TERMINAL_LAYOUTS: &str = "terminalLayouts";
 const TERMINAL_HEIGHTS: &str = "terminalDrawerHeights";
 const TERMINAL_CONFIRMATION: &str = "confirmTerminalClose";
 const THREAD_DELETE_CONFIRMATION: &str = "confirmThreadDelete";
+const THREAD_ARCHIVE_CONFIRMATION: &str = "confirmThreadArchive";
 const THREAD_DETAILS_CLOSED: &str = "threadDetailsInlineClosed";
 const ONBOARDING_COMPLETED: &str = "onboardingCompletedAt";
 const SIDEBAR_OPEN: &str = "chat_thread_sidebar_open";
@@ -35,6 +36,7 @@ pub(crate) struct ClientSettings {
     path: Option<PathBuf>,
     confirm_terminal_close: bool,
     confirm_thread_delete: bool,
+    confirm_thread_archive: bool,
     terminal_heights: TerminalHeights,
     terminal_layouts: terminal::Layouts,
     closed_thread_details: ClosedThreadDetails,
@@ -48,6 +50,7 @@ impl Default for ClientSettings {
             path: None,
             confirm_terminal_close: true,
             confirm_thread_delete: true,
+            confirm_thread_archive: false,
             terminal_heights: TerminalHeights::new(),
             terminal_layouts: terminal::Layouts::new(),
             closed_thread_details: ClosedThreadDetails::new(),
@@ -63,12 +66,16 @@ impl ClientSettings {
         let document = read_document(&path).ok();
         let confirm_terminal_close = document
             .as_ref()
-            .and_then(|document| confirmation(document, TERMINAL_CONFIRMATION).ok())
+            .and_then(|document| confirmation(document, TERMINAL_CONFIRMATION, true).ok())
             .unwrap_or(true);
         let confirm_thread_delete = document
             .as_ref()
-            .and_then(|document| confirmation(document, THREAD_DELETE_CONFIRMATION).ok())
+            .and_then(|document| confirmation(document, THREAD_DELETE_CONFIRMATION, true).ok())
             .unwrap_or(true);
+        let confirm_thread_archive = document
+            .as_ref()
+            .and_then(|document| confirmation(document, THREAD_ARCHIVE_CONFIRMATION, false).ok())
+            .unwrap_or(false);
         let terminal_heights = document
             .as_ref()
             .and_then(|document| terminal_heights(document).ok())
@@ -85,6 +92,7 @@ impl ClientSettings {
             path: Some(path),
             confirm_terminal_close,
             confirm_thread_delete,
+            confirm_thread_archive,
             terminal_heights,
             terminal_layouts,
             closed_thread_details,
@@ -288,6 +296,16 @@ impl ClientSettings {
         self.appearance.import(electron_profile)
     }
 
+    pub(crate) fn confirm_thread_archive(&self) -> bool {
+        self.confirm_thread_archive
+    }
+
+    pub(crate) fn set_confirm_thread_archive(&mut self, confirm: bool) -> io::Result<()> {
+        self.write_confirmation(THREAD_ARCHIVE_CONFIRMATION, confirm)?;
+        self.confirm_thread_archive = confirm;
+        Ok(())
+    }
+
     pub(crate) fn confirm_thread_delete(&self) -> bool {
         self.confirm_thread_delete
     }
@@ -308,7 +326,7 @@ impl ClientSettings {
         if let Some(path) = &self.path {
             let target = resolve_file_target(path)?;
             let mut document = read_document(&target)?;
-            confirmation(&document, key)?;
+            confirmation(&document, key, false)?;
             preference_object(&mut document)?.insert(key.to_owned(), Value::Bool(confirm));
             write_document(&target, &document)?;
         }
@@ -363,14 +381,14 @@ fn terminal_heights(document: &Map<String, Value>) -> io::Result<TerminalHeights
         .map(Option::unwrap_or_default)
 }
 
-fn confirmation(document: &Map<String, Value>, key: &str) -> io::Result<bool> {
+fn confirmation(document: &Map<String, Value>, key: &str, default: bool) -> io::Result<bool> {
     let preferences = match document.get("settings") {
         Some(value) => value.as_object().ok_or_else(invalid_document)?,
         None => document,
     };
     match preferences.get(key) {
         Some(value) => value.as_bool().ok_or_else(invalid_document),
-        None => Ok(true),
+        None => Ok(default),
     }
 }
 

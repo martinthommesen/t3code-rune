@@ -168,6 +168,14 @@ impl State {
             .map(|error| format!("Could not save client settings. {error}"));
     }
 
+    fn set_thread_archive_confirmation(&mut self, enabled: bool) {
+        self.settings.error = self
+            .client_settings
+            .set_confirm_thread_archive(enabled)
+            .err()
+            .map(|error| format!("Could not save client settings. {error}"));
+    }
+
     fn set_thread_delete_confirmation(&mut self, enabled: bool) {
         self.settings.error = self
             .client_settings
@@ -512,6 +520,33 @@ fn header(page: Page, palette: Palette, border: Color) -> El {
 fn general(state: &State, palette: Palette, width: f32, large_touch_switch: bool) -> El {
     let terminal_confirmation = state.client_settings.confirm_terminal_close();
     let thread_confirmation = state.client_settings.confirm_thread_delete();
+    let archive_confirmation = state.client_settings.confirm_thread_archive();
+    let archive_switch = switch_track(
+        archive_confirmation,
+        large_touch_switch,
+        palette,
+        palette.accent,
+    )
+    .key("confirm-thread-archiving")
+    .label("Confirm thread archiving")
+    .focusable(true)
+    .on_press_tx(|state: &mut State, _| {
+        state.set_thread_archive_confirmation(!state.client_settings.confirm_thread_archive());
+    });
+    let archive_reset = archive_confirmation.then(|| {
+        icon_button(
+            "reset-archive-confirmation",
+            "Reset archive confirmation to default",
+            &RESET,
+            12.0,
+            20.0,
+            palette,
+            |state, tx| {
+                state.set_thread_archive_confirmation(false);
+                tx.focus_when_shown("archive-confirmation", tx.focus_visible());
+            },
+        )
+    });
     let delete_switch = switch_track(
         thread_confirmation,
         large_touch_switch,
@@ -564,6 +599,16 @@ fn general(state: &State, palette: Palette, width: f32, large_touch_switch: bool
                 .w_full()
                 .radius(12.0)
                 .border(1.0, palette.line)
+                .child(confirmation_row(
+                    palette,
+                    width,
+                    "archive-confirmation",
+                    "Archive confirmation",
+                    "Require a second click on the inline archive action before a thread is archived.",
+                    archive_switch,
+                    archive_reset,
+                ))
+                .child(el().w_full().h(1.0).fill(palette.line))
                 .child(confirmation_row(
                     palette,
                     width,

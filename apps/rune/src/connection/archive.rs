@@ -6,6 +6,7 @@ use super::{Command, Connection, Event, EventSender, REQUEST_TIMEOUT, Session, S
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ArchiveAction {
+    Archive,
     Unarchive,
     Delete,
 }
@@ -13,6 +14,7 @@ pub(crate) enum ArchiveAction {
 impl ArchiveAction {
     fn command(self) -> &'static str {
         match self {
+            Self::Archive => "thread.archive",
             Self::Unarchive => "thread.unarchive",
             Self::Delete => "thread.delete",
         }
@@ -20,6 +22,7 @@ impl ArchiveAction {
 
     pub(crate) fn activity(self) -> &'static str {
         match self {
+            Self::Archive => "archiving",
             Self::Unarchive => "unarchiving",
             Self::Delete => "deleting",
         }
@@ -69,10 +72,18 @@ impl Session {
             sent_at: Instant::now(),
         };
         let allowed = match action {
-            ArchiveAction::Unarchive => self.archive_writes,
-            ArchiveAction::Delete => self.archive_deletes,
+            ArchiveAction::Archive => {
+                self.archive_active_writes
+                    && self.shell.contains_unarchived_thread(&request.thread_id)
+            }
+            ArchiveAction::Unarchive => {
+                self.archive_writes && self.shell.contains_archived_thread(&request.thread_id)
+            }
+            ArchiveAction::Delete => {
+                self.archive_deletes && self.shell.contains_archived_thread(&request.thread_id)
+            }
         };
-        if !allowed || !self.shell.contains_archived_thread(&request.thread_id) {
+        if !allowed {
             events.send(request.settled(Err("This archive action is unavailable.".into())));
             return Ok(());
         }

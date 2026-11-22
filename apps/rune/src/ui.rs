@@ -15,6 +15,7 @@ use crate::connection::{
 
 mod approval;
 mod composer;
+mod confirmation;
 mod conversation;
 mod draft_hero;
 mod file_preview;
@@ -286,6 +287,7 @@ struct DraftRefs {
 struct State {
     sidebar_open: bool,
     sidebar: sidebar::SidebarState,
+    thread_actions: sidebar::thread_actions::Panel,
     history: History,
     url: TextEdit,
     pairing_code: TextEdit,
@@ -328,6 +330,7 @@ impl Default for State {
         Self {
             sidebar_open: true,
             sidebar: sidebar::SidebarState::default(),
+            thread_actions: sidebar::thread_actions::Panel::default(),
             history: History::default(),
             url: TextEdit::new("http://127.0.0.1:3773"),
             pairing_code: TextEdit::new("").secure(),
@@ -1172,12 +1175,13 @@ impl State {
             }
             Event::ArchiveAvailable {
                 readable,
+                archivable,
                 writable,
                 deletable,
             } => {
                 self.settings
                     .archive
-                    .available(readable, writable, deletable);
+                    .available(readable, archivable, writable, deletable);
             }
             Event::ArchivedThreads(threads) => self.settings.archive.update(threads),
             Event::ArchiveActionSettled {
@@ -1757,6 +1761,7 @@ impl State {
         if let Some(project) = &mut workspace.selection {
             let project_present = shell.projects.iter().any(|entry| entry.id == project.id);
             if let ProjectView::Conversation(conversation) = &project.view
+                && !self.thread_actions.pending_navigation(&conversation.id)
                 && (!project_present
                     || !shell
                         .threads
@@ -1959,6 +1964,7 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
     } else {
         state
             .terminal_close_dialog(palette)
+            .or_else(|| sidebar::thread_actions::confirmation(state, palette))
             .or_else(|| settings::overlay(state, palette, width, height, cx))
             .or_else(|| file_preview::expanded(state, detail_layout, palette))
     };
@@ -1967,8 +1973,9 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
     } else {
         new_thread::overlay(state, palette, width, height)
     };
+    let menu = sidebar::thread_actions::menu(state, width, height);
     let palette_open = command_palette.is_some();
-    let modal_open = modal.is_some() || palette_open;
+    let modal_open = modal.is_some() || palette_open || menu.is_some();
     let mut body = col()
         .key("t3-code-window")
         .w_full()
@@ -2040,6 +2047,8 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
     if !onboarding_open {
         if let Some(dialog) = modal {
             body = body.child(if palette_open { dialog.inert() } else { dialog });
+        } else if !palette_open && let Some(menu) = menu {
+            body = body.child(menu);
         } else if !palette_open
             && let Some(menu) = state
                 .terminal

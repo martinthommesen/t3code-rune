@@ -138,6 +138,7 @@ pub(crate) enum Event {
     },
     ArchiveAvailable {
         readable: bool,
+        archivable: bool,
         writable: bool,
         deletable: bool,
     },
@@ -939,6 +940,8 @@ struct Capabilities {
     thread_stop: Option<bool>,
     #[serde(rename = "t3ArchiveSnapshots")]
     archive_snapshots: Option<bool>,
+    #[serde(rename = "t3ThreadArchive")]
+    thread_archive: Option<bool>,
     #[serde(default, rename = "t3ThreadUnarchive")]
     thread_unarchive: bool,
     #[serde(default, rename = "t3ArchivedThreadDelete")]
@@ -1279,6 +1282,7 @@ struct Session {
     shell_request_id: String,
     initial_shell: bool,
     archive: ArchiveState,
+    archive_active_writes: bool,
     archive_writes: bool,
     archive_deletes: bool,
     pending_archive_actions: HashMap<String, archive::PendingAction>,
@@ -1411,6 +1415,10 @@ impl Session {
             } else {
                 ArchiveState::Disabled
             },
+            archive_active_writes: capabilities
+                .thread_archive
+                .unwrap_or(!capabilities.read_only)
+                && scope.is_some_and(can_operate),
             archive_writes: capabilities.thread_unarchive && scope.is_some_and(can_operate),
             archive_deletes: capabilities.thread_archive_delete && scope.is_some_and(can_operate),
             pending_archive_actions: HashMap::new(),
@@ -3127,6 +3135,7 @@ async fn run(
         let connected_at = Instant::now();
         events.send(Event::ArchiveAvailable {
             readable: !matches!(session.archive, ArchiveState::Disabled),
+            archivable: session.archive_active_writes,
             writable: session.archive_writes,
             deletable: session.archive_deletes,
         });

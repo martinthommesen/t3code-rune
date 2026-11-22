@@ -556,6 +556,13 @@ impl Shell {
         self.archive.iter().map(|row| row.thread.clone()).collect()
     }
 
+    pub(super) fn contains_unarchived_thread(&self, thread_id: &str) -> bool {
+        self.threads
+            .iter()
+            .any(|row| row.thread.id == thread_id && !row.thread.archived)
+            && !self.contains_archived_thread(thread_id)
+    }
+
     pub(super) fn contains_archived_thread(&self, thread_id: &str) -> bool {
         self.archive.iter().any(|row| row.thread.id == thread_id)
     }

@@ -19,6 +19,7 @@ use super::{Project, ProjectView, Shell, State, Thread, Workspace};
 pub(super) mod project_badge;
 pub(super) mod project_scope;
 pub(super) mod provider_badge;
+pub(super) mod thread_actions;
 
 pub(super) use project_scope::overlay as project_scope_overlay;
 
@@ -212,7 +213,7 @@ impl SidebarState {
         let mut threads: Vec<_> = shell
             .threads
             .iter()
-            .filter(|thread| self.scope.matches(&thread.project_id))
+            .filter(|thread| !thread.archived && self.scope.matches(&thread.project_id))
             .filter_map(|thread| {
                 projects
                     .get(thread.project_id.as_str())
@@ -224,9 +225,7 @@ impl SidebarState {
                     || normalized_search(&thread.title).contains(&query)
             })
             .collect();
-        threads.sort_by_cached_key(|(_, thread)| {
-            (thread.archived, Reverse(thread.activity_timestamp()))
-        });
+        threads.sort_by_cached_key(|(_, thread)| Reverse(thread.activity_timestamp()));
         threads
     }
 }
@@ -979,7 +978,7 @@ fn thread_card(
                 true
             });
     }
-    card
+    thread_actions::target(card, thread.id.clone(), can_rename)
 }
 
 fn status(thread: &Thread) -> Option<&'static str> {

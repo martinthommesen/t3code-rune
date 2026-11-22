@@ -33,6 +33,7 @@ static CHECK: rune::Icon = glyph!("check", r#"<path d="m20 6-11 11-5-5"/>"#);
 #[derive(Default)]
 pub(in crate::ui) struct Panel {
     available: bool,
+    archivable: bool,
     writable: bool,
     deletable: bool,
     confirmation: Option<delete::Confirmation>,
@@ -44,13 +45,24 @@ pub(in crate::ui) struct Panel {
 }
 
 impl Panel {
-    pub(in crate::ui) fn available(&mut self, readable: bool, writable: bool, deletable: bool) {
+    pub(in crate::ui) fn available(
+        &mut self,
+        readable: bool,
+        archivable: bool,
+        writable: bool,
+        deletable: bool,
+    ) {
         self.available = readable;
+        self.archivable = archivable;
         self.writable = writable;
         self.deletable = deletable;
         if !readable {
             self.threads = None;
         }
+    }
+
+    pub(in crate::ui) fn can_archive(&self, thread_id: &str) -> bool {
+        self.archivable && !self.pending.contains_key(thread_id)
     }
 
     pub(in crate::ui) fn update(&mut self, threads: Result<Vec<Thread>, String>) {
@@ -78,9 +90,15 @@ impl State {
         self.settings.archive.dismiss_scope(tx);
     }
 
-    fn submit_archive_action(&mut self, action: ArchiveAction, thread_id: &str, tx: &mut Tx) {
+    pub(in crate::ui) fn submit_archive_action(
+        &mut self,
+        action: ArchiveAction,
+        thread_id: &str,
+        tx: &mut Tx,
+    ) {
         let archive = &mut self.settings.archive;
         let enabled = match action {
+            ArchiveAction::Archive => archive.archivable,
             ArchiveAction::Unarchive => archive.writable,
             ArchiveAction::Delete => archive.deletable,
         };
@@ -99,9 +117,10 @@ impl State {
             .pending
             .insert(thread_id.to_owned(), (action, operation));
         archive.error = None;
-        if tx
-            .focused()
-            .is_some_and(|key| key == action_key(action, thread_id))
+        if action != ArchiveAction::Archive
+            && tx
+                .focused()
+                .is_some_and(|key| key == action_key(action, thread_id))
         {
             tx.focus("close-client-settings", tx.focus_visible());
         }
@@ -122,6 +141,10 @@ pub(in crate::ui) fn settle(
         return;
     }
     archive.pending.remove(thread_id);
+    if action == ArchiveAction::Archive {
+        crate::ui::sidebar::thread_actions::settle(state, thread_id, result);
+        return;
+    }
     match result {
         Ok(()) => {
             if let Some(Ok(threads)) = archive.threads.as_mut() {
@@ -136,6 +159,7 @@ pub(in crate::ui) fn settle(
         }
         Err(message) => {
             let label = match action {
+                ArchiveAction::Archive => "Failed to archive thread.",
                 ArchiveAction::Unarchive => "Failed to unarchive thread.",
                 ArchiveAction::Delete => "Failed to delete thread.",
             };
@@ -548,6 +572,7 @@ fn unarchive_key(thread_id: &str) -> String {
 
 fn action_key(action: ArchiveAction, thread_id: &str) -> String {
     match action {
+        ArchiveAction::Archive => format!("thread-{thread_id}"),
         ArchiveAction::Unarchive => unarchive_key(thread_id),
         ArchiveAction::Delete => delete::key(thread_id),
     }

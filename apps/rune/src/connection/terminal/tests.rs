@@ -59,6 +59,7 @@ async fn expect_archive_disabled(connection: &Connection, wake: &mut UnboundedRe
         next(connection, wake).await,
         Event::ArchiveAvailable {
             readable: false,
+            archivable: false,
             writable: false,
             deletable: false,
         }
