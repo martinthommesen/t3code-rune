@@ -153,7 +153,9 @@ const SELECT_READY_START: &str = "
     SELECT run.run_id, thread.thread_id, thread.payload_json,
            json_extract(run.payload_json, '$.modelSelection'),
            json_extract(scope.payload_json, '$.cwd'),
-           json_extract(message.payload_json, '$.text'), thread.project_id, scope.scope_id,
+           json_extract(CASE WHEN json_extract(run.payload_json, '$.manualContinuationOfRunId') IS NULL
+                            THEN message.payload_json ELSE source_message.payload_json END, '$.text'),
+           thread.project_id, scope.scope_id,
            run.ordinal, json_extract(provider_thread.payload_json, '$.nativeThreadRef.nativeId')
     FROM orchestration_v2_effect_outbox AS effect
     LEFT JOIN orchestration_command_receipts AS receipt
@@ -175,6 +177,13 @@ const SELECT_READY_START: &str = "
     JOIN orchestration_v2_projection_messages AS message
       ON message.message_id = json_extract(run.payload_json, '$.userMessageId')
          AND message.run_id = run.run_id AND message.role = 'user'
+    LEFT JOIN orchestration_v2_projection_runs AS source
+      ON source.run_id = json_extract(run.payload_json, '$.manualContinuationOfRunId')
+         AND source.thread_id = run.thread_id AND source.ordinal = 1 AND source.status = 'interrupted'
+         AND source.provider_thread_id = run.provider_thread_id
+    LEFT JOIN orchestration_v2_projection_messages AS source_message
+      ON source_message.message_id = json_extract(source.payload_json, '$.userMessageId')
+         AND source_message.run_id = source.run_id AND source_message.role = 'user'
     WHERE effect.effect_id = ?1 AND effect.available_at <= ?2
       AND effect.effect_type = 'provider-turn.start' AND effect.status = 'pending'
       AND json_extract(effect.payload_json, '$.type') = 'provider-turn.start'
@@ -184,6 +193,9 @@ const SELECT_READY_START: &str = "
       AND json_extract(scope.payload_json, '$.cwd') =
           COALESCE(json_extract(thread.payload_json, '$.worktreePath'), project.workspace_root)
       AND run.ordinal > 0 AND run.status = 'starting' AND run.provider_instance_id = 'codex'
+      AND (json_extract(run.payload_json, '$.manualContinuationOfRunId') IS NULL
+           OR (source_message.message_id IS NOT NULL
+               AND LENGTH(json_extract(source_message.payload_json, '$.text')) > 0))
       AND attempt.attempt_ordinal = 1 AND attempt.status = 'pending'
       AND node.status = 'pending' AND (
            (provider_thread.status = 'not_loaded'

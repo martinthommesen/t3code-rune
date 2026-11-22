@@ -4,6 +4,7 @@ mod checkpoint_events;
 pub(super) mod context_handoff;
 mod finish_effect;
 pub(super) mod interrupt_effect;
+mod manual_continuation;
 mod projection;
 pub(super) mod provider_session;
 pub(super) mod provider_turn;
@@ -64,6 +65,7 @@ pub(super) struct MessageDispatch {
     delivery_intent: Option<DeliveryIntent>,
     model_selection: Option<Value>,
     title_seed: Option<String>,
+    manual_continuation_of_run_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -214,6 +216,9 @@ impl TurnCommands {
         &self,
         command: MessageDispatch,
     ) -> Result<DispatchReceipt, TurnCommandError> {
+        if command.manual_continuation_of_run_id.is_some() {
+            return self.dispatch_manual_continuation(command);
+        }
         if matches!(command.dispatch_mode, DispatchMode::QueueAfterActive) {
             return self.dispatch_queued_worktree(command);
         }
@@ -230,6 +235,7 @@ impl TurnCommands {
             delivery_intent: None | Some(DeliveryIntent::Auto),
             model_selection,
             title_seed,
+            manual_continuation_of_run_id: _,
         } = command;
         if [&command_id, &thread_id, &message_id, &text]
             .iter()
@@ -328,33 +334,7 @@ impl TurnCommands {
                 activity,
             },
         )?;
-        transaction.execute(
-            "INSERT INTO orchestration_v2_effect_outbox (
-                effect_id, command_id, thread_id, effect_type, payload_json, status, attempt_count,
-                available_at, created_at, updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, 'pending', 0, ?6, ?6, ?6)",
-            params![
-                turn.start_effect_id(&command_id),
-                command_id,
-                thread_id,
-                EFFECT_TYPE,
-                json!({ "type": EFFECT_TYPE, "runId": turn.run_id }).to_string(),
-                now,
-            ],
-        )?;
-        transaction.execute(
-            "INSERT INTO orchestration_command_receipts (
-                command_id, aggregate_kind, aggregate_id, accepted_at, result_sequence, status, command_type
-             ) VALUES (?1, 'thread', ?2, ?3, ?4, 'accepted', ?5)",
-            params![command_id, thread_id, now, sequence, COMMAND_TYPE],
-        )?;
-        transaction.commit()?;
-        Ok(DispatchReceipt {
-            sequence,
-            #[cfg(test)]
-            run_id: turn.run_id,
-            committed: true,
-        })
+        persist_dispatch_start(transaction, &turn, &command_id, &thread_id, &now, sequence)
     }
 
     pub(super) fn command_output_item(
@@ -604,6 +584,10 @@ enum DispatchStart<'a> {
     Immediate {
         workspace_root: &'a Path,
     },
+    ManualContinuation {
+        workspace_root: &'a Path,
+        source_run_id: &'a str,
+    },
     Preparing {
         workspace_strategy: &'a Value,
         preparation_item_id: String,
@@ -715,6 +699,13 @@ fn append_dispatch(
     });
     let checkpoint_workspace = match &start {
         DispatchStart::Immediate { workspace_root } => Some(*workspace_root),
+        DispatchStart::ManualContinuation {
+            workspace_root,
+            source_run_id,
+        } => {
+            run["manualContinuationOfRunId"] = json!(source_run_id);
+            Some(*workspace_root)
+        }
         DispatchStart::Preparing {
             workspace_strategy, ..
         } => {
@@ -777,6 +768,11 @@ fn append_dispatch(
         }
     ) {
         message["followsThreadSelection"] = json!(true);
+    }
+    if matches!(start, DispatchStart::ManualContinuation { .. }) {
+        message["notification"] = json!({
+            "source": {"kind": "system"}, "outcome": "updated", "summary": "Resumed thread",
+        });
     }
     let events = [
         ("run.created", &run_metadata, run),
@@ -849,12 +845,20 @@ fn append_dispatch(
     }
     let mut sequence = stream.append("message.updated", now, &run_metadata, &message)?;
     if let Some(ordinal) = ordinal {
-        sequence = stream.append(
-            "turn-item.updated",
-            now,
-            &run_metadata,
-            &user_message_item(ids, &message, ordinal, now, "turn_start"),
-        )?;
+        let item = if matches!(start, DispatchStart::ManualContinuation { .. }) {
+            json!({
+                "id": ids.user_turn_item_id, "threadId": thread_id, "runId": ids.run_id,
+                "nodeId": ids.root_node_id, "providerThreadId": ids.provider_thread_id,
+                "providerTurnId": null, "nativeItemRef": null, "parentItemId": null,
+                "ordinal": ordinal, "status": "completed", "title": null, "startedAt": now,
+                "completedAt": now, "updatedAt": now, "type": "notification",
+                "source": message["notification"]["source"], "outcome": message["notification"]["outcome"],
+                "summary": message["notification"]["summary"],
+            })
+        } else {
+            user_message_item(ids, &message, ordinal, now, "turn_start")
+        };
+        sequence = stream.append("turn-item.updated", now, &run_metadata, &item)?;
     }
     if let DispatchStart::Preparing {
         preparation_item_id,
@@ -888,6 +892,43 @@ fn append_dispatch(
     }
     record_projected_sequence(transaction, sequence, now)?;
     Ok(sequence)
+}
+
+fn persist_dispatch_start(
+    transaction: Transaction<'_>,
+    turn: &TurnIds,
+    command_id: &str,
+    thread_id: &str,
+    now: &str,
+    sequence: i64,
+) -> Result<DispatchReceipt, TurnCommandError> {
+    transaction.execute(
+        "INSERT INTO orchestration_v2_effect_outbox (
+            effect_id, command_id, thread_id, effect_type, payload_json, status, attempt_count,
+            available_at, created_at, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, 'pending', 0, ?6, ?6, ?6)",
+        params![
+            turn.start_effect_id(command_id),
+            command_id,
+            thread_id,
+            EFFECT_TYPE,
+            json!({ "type": EFFECT_TYPE, "runId": turn.run_id }).to_string(),
+            now,
+        ],
+    )?;
+    transaction.execute(
+        "INSERT INTO orchestration_command_receipts (
+            command_id, aggregate_kind, aggregate_id, accepted_at, result_sequence, status, command_type
+         ) VALUES (?1, 'thread', ?2, ?3, ?4, 'accepted', ?5)",
+        params![command_id, thread_id, now, sequence, COMMAND_TYPE],
+    )?;
+    transaction.commit()?;
+    Ok(DispatchReceipt {
+        sequence,
+        #[cfg(test)]
+        run_id: turn.run_id.clone(),
+        committed: true,
+    })
 }
 
 fn root_checkpoint_scope(ids: &TurnIds, thread_id: &str, workspace: &Path, now: &str) -> Value {

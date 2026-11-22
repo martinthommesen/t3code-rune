@@ -3,6 +3,12 @@ SELECT run.run_id, run.ordinal, node.node_id, provider.provider_thread_id,
 FROM orchestration_v2_projection_threads AS thread
 JOIN projection_projects AS project ON project.project_id = thread.project_id
 JOIN orchestration_v2_projection_runs AS run ON run.thread_id = thread.thread_id
+LEFT JOIN orchestration_v2_projection_runs AS resumed_source
+  ON resumed_source.thread_id = run.thread_id
+ AND resumed_source.run_id = json_extract(run.payload_json, '$.manualContinuationOfRunId')
+ AND resumed_source.ordinal = 1 AND resumed_source.status = 'interrupted'
+ AND resumed_source.provider_thread_id = run.provider_thread_id
+ AND json_extract(resumed_source.payload_json, '$.workspacePreparation.type') = 'worktree'
 JOIN orchestration_v2_projection_run_attempts AS attempt
   ON attempt.attempt_id = json_extract(run.payload_json, '$.activeAttemptId')
  AND attempt.run_id = run.run_id
@@ -21,7 +27,8 @@ WHERE thread.thread_id = ?1 AND thread.archived_at IS NULL AND thread.deleted_at
   AND json_extract(thread.payload_json, '$.lineage.rootThreadId') = thread.thread_id
   AND json_extract(thread.payload_json, '$.forkedFrom') IS NULL
   AND (json_extract(thread.payload_json, '$.worktreePath') IS NULL
-       OR json_extract(run.payload_json, '$.workspacePreparation.type') = 'worktree')
+       OR json_extract(run.payload_json, '$.workspacePreparation.type') = 'worktree'
+       OR resumed_source.run_id IS NOT NULL)
   AND thread.active_provider_thread_id = provider.provider_thread_id
   AND provider.driver = 'codex' AND provider.provider_instance_id = 'codex'
   AND provider.provider_session_id = 'provider-session:provider-instance:codex:shared'
@@ -54,7 +61,8 @@ WHERE thread.thread_id = ?1 AND thread.archived_at IS NULL AND thread.deleted_at
     WHERE other.thread_id = thread.thread_id AND other.run_id <> run.run_id
       AND (other.status IN ('preparing', 'starting', 'running', 'waiting')
            OR (other.status = 'queued'
-               AND json_extract(run.payload_json, '$.workspacePreparation.type') IS NOT 'worktree'))
+               AND json_extract(run.payload_json, '$.workspacePreparation.type') IS NOT 'worktree'
+               AND resumed_source.run_id IS NULL))
   )
   AND NOT EXISTS (
     SELECT 1 FROM orchestration_v2_projection_provider_turns AS native_turn

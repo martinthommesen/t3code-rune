@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
+use serde_json::{Value, json};
 use time::OffsetDateTime;
 
 use super::{
@@ -20,8 +21,7 @@ pub(in crate::server) enum ResumeOutcome {
     PreviouslyRejected(String),
 }
 
-const STOPPED_WORKTREE: &str = "
-    SELECT json_extract(thread.payload_json, '$.worktreePath')
+pub(in crate::server::turn_commands) const STOPPED_WORKTREE_FILTER: &str = "
     FROM orchestration_v2_projection_threads AS thread
     JOIN projection_projects AS project ON project.project_id = thread.project_id
     JOIN orchestration_v2_projection_runs AS first ON first.thread_id = thread.thread_id AND first.ordinal = 1
@@ -59,6 +59,31 @@ const SELECTED_QUEUED_RUN: &str = "
               WHERE active.thread_id = run.thread_id AND active.status IN ('preparing', 'starting', 'running', 'waiting')
           )
     )";
+
+const AFTER_MANUAL_CONTINUATION: &str = "
+    SELECT thread.payload_json
+    FROM orchestration_v2_projection_threads AS thread
+    JOIN projection_projects AS project ON project.project_id = thread.project_id
+    JOIN orchestration_v2_projection_runs AS source
+      ON source.thread_id = thread.thread_id AND source.ordinal = 1
+    JOIN orchestration_v2_projection_runs AS resumed
+      ON resumed.thread_id = thread.thread_id
+       AND json_extract(resumed.payload_json, '$.manualContinuationOfRunId') = source.run_id
+       AND resumed.provider_thread_id = source.provider_thread_id
+    WHERE thread.thread_id = ?1 AND thread.archived_at IS NULL AND thread.deleted_at IS NULL
+      AND project.archived_at IS NULL AND project.deleted_at IS NULL
+      AND thread.active_provider_thread_id = source.provider_thread_id
+      AND source.status = 'interrupted'
+      AND json_extract(source.payload_json, '$.workspacePreparation.type') = 'worktree'
+      AND json_extract(thread.payload_json, '$.worktreePath') IS NOT NULL
+      AND resumed.provider_instance_id = 'codex'
+      AND resumed.status IN ('starting', 'running', 'waiting', 'completed')
+      AND NOT EXISTS (
+          SELECT 1 FROM orchestration_v2_projection_runs AS held
+          WHERE held.thread_id = thread.thread_id AND held.status = 'queued'
+            AND json_extract(held.payload_json, '$.queueHeld') = 1
+      )
+    LIMIT 1";
 
 impl TurnCommands {
     pub(in crate::server) fn resume_worktree_queue(
@@ -123,23 +148,36 @@ impl TurnCommands {
             transaction.commit()?;
             return Ok(ResumeOutcome::InvalidSelection);
         }
-        let worktree = transaction
-            .query_row(STOPPED_WORKTREE, [thread_id], |row| {
-                row.get::<_, Option<String>>(0)
-            })
-            .optional()?;
-        let Some(worktree) = worktree else {
-            return Err(TurnCommandError::Unsupported(
-                "This queue requires a worktree run interrupted before provider start.",
-            ));
+        let continued_thread = if selected.is_none() {
+            transaction
+                .query_row(AFTER_MANUAL_CONTINUATION, [thread_id], |row| {
+                    row.get::<_, String>(0)
+                })
+                .optional()?
+        } else {
+            None
         };
-        let Some(worktree) = worktree else {
-            reject(&transaction, thread_id, command_id, command_type, &now)?;
-            transaction.commit()?;
-            return Ok(ResumeOutcome::Unresolved);
-        };
-        if !Path::new(&worktree).is_dir() {
-            return Err(TurnCommandError::Unsupported(UNRESOLVED_WORKTREE));
+        if continued_thread.is_none() {
+            let worktree = transaction
+                .query_row(
+                    &format!("SELECT json_extract(thread.payload_json, '$.worktreePath') {STOPPED_WORKTREE_FILTER}"),
+                    [thread_id],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()?;
+            let Some(worktree) = worktree else {
+                return Err(TurnCommandError::Unsupported(
+                    "This queue requires a worktree run interrupted before provider start.",
+                ));
+            };
+            let Some(worktree) = worktree else {
+                reject(&transaction, thread_id, command_id, command_type, &now)?;
+                transaction.commit()?;
+                return Ok(ResumeOutcome::Unresolved);
+            };
+            if !Path::new(&worktree).is_dir() {
+                return Err(TurnCommandError::Unsupported(UNRESOLVED_WORKTREE));
+            }
         }
         let stream = ThreadEventStream::command(&transaction, thread_id, command_id);
         let mut sequence = None;
@@ -147,10 +185,17 @@ impl TurnCommands {
             run["queueHeld"] = false.into();
             sequence = Some(append_hold_state(&stream, &now, &run)?);
         }
-        let Some(sequence) = sequence else {
-            return Err(TurnCommandError::Unsupported(
-                "There are no queued turns to resume.",
-            ));
+        let sequence = match (sequence, continued_thread) {
+            (Some(sequence), _) => sequence,
+            (None, Some(thread)) => {
+                let payload: Value = serde_json::from_str(&thread)?;
+                stream.append("thread.metadata-updated", &now, &json!({}), &payload)?
+            }
+            (None, None) => {
+                return Err(TurnCommandError::Unsupported(
+                    "There are no queued turns to resume.",
+                ));
+            }
         };
         commit_receipt(
             &transaction,

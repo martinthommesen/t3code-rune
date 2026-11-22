@@ -14,6 +14,7 @@ use super::{
 };
 
 mod resume;
+pub(super) use resume::STOPPED_WORKTREE_FILTER;
 pub(in crate::server) use resume::{INVALID_SELECTION, ResumeOutcome, UNRESOLVED_WORKTREE};
 
 #[cfg(test)]
@@ -199,7 +200,10 @@ pub(super) fn hold_queue(
     Ok(tail)
 }
 
-fn queued_runs(connection: &Connection, thread_id: &str) -> Result<Vec<Value>, TurnCommandError> {
+pub(super) fn queued_runs(
+    connection: &Connection,
+    thread_id: &str,
+) -> Result<Vec<Value>, TurnCommandError> {
     let mut query = connection.prepare(
         "SELECT payload_json FROM orchestration_v2_projection_runs
          WHERE thread_id = ?1 AND status = 'queued' ORDER BY ordinal",
@@ -210,7 +214,7 @@ fn queued_runs(connection: &Connection, thread_id: &str) -> Result<Vec<Value>, T
         .collect()
 }
 
-fn append_hold_state(
+pub(super) fn append_hold_state(
     stream: &ThreadEventStream<'_>,
     now: &str,
     run: &Value,

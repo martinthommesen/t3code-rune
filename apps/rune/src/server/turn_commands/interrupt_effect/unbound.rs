@@ -90,7 +90,9 @@ pub(super) fn interrupt(
     }
     let interrupted = super::settlement::interrupted(&run.run, now)?;
     let mut sequence = stream.append("run.updated", now, &metadata, &interrupted)?;
-    if interrupted["workspacePreparation"]["type"] == "worktree" {
+    if interrupted["workspacePreparation"]["type"] == "worktree"
+        || interrupted["manualContinuationOfRunId"].is_string()
+    {
         sequence = hold_queue(&stream, now)?.unwrap_or(sequence);
     }
     transaction.execute(

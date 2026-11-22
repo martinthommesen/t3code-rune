@@ -2,10 +2,10 @@ use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use serde_json::{Map, Value, json};
 use time::OffsetDateTime;
 
-use super::queued_worktree::{ROOT_SCOPE_MATCH, START_ORIGIN};
+use super::queued_worktree::{ROOT_SCOPE_MATCH, START_ORIGIN, hold_queue};
 use super::{
-    CODEX_INSTANCE, ThreadEventStream, TurnCommandError, TurnCommands, record_projected_sequence,
-    timestamp,
+    CODEX_INSTANCE, ThreadEventStream, TurnCommandError, TurnCommands, allocate_turn_item_in_run,
+    encode_id_part, record_projected_sequence, timestamp,
 };
 
 pub(in crate::server) enum RecoveryTrigger<'a> {
@@ -86,6 +86,7 @@ impl TurnCommands {
                         item: row.get(6)?,
                         provider_thread: row.get(7)?,
                         provider_session: row.get(8)?,
+                        ordinal: row.get(9)?,
                     })
                 },
             )
@@ -105,48 +106,15 @@ impl TurnCommands {
             "nodeId": state.node_id,
             "providerInstanceId": CODEX_INSTANCE,
         });
-        for (event_type, original) in [
-            ("run-attempt.updated", state.attempt),
-            ("node.updated", state.node),
-        ] {
-            let mut payload: Map<String, Value> = serde_json::from_str(&original)?;
-            if payload.get("status") == Some(&json!("running")) {
-                payload.insert("status".into(), json!("pending"));
-                payload.insert("startedAt".into(), Value::Null);
-                stream.append(event_type, &now, &node_metadata, &Value::Object(payload))?;
-            }
-        }
-        let mut item: Map<String, Value> = serde_json::from_str(&state.item)?;
-        for (key, value) in [
-            ("inputIntent", json!("queued_turn")),
-            ("status", json!("pending")),
-            ("startedAt", Value::Null),
-            ("completedAt", Value::Null),
-            ("updatedAt", json!(now)),
-        ] {
-            item.insert(key.into(), value);
-        }
-        stream.append(
-            "turn-item.updated",
-            &now,
-            &json!({ "runId": state.run_id }),
-            &Value::Object(item),
-        )?;
-        let mut run: Map<String, Value> = serde_json::from_str(&state.run)?;
-        for (key, value) in [
-            ("status", json!("queued")),
-            ("queueHeld", json!(true)),
-            ("queuePosition", json!(1)),
-            ("startedAt", Value::Null),
-        ] {
-            run.insert(key.into(), value);
-        }
-        let mut sequence = stream.append(
-            "run.updated",
-            &now,
-            &json!({ "runId": state.run_id, "providerInstanceId": CODEX_INSTANCE }),
-            &Value::Object(run),
-        )?;
+        let run: Map<String, Value> = serde_json::from_str(&state.run)?;
+        let mut sequence = if run
+            .get("manualContinuationOfRunId")
+            .is_some_and(Value::is_string)
+        {
+            state.cancel_manual_start(&stream, &now, trigger, reason, &node_metadata, run)?
+        } else {
+            state.hold_user_start(&stream, &now, &node_metadata, run)?
+        };
         let provider_metadata = json!({ "driver": "codex", "providerInstanceId": CODEX_INSTANCE });
         let mut provider_thread: Map<String, Value> = serde_json::from_str(&state.provider_thread)?;
         if provider_thread.get("status") == Some(&json!("active")) {
@@ -201,12 +169,120 @@ struct Unaccepted {
     item: String,
     provider_thread: String,
     provider_session: Option<String>,
+    ordinal: i64,
+}
+
+impl Unaccepted {
+    fn hold_user_start(
+        &self,
+        stream: &ThreadEventStream<'_>,
+        now: &str,
+        node_metadata: &Value,
+        mut run: Map<String, Value>,
+    ) -> Result<i64, TurnCommandError> {
+        for (event_type, original) in [
+            ("run-attempt.updated", &self.attempt),
+            ("node.updated", &self.node),
+        ] {
+            let mut payload: Map<String, Value> = serde_json::from_str(original)?;
+            if payload.get("status") == Some(&json!("running")) {
+                payload.insert("status".into(), json!("pending"));
+                payload.insert("startedAt".into(), Value::Null);
+                stream.append(event_type, now, node_metadata, &Value::Object(payload))?;
+            }
+        }
+        let mut item: Map<String, Value> = serde_json::from_str(&self.item)?;
+        for (key, value) in [
+            ("inputIntent", json!("queued_turn")),
+            ("status", json!("pending")),
+            ("startedAt", Value::Null),
+            ("completedAt", Value::Null),
+            ("updatedAt", json!(now)),
+        ] {
+            item.insert(key.into(), value);
+        }
+        stream.append(
+            "turn-item.updated",
+            now,
+            &json!({ "runId": self.run_id }),
+            &Value::Object(item),
+        )?;
+        for (key, value) in [
+            ("status", json!("queued")),
+            ("queueHeld", json!(true)),
+            ("queuePosition", json!(1)),
+            ("startedAt", Value::Null),
+        ] {
+            run.insert(key.into(), value);
+        }
+        Ok(stream.append(
+            "run.updated",
+            now,
+            &json!({ "runId": self.run_id, "providerInstanceId": CODEX_INSTANCE }),
+            &Value::Object(run),
+        )?)
+    }
+
+    fn cancel_manual_start(
+        &self,
+        stream: &ThreadEventStream<'_>,
+        now: &str,
+        trigger: &str,
+        reason: &str,
+        node_metadata: &Value,
+        mut run: Map<String, Value>,
+    ) -> Result<i64, TurnCommandError> {
+        hold_queue(stream, now)?;
+        run.insert("status".into(), json!("cancelled"));
+        run.insert("queuePosition".into(), Value::Null);
+        run.insert("completedAt".into(), json!(now));
+        let provider_thread_id = run.get("providerThreadId").cloned();
+        stream.append(
+            "run.updated",
+            now,
+            &json!({"runId":self.run_id, "providerInstanceId":CODEX_INSTANCE}),
+            &Value::Object(run),
+        )?;
+        for (event_type, original) in [
+            ("run-attempt.updated", &self.attempt),
+            ("node.updated", &self.node),
+        ] {
+            let mut payload: Value = serde_json::from_str(original)?;
+            payload["status"] = json!("cancelled");
+            payload["completedAt"] = json!(now);
+            stream.append(event_type, now, node_metadata, &payload)?;
+        }
+        let item_id = format!(
+            "turn-item:run:{}:signal:server-recovery",
+            encode_id_part(&self.run_id)
+        );
+        let ordinal =
+            allocate_turn_item_in_run(stream.transaction, &self.thread_id, &item_id, self.ordinal)?;
+        let title = if trigger == "startup" {
+            "Server restarted"
+        } else {
+            "Server shut down"
+        };
+        Ok(stream.append(
+            "turn-item.updated",
+            now,
+            node_metadata,
+            &json!({
+                "id": item_id, "threadId": self.thread_id, "runId": self.run_id,
+                "nodeId": self.node_id, "providerThreadId": provider_thread_id,
+                "providerTurnId": null, "nativeItemRef": null, "parentItemId": null,
+                "ordinal": ordinal, "status": "completed", "title": title,
+                "startedAt": now, "completedAt": now, "updatedAt": now,
+                "type": "system_notice", "message": reason,
+            }),
+        )?)
+    }
 }
 
 const UNACCEPTED_START: &str = "
     SELECT run.thread_id, run.run_id, node.node_id,
            run.payload_json, attempt.payload_json, node.payload_json, item.payload_json,
-           provider_thread.payload_json, session.payload_json
+           provider_thread.payload_json, session.payload_json, run.ordinal
     FROM orchestration_v2_effect_outbox AS effect
     LEFT JOIN orchestration_command_receipts AS receipt ON receipt.command_id = effect.command_id
     JOIN orchestration_v2_projection_runs AS run ON run.thread_id = effect.thread_id
@@ -224,10 +300,15 @@ const UNACCEPTED_START: &str = "
       ON provider_thread.provider_thread_id = run.provider_thread_id
          AND provider_thread.thread_id = run.thread_id
     JOIN orchestration_v2_projection_turn_items AS item ON item.run_id = run.run_id
-      AND item.type = 'user_message'
-      AND json_extract(item.payload_json, '$.messageId') = json_extract(run.payload_json, '$.userMessageId')
-      AND json_extract(item.payload_json, '$.createdBy') = 'user'
-      AND json_extract(item.payload_json, '$.creationSource') = 'web'
+      AND (
+          (item.type = 'user_message'
+           AND json_extract(item.payload_json, '$.messageId') = json_extract(run.payload_json, '$.userMessageId')
+           AND json_extract(item.payload_json, '$.createdBy') = 'user'
+           AND json_extract(item.payload_json, '$.creationSource') = 'web')
+          OR (json_extract(run.payload_json, '$.manualContinuationOfRunId') IS NOT NULL
+              AND item.type = 'notification' AND json_extract(item.payload_json, '$.source.kind') = 'system'
+              AND json_extract(item.payload_json, '$.summary') = 'Resumed thread')
+      )
     LEFT JOIN orchestration_v2_projection_provider_session_bindings AS binding
       ON binding.provider_session_id = provider_thread.provider_session_id AND binding.thread_id = run.thread_id
     LEFT JOIN orchestration_v2_projection_provider_sessions AS session
