@@ -4,16 +4,19 @@ use rune::{
 };
 use uuid::Uuid;
 
-use crate::connection::{KeybindingEdit, KeybindingRule, TERMINAL_TOGGLE};
+use crate::connection::{KeybindingEdit, KeybindingRule};
 
 use super::super::{Palette, State, error_text, sidebar_header::activate_on_return};
 use super::{CONTROL, DESCRIPTION, SECTION, keybinding_catalog as catalog};
+
+mod command_picker;
 
 const SEARCH: &str = "search-keybindings";
 const ADD: &str = "add-keybinding";
 const CAPTURE: &str = "record-keybinding";
 const SAVE: &str = "save-keybinding";
 const LABEL: TextStyle = TextStyle::new(14.0, 400.0).lh(20.0);
+const RECORDER: TextStyle = TextStyle::new(14.0, 400.0).mono().lh(20.0);
 const MONO: TextStyle = TextStyle::new(11.0, 400.0).mono().lh(16.0);
 const CAPTION: TextStyle = TextStyle::new(12.0, 400.0).lh(16.0);
 
@@ -31,6 +34,7 @@ static ELLIPSIS: Icon = glyph!(
 pub(super) struct Panel {
     query: TextEdit,
     draft: Option<Draft>,
+    picker: Option<command_picker::Picker>,
     actions: Option<KeybindingRule>,
     pending: Option<Uuid>,
     status: CatalogStatus,
@@ -41,6 +45,7 @@ impl Panel {
     pub(super) fn clear_view(&mut self) {
         self.query = TextEdit::default();
         self.draft = None;
+        self.picker = None;
         self.actions = None;
         self.error = None;
     }
@@ -56,8 +61,18 @@ enum CatalogStatus {
 
 struct Draft {
     original: Option<KeybindingRule>,
+    command: Option<&'static str>,
     recorded: Option<String>,
     recording: bool,
+}
+
+impl Draft {
+    fn command(&self) -> Option<&str> {
+        self.original
+            .as_ref()
+            .map(|rule| rule.command.as_str())
+            .or(self.command)
+    }
 }
 
 impl State {
@@ -87,6 +102,7 @@ impl State {
         match result {
             Ok(()) => {
                 panel.draft = None;
+                panel.picker = None;
                 panel.actions = None;
                 panel.error = None;
                 if self.settings.page == super::Page::Keybindings && self.settings.is_open() {
@@ -106,7 +122,7 @@ impl State {
             && self.settings.keybindings.pending.is_none()
     }
 
-    fn start_keybinding_recording(&mut self, original: Option<KeybindingRule>, tx: &mut Tx) {
+    fn add_keybinding(&mut self, tx: &mut Tx) {
         if !self.can_edit_keybindings() {
             return;
         }
@@ -114,7 +130,24 @@ impl State {
         panel.actions = None;
         panel.error = None;
         panel.draft = Some(Draft {
-            original,
+            original: None,
+            command: None,
+            recorded: None,
+            recording: false,
+        });
+        command_picker::open(self, tx);
+    }
+
+    fn start_keybinding_recording(&mut self, original: KeybindingRule, tx: &mut Tx) {
+        if !self.can_edit_keybindings() {
+            return;
+        }
+        let panel = &mut self.settings.keybindings;
+        panel.actions = None;
+        panel.error = None;
+        panel.draft = Some(Draft {
+            original: Some(original),
+            command: None,
             recorded: None,
             recording: true,
         });
@@ -129,6 +162,7 @@ impl State {
                 .map_or_else(|| ADD.to_owned(), row_key);
             tx.focus_when_shown(key, tx.focus_visible());
         }
+        self.settings.keybindings.picker = None;
         self.settings.keybindings.error = None;
     }
 
@@ -137,27 +171,26 @@ impl State {
             return false;
         };
         if event.key == Key::Escape {
-            self.cancel_keybinding_recording(tx);
+            if draft.original.is_none() && draft.recording {
+                draft.recording = false;
+                draft.recorded = None;
+                tx.focus_when_shown(command_picker::TRIGGER, true);
+            } else {
+                self.cancel_keybinding_recording(tx);
+            }
             return true;
         }
-        if !draft.recording {
-            return activate_on_return(self, event, tx, |state, tx| {
-                state
-                    .settings
-                    .keybindings
-                    .draft
-                    .as_mut()
-                    .expect("shortcut editor")
-                    .recording = true;
-                tx.focus(CAPTURE, true);
-            });
+        if event.key == Key::Tab && !draft.recording {
+            return false;
         }
         if !tx.key_repeat()
             && let Some(shortcut) = recorded_key(event, tx.key_base())
         {
             draft.recorded = Some(shortcut);
             draft.recording = false;
-            tx.focus_when_shown(SAVE, true);
+            if draft.command().is_some() {
+                tx.focus_when_shown(SAVE, true);
+            }
         }
         true
     }
@@ -166,7 +199,7 @@ impl State {
         let Some(draft) = &self.settings.keybindings.draft else {
             return;
         };
-        let Some(key) = &draft.recorded else {
+        let (Some(command), Some(key)) = (draft.command(), &draft.recorded) else {
             return;
         };
         let when = draft.original.as_ref().and_then(|original| {
@@ -177,7 +210,7 @@ impl State {
             }
         });
         let rule = KeybindingRule {
-            command: TERMINAL_TOGGLE.into(),
+            command: command.to_owned(),
             key: key.clone(),
             when,
         };
@@ -317,35 +350,49 @@ pub(super) fn page(state: &State, palette: Palette, width: f32) -> El {
                 .px(16.0),
         );
     }
+    let mut body = col()
+        .w_full()
+        .max_w(800.0)
+        .gap(32.0)
+        .child(scope_description(palette))
+        .child(controls);
     if let Some(draft) = panel
         .draft
         .as_ref()
         .filter(|draft| draft.original.is_none())
     {
-        controls = controls.child(
-            card(palette).child(
+        let description = col()
+            .min_w(0.0)
+            .grow(1.0)
+            .gap(4.0)
+            .child(text("New keybinding").font(CONTROL).color(palette.ink))
+            .child(
                 row()
-                    .h(72.0)
-                    .px(16.0)
-                    .gap(8.0)
+                    .gap(10.0)
                     .items_center()
-                    .child(
-                        col()
-                            .min_w(0.0)
-                            .grow(1.0)
-                            .gap(4.0)
-                            .child(text("New keybinding").font(CONTROL).color(palette.ink))
-                            .child(
-                                text("Terminal: Toggle")
-                                    .font(DESCRIPTION)
-                                    .color(palette.muted),
-                            ),
-                    )
-                    .child(editor(draft, panel.pending.is_some(), palette, compact)),
-            ),
-        );
+                    .child(text("When").font(CAPTION).color(palette.muted))
+                    .child(text("Always").font(MONO).color(palette.muted)),
+            );
+        let command = command_picker::trigger(state, palette, compact);
+        let capture = editor(draft, panel.pending.is_some(), palette, compact);
+        let content = if compact {
+            col()
+                .gap(8.0)
+                .child(description)
+                .child(command)
+                .child(capture)
+        } else {
+            row()
+                .min_h(48.0)
+                .gap(8.0)
+                .items_center()
+                .child(description)
+                .child(command)
+                .child(capture)
+        };
+        body = body.child(card(palette).child(content.px(16.0).py(12.0)));
     }
-    col()
+    let scroll = col()
         .key("keybindings-settings-scroll")
         .w_full()
         .min_h(0.0)
@@ -356,15 +403,12 @@ pub(super) fn page(state: &State, palette: Palette, width: f32) -> El {
         })
         .padding(if compact { 16.0 } else { 30.0 })
         .pt(24.0)
-        .child(
-            col()
-                .w_full()
-                .max_w(800.0)
-                .gap(32.0)
-                .child(scope_description(palette))
-                .child(controls)
-                .child(groups),
-        )
+        .child(body.child(groups));
+    let mut content = col().w_full().min_h(0.0).grow(1.0).child(scroll);
+    if let Some([dismiss, popup]) = command_picker::overlay(state, palette, width) {
+        content = content.child(dismiss).child(popup);
+    }
+    content
 }
 
 fn scope_description(palette: Palette) -> El {
@@ -459,7 +503,13 @@ fn toolbar(state: &State, palette: Palette, enabled: bool, compact: bool) -> El 
                 .on_input_change(|state: &mut State, _| {
                     let panel = &mut state.settings.keybindings;
                     if panel.pending.is_none() {
-                        panel.draft = None;
+                        if panel
+                            .draft
+                            .as_ref()
+                            .is_some_and(|draft| draft.original.is_some())
+                        {
+                            panel.draft = None;
+                        }
                         panel.actions = None;
                     }
                 })
@@ -488,7 +538,7 @@ fn toolbar(state: &State, palette: Palette, enabled: bool, compact: bool) -> El 
         "Add keybinding",
         palette,
         enabled && panel.draft.is_none(),
-        |state, tx| state.start_keybinding_recording(None, tx),
+        |state, tx| state.add_keybinding(tx),
     );
     let controls = if compact {
         col().gap(8.0).child(field).child(add)
@@ -508,7 +558,7 @@ fn binding_row(
 ) -> El {
     let panel = &state.settings.keybindings;
     let rule = &entry.binding.rule;
-    let terminal = rule.command == TERMINAL_TOGGLE;
+    let editable = catalog::EDITABLE_COMMANDS.contains(&rule.command.as_str());
     let editing = panel
         .draft
         .as_ref()
@@ -560,7 +610,7 @@ fn binding_row(
     };
     let controls = if let Some(draft) = editing {
         editor(draft, panel.pending.is_some(), palette, compact)
-    } else if terminal && enabled {
+    } else if editable && enabled {
         let edit = rule.clone();
         let label = format!(
             "Edit shortcut for {}: {}",
@@ -577,7 +627,7 @@ fn binding_row(
             label,
             palette,
             true,
-            move |state, tx| state.start_keybinding_recording(Some(edit.clone()), tx),
+            move |state, tx| state.start_keybinding_recording(edit.clone(), tx),
         );
         let menu = rule.clone();
         let actions = action(
@@ -585,7 +635,7 @@ fn binding_row(
                 .center()
                 .child(icon(&ELLIPSIS, 14.0).color(palette.muted).a11y_hidden()),
             action_key(rule),
-            "Actions for Terminal: Toggle",
+            format!("Actions for {}", entry.label),
             palette,
             true,
             move |state, tx| {
@@ -700,7 +750,10 @@ fn editor(draft: &Draft, pending: bool, palette: Palette, compact: bool) -> El {
     let field = el()
         .key(CAPTURE)
         .role("textbox")
-        .label("Keybinding for Terminal: Toggle")
+        .label(draft.command().map_or_else(
+            || "Keybinding for new keybinding".into(),
+            |command| format!("Keybinding for {}", catalog::command_label(command)),
+        ))
         .focusable(!pending)
         .focus_ring(1.0, 1.0, palette.accent)
         .h(28.0)
@@ -717,7 +770,7 @@ fn editor(draft: &Draft, pending: bool, palette: Palette, compact: bool) -> El {
             }
         })
         .on_key(State::handle_keybinding_recording)
-        .child(text(value).font(MONO).color(if draft.recording {
+        .child(text(value).font(RECORDER).color(if draft.recording {
             palette.muted
         } else {
             palette.ink
@@ -729,7 +782,7 @@ fn editor(draft: &Draft, pending: bool, palette: Palette, compact: bool) -> El {
             if pending { "Saving" } else { "Save" },
             palette,
             true,
-            !pending && !draft.recording && draft.recorded.is_some(),
+            !pending && !draft.recording && draft.recorded.is_some() && draft.command().is_some(),
             State::save_keybinding_recording,
         )
     };

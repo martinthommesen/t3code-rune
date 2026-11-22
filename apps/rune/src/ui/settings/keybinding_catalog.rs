@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 
-use crate::connection::{Binding, KeybindingRule, Keybindings};
+use crate::connection::{Binding, KeybindingRule, Keybindings, TERMINAL_TOGGLE};
+
+pub(super) const EDITABLE_COMMANDS: &[&str] = &["sidebar.toggle", TERMINAL_TOGGLE];
 
 pub(super) const GROUPS: &[(&str, &[&str])] = &[
     (
@@ -138,7 +140,7 @@ fn sort_key(command: &str) -> (&str, usize) {
         .map_or((command, 0), |rank| ("usage.open", rank + 1))
 }
 
-fn command_label(command: &str) -> String {
+pub(super) fn command_label(command: &str) -> String {
     let special = match command {
         "workspace.focusNext" => "Focus Next Workspace Area",
         "workspace.focusPrevious" => "Focus Previous Workspace Area",
