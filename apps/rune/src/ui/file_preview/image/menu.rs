@@ -6,7 +6,7 @@ use rune::{
 
 use crate::connection::file_preview::AssetPurpose;
 
-use super::super::{Load, State, binary::Phase};
+use super::super::{Load, State, binary::Phase, copy_notice};
 use super::{Bounds, PICTURE, PreviewImage, expanded::SCROLLER};
 
 const MENU_FONT: TextStyle = TextStyle::new(14.0, 400.0)
@@ -88,9 +88,12 @@ impl Action {
     fn enabled(self, image: &PreviewImage) -> bool {
         match self {
             Self::Save => matches!(image.save, Phase::Ready | Phase::SaveError(_)),
-            Self::CopyImage => image
-                .ready()
-                .is_some_and(|raster| raster.clipboard.is_some()),
+            Self::CopyImage => {
+                image.invalid()
+                    || image
+                        .ready()
+                        .is_some_and(|raster| raster.clipboard.is_some())
+            }
             _ => true,
         }
     }
@@ -174,6 +177,8 @@ impl State {
             Action::CopyImage => {
                 if let Some(clipboard) = image.ready().and_then(|raster| raster.clipboard.clone()) {
                     tx.copy_rich(ClipboardContent::default().with_image(clipboard));
+                } else {
+                    copy_notice::show(self, tx);
                 }
             }
         }

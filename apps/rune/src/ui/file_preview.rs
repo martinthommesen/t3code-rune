@@ -1,4 +1,5 @@
 mod binary;
+pub(super) mod copy_notice;
 mod image;
 
 pub(super) use image::expanded_is_open;

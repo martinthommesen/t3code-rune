@@ -128,6 +128,10 @@ impl PreviewImage {
         }
     }
 
+    fn invalid(&self) -> bool {
+        matches!(self.contents, Contents::Invalid)
+    }
+
     fn ready(&self) -> Option<&Raster> {
         match &self.contents {
             Contents::Ready(raster) => Some(raster),
@@ -233,23 +237,38 @@ pub(super) fn view(
         .grow(1.0)
         .min_h(0.0);
     let Some(raster) = image.ready() else {
-        return surface.center().child(match image.contents {
-            Contents::Failed | Contents::Invalid => {
-                text(if matches!(image.contents, Contents::Invalid) {
-                    "Unable to load image."
-                } else {
-                    "Unable to load workspace image."
-                })
-                .role("alert")
-                .font(ERROR)
-                .color(colors.error)
-                .align(Align::Center)
-            }
+        let invalid = image.invalid();
+        let content = surface.center().child(match image.contents {
+            Contents::Failed | Contents::Invalid => text(if invalid {
+                "Unable to load image."
+            } else {
+                "Unable to load workspace image."
+            })
+            .role("alert")
+            .font(ERROR)
+            .color(colors.error)
+            .align(Align::Center),
             _ => text("Loading image…")
                 .role("status")
                 .font(CRUMB)
                 .color(colors.muted),
         });
+        return if invalid {
+            menu::target(
+                content
+                    .key(PICTURE)
+                    .focusable(true)
+                    .focus_ring(2.0, -2.0, palette.accent),
+                menu::Surface::Docked,
+            )
+            .children(
+                image
+                    .menu
+                    .map(|point| menu::view(menu::Surface::Docked, image, point, bounds)),
+            )
+        } else {
+            content
+        };
     };
     let (width, height) = raster.size;
     let scale = image
