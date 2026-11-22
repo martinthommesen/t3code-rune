@@ -45,11 +45,12 @@ impl ThreadCommands {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, Option<String>>(1)?,
-                    row.get::<_, bool>(2)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, bool>(3)?,
                 ))
             })
             .optional()?;
-        let Some((encoded, deleted, archived_side_chats)) = thread else {
+        let Some((encoded, deleted, archived, archived_side_chats)) = thread else {
             record_rejection(
                 &transaction,
                 thread_id,
@@ -65,6 +66,17 @@ impl ThreadCommands {
             record_rejection(&transaction, thread_id, command_id, &now, &message)?;
             transaction.commit()?;
             return Err(ThreadCommandError::Rejected(message));
+        }
+        if archived.is_none() {
+            record_rejection(
+                &transaction,
+                thread_id,
+                command_id,
+                &now,
+                &format!("Failed to dispatch orchestration command {COMMAND} ({command_id})."),
+            )?;
+            transaction.commit()?;
+            return Err(ThreadCommandError::NotArchived(thread_id.to_owned()));
         }
         if archived_side_chats {
             return Err(ThreadCommandError::Rejected(
@@ -124,7 +136,7 @@ fn record_rejection(
 }
 
 const SELECT_THREAD: &str = "
-    SELECT parent.payload_json, parent.deleted_at, EXISTS (
+    SELECT parent.payload_json, parent.deleted_at, parent.archived_at, EXISTS (
         SELECT 1 FROM orchestration_v2_projection_context_transfers AS transfer
         JOIN orchestration_v2_projection_threads AS child ON child.thread_id = transfer.target_thread_id
         WHERE transfer.source_thread_id = parent.thread_id AND transfer.type = 'fork'

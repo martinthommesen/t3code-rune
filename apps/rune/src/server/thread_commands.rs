@@ -82,6 +82,7 @@ pub(super) enum ThreadCommandError {
     InvalidRequest(String),
     Rejected(String),
     MissingProjection(String),
+    NotArchived(String),
     Database(rusqlite::Error),
 }
 
@@ -93,6 +94,9 @@ impl fmt::Display for ThreadCommandError {
                 formatter,
                 "No orchestration projection exists for thread {thread_id}."
             ),
+            Self::NotArchived(thread_id) => {
+                write!(formatter, "Thread {thread_id} is not archived.")
+            }
             Self::Database(_) => formatter.write_str("Could not save the thread."),
         }
     }

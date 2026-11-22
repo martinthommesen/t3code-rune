@@ -1552,6 +1552,24 @@ fn dispatch_thread(
         {
             defect(id, message)
         }
+        Err(error @ ThreadCommandError::NotArchived(_)) => {
+            let message = error.to_string();
+            failure(
+                id,
+                json!({
+                    "_tag": "OrchestrationV2DispatchCommandError",
+                    "commandId": command_id,
+                    "commandType": command_type,
+                    "message": message,
+                    "detail": message,
+                    "cause": {
+                        "name": "OrchestratorDispatchError",
+                        "message": format!("Failed to dispatch orchestration command {command_type} ({command_id})."),
+                        "cause": message
+                    }
+                }),
+            )
+        }
         Err(ThreadCommandError::MissingProjection(thread_id)) => {
             let message = format!("No orchestration projection exists for thread {thread_id}.");
             failure(
