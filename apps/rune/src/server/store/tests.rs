@@ -193,6 +193,48 @@ fn updates_the_live_sidebar_without_counting_held_runs_or_compaction() {
 }
 
 #[test]
+fn reads_surviving_family_from_an_archived_or_deleted_member() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("statev2.sqlite");
+    crate::server::bootstrap::initialize(&path).unwrap();
+    let db = Connection::open(&path).unwrap();
+    db.execute_batch(
+        "WITH family(id, root, updated, archived, deleted) AS (VALUES
+            ('root', 'root', '2026-01-01', NULL, '2026-01-05'),
+            ('archived', 'root', '2026-01-01', '2026-01-05', NULL),
+            ('survivor-b', 'root', '2026-01-04', NULL, NULL),
+            ('survivor-a', 'root', '2026-01-04', NULL, NULL),
+            ('other', 'other', '2026-01-01', NULL, NULL)
+         )
+         INSERT INTO orchestration_v2_projection_threads (
+             thread_id, project_id, title, default_provider, runtime_mode, interaction_mode,
+             created_at, updated_at, archived_at, deleted_at, payload_json
+         )
+         SELECT id, 'project', id, 'codex', 'full-access', 'default', '2026-01-01', updated,
+                archived, deleted, json_object('id', id, 'lineage', json_object('rootThreadId', root))
+         FROM family;",
+    )
+    .unwrap();
+
+    let store = Store::open(path).unwrap();
+    for member in ["root", "archived", "survivor-a"] {
+        let family = store.thread_family(member).unwrap();
+        assert_eq!(family["snapshotSequence"], 0);
+        let ids: Vec<_> = family["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|thread| thread["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["survivor-a", "survivor-b"]);
+    }
+    assert_eq!(
+        store.thread_family("unknown").unwrap()["threads"],
+        json!([])
+    );
+}
+
+#[test]
 fn inherits_only_message_turn_items_through_each_fork_boundary() {
     let fixture = Fixture::new();
     let db = Connection::open(&fixture.0).unwrap();

@@ -13,6 +13,13 @@ const THREADS: &str = "WHERE t.deleted_at IS NULL AND (t.archived_at IS NOT NULL
 const SELECTED_ACTIVE_THREADS: &str = "WHERE t.deleted_at IS NULL AND t.archived_at IS NULL
     AND t.thread_id IN (SELECT value FROM json_each(?1))
     ORDER BY t.updated_at ASC, t.thread_id ASC";
+const FAMILY_THREADS: &str = "WHERE t.deleted_at IS NULL AND t.archived_at IS NULL
+    AND CASE WHEN json_valid(t.payload_json)
+        THEN json_extract(t.payload_json, '$.lineage.rootThreadId') END = (
+        SELECT json_extract(member.payload_json, '$.lineage.rootThreadId')
+        FROM orchestration_v2_projection_threads member WHERE member.thread_id = ?1
+    )
+    ORDER BY t.updated_at ASC, t.thread_id ASC";
 const ACTIVE_THREAD: &str = "WHERE t.deleted_at IS NULL AND t.archived_at IS NULL
     AND t.thread_id = ?1";
 const PROJECTS: &str = "
@@ -85,6 +92,13 @@ pub(super) fn read_selected_active_threads(
     }
     let ids = serde_json::to_string(ids).expect("serializable thread IDs");
     read_threads(database, SELECTED_ACTIVE_THREADS, [ids])
+}
+
+pub(super) fn read_family_threads(
+    database: &Connection,
+    thread_id: &str,
+) -> rusqlite::Result<Vec<Value>> {
+    read_threads(database, FAMILY_THREADS, [thread_id])
 }
 
 fn read_threads(

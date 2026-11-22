@@ -947,6 +947,21 @@ fn response(
                 ),
             }
         }
+        "orchestration.getThreadFamily" => {
+            let subject = match family_member_id(&payload) {
+                Ok(subject) => subject,
+                Err(message) => return defect(id, message.into()),
+            };
+            match store.thread_family(subject) {
+                Ok(family) => success(id, family),
+                Err(_) => failure(
+                    id,
+                    RpcError::OrchestrationV2GetShellSnapshotError {
+                        message: "Failed to load the thread family",
+                    },
+                ),
+            }
+        }
         "orchestration.getArchivedShellSnapshot" if local.is_some() => {
             match store.live_archived_shell_snapshot() {
                 Ok(snapshot) => success(id, snapshot),
@@ -1080,6 +1095,19 @@ fn browse(id: RequestId, allowed: bool, payload: Value) -> Value {
         },
         Err(error) => failure(id, error),
     }
+}
+
+fn family_member_id(payload: &Value) -> Result<&str, &'static str> {
+    let fields = payload.as_object().ok_or("Expected object")?;
+    let id = fields
+        .get("threadId")
+        .ok_or("Missing key\n  at [\"threadId\"]")?;
+    let id = id.as_str().ok_or("Expected string\n  at [\"threadId\"]")?;
+    let id = super::thread_commands::trim_js(id);
+    if id.is_empty() {
+        return Err("Expected a non-blank string\n  at [\"threadId\"]");
+    }
+    Ok(id)
 }
 
 fn defect(id: RequestId, message: String) -> Value {

@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row};
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 mod command_detail;
 mod fork;
@@ -258,6 +258,15 @@ impl Store {
         let snapshot = shell_snapshot::read_archive(&read, sequence)?;
         read.commit()?;
         Ok(snapshot)
+    }
+
+    pub(super) fn thread_family(&self, thread_id: &str) -> rusqlite::Result<Value> {
+        let mut database = open_readonly(&self.path)?;
+        let read = database.transaction()?;
+        let sequence: u64 = read.query_row(SHELL_SEQUENCE, [], |row| row.get(0))?;
+        let threads = shell_snapshot::read_family_threads(&read, thread_id)?;
+        read.commit()?;
+        Ok(json!({"snapshotSequence": sequence, "threads": threads}))
     }
 
     pub(super) fn older_settled_threads(
