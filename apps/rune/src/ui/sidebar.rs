@@ -11,6 +11,7 @@ use unicode_normalization::UnicodeNormalization;
 
 use crate::connection::ProviderCatalog;
 
+use self::project_scope::ProjectOrdering;
 use super::navigation_history::Destination;
 use super::project_favicons::ProjectFavicons;
 use super::sidebar_header::{self, Colors, Layout};
@@ -24,7 +25,8 @@ pub(super) mod thread_actions;
 pub(super) use project_scope::overlay as project_scope_overlay;
 
 pub(super) fn most_recent_project(shell: &Shell) -> Option<&Project> {
-    project_scope::ordered_projects(shell, false)
+    ProjectOrdering::default()
+        .ordered(shell, false)
         .into_iter()
         .next()
 }
@@ -164,7 +166,7 @@ impl SidebarState {
         changed
     }
 
-    pub(super) fn update_project_scope(&mut self, shell: &Shell) {
+    pub(super) fn update_project_scope(&mut self, shell: &Shell, order: ProjectOrdering<'_>) {
         let projects = &shell.projects;
         self.scope.selected.retain(|id| {
             projects
@@ -177,7 +179,7 @@ impl SidebarState {
             self.picker = None;
         }
         if self.picker == Some(ProjectPicker::Filter) {
-            self.scope.remember_order(shell);
+            self.scope.remember_order(shell, order);
         }
     }
 
@@ -289,7 +291,7 @@ pub(super) fn view(
     if state.sidebar.picker == Some(ProjectPicker::NewThread) {
         sidebar = sidebar.child(project_picker(
             workspace,
-            shell,
+            ProjectOrdering::current(state).ordered(shell, true),
             ProjectPicker::NewThread,
             None,
             colors,
@@ -453,9 +455,9 @@ pub(super) fn toggle_draft_project_picker(state: &mut State, project_id: &str, t
                 .iter()
                 .find(|project| project.id == project_id)?;
             if workspace.is_scratch(current) {
-                let first = shell
-                    .projects
-                    .iter()
+                let first = ProjectOrdering::current(state)
+                    .ordered(shell, true)
+                    .into_iter()
                     .find(|project| !workspace.is_scratch(project));
                 Some(first.map_or_else(
                     || "draft-add-project".to_owned(),
@@ -486,6 +488,7 @@ pub(super) fn close_draft_project_picker(sidebar: &mut SidebarState) {
 }
 
 pub(super) fn draft_project_picker(
+    state: &State,
     workspace: &Workspace,
     project: &Project,
     left: f32,
@@ -495,7 +498,7 @@ pub(super) fn draft_project_picker(
     Some(
         project_picker(
             workspace,
-            workspace.shell.as_ref()?,
+            ProjectOrdering::current(state).picker(workspace.shell.as_ref()?, Some(&project.id)),
             ProjectPicker::Draft,
             Some(project),
             Colors::new(dark),
@@ -548,7 +551,7 @@ pub(super) fn change_draft_project(state: &mut State, target: &str) {
 
 fn project_picker(
     workspace: &Workspace,
-    shell: &Shell,
+    projects: Vec<&Project>,
     picker: ProjectPicker,
     scope: Option<&Project>,
     colors: Colors,
@@ -556,7 +559,7 @@ fn project_picker(
     can_add: bool,
 ) -> El {
     let mut items = col().w_full().padding(4.0);
-    for project in &shell.projects {
+    for project in projects {
         if picker == ProjectPicker::Draft && workspace.is_scratch(project) {
             continue;
         }

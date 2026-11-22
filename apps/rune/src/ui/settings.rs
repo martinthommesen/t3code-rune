@@ -5,6 +5,7 @@ use super::{Palette, State, error_text, sidebar_header};
 mod appearance;
 mod keybinding_catalog;
 mod project;
+mod project_order;
 mod workspace;
 mod worktrees;
 
@@ -76,6 +77,7 @@ pub(super) struct Panel {
     error: Option<String>,
     page: Page,
     project: Option<project::Form>,
+    project_order: project_order::Panel,
     workspace: workspace::Panel,
     worktree_location: worktrees::LocationPanel,
     branch_fields: worktrees::FieldsPanel,
@@ -97,6 +99,7 @@ impl Default for Panel {
             error: None,
             page: Page::General,
             project: None,
+            project_order: project_order::Panel::default(),
             workspace: workspace::Panel::default(),
             worktree_location: worktrees::LocationPanel::default(),
             branch_fields: worktrees::FieldsPanel::default(),
@@ -143,6 +146,7 @@ impl State {
     pub(super) fn close_client_settings(&mut self, tx: &mut Tx) {
         self.save_project_name();
         self.settings.open = false;
+        self.settings.project_order.clear();
         self.settings.keybindings.clear_view();
         self.settings.archive.leave();
         project::dismiss_actions(self);
@@ -195,6 +199,7 @@ impl State {
             self.settings.workspace.submodules.collapse();
         }
         self.settings.page = page;
+        self.settings.project_order.clear();
         if page != Page::Archive {
             self.settings.archive.leave();
         }
@@ -416,8 +421,9 @@ pub(super) fn overlay(
     if let Some(picker) = picker {
         overlay = overlay.child(picker);
     }
-    if let Some(items) =
-        workspace::overlay(state, palette).or_else(|| worktrees::overlay(state, palette))
+    if let Some(items) = project_order::overlay(state, palette)
+        .or_else(|| workspace::overlay(state, palette))
+        .or_else(|| worktrees::overlay(state, palette))
     {
         overlay = overlay.children(items);
     }
@@ -649,7 +655,14 @@ fn general(state: &State, palette: Palette, width: f32, large_touch_switch: bool
         .scroll(ScrollSpec {
             stick_bottom: false,
         })
-        .child(group.max_w(800.0))
+        .child(
+            col()
+                .w_full()
+                .max_w(800.0)
+                .gap(32.0)
+                .child(project_order::section(state, palette, width))
+                .child(group),
+        )
 }
 
 fn confirmation_row(

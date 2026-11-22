@@ -1,6 +1,8 @@
 use std::cmp::Reverse;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
+use icu_collator::{Collator, options::CollatorOptions};
+use icu_locale_core::locale;
 use rune::color::hex;
 use rune::{Align, Color, El, Key, KeyEvent, ScrollSpec, Shadow, Side, TextEdit, TextStyle, Tx};
 use rune::{col, el, icon, row, text, text_input};
@@ -8,8 +10,10 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 use super::{Colors, FILTER, Project, ProjectPicker, SEARCH, Shell, State, Workspace};
 use super::{control, normalized_search, project_badge};
+use crate::client_settings::{ClientSettings, LEGACY_KEY, ProjectOrder};
 use crate::connection::ProjectEdit;
 use crate::ui::{Palette, settings};
+use crate::workspace_path::comparison_path;
 
 const TRIGGER: &str = "project-filter";
 const SEARCH_FIELD: &str = "project-scope-search";
@@ -51,8 +55,8 @@ impl ProjectScope {
         self.hovered_pin = None;
     }
 
-    pub(super) fn remember_order(&mut self, shell: &Shell) {
-        for project in ordered_projects(shell, true) {
+    pub(super) fn remember_order(&mut self, shell: &Shell, order: ProjectOrdering<'_>) {
+        for project in order.ordered(shell, true) {
             if !self.order.contains(&project.id) {
                 self.order.push(project.id.clone());
             }
@@ -82,51 +86,152 @@ impl Choice<'_> {
     }
 }
 
-pub(in crate::ui) fn ordered_projects(shell: &Shell, pinned_first: bool) -> Vec<&Project> {
-    let mut activity = HashMap::<&str, Option<OffsetDateTime>>::new();
-    for thread in shell.threads.iter().filter(|thread| !thread.archived) {
-        let latest = thread.latest_user_activity();
-        activity
-            .entry(thread.project_id.as_str())
-            .and_modify(|time| *time = (*time).max(latest))
-            .or_insert(latest);
-    }
-    let mut projects: Vec<_> = shell
-        .projects
-        .iter()
-        .filter(|project| project.archived_at.is_none())
-        .collect();
-    projects.sort_by_cached_key(|project| {
-        let timestamp = activity
-            .get(project.id.as_str())
-            .copied()
-            .unwrap_or_else(|| {
-                [&project.updated_at, &project.created_at]
-                    .into_iter()
-                    .filter_map(Option::as_deref)
-                    .find_map(|time| OffsetDateTime::parse(time, &Rfc3339).ok())
-            });
-        (
-            pinned_first && project.pinned_at.is_none(),
-            Reverse(timestamp),
-            normalized_search(&project.name),
-            &project.id,
-        )
-    });
-    projects
+#[derive(Clone, Copy, Default)]
+pub(in crate::ui) struct ProjectOrdering<'a> {
+    mode: ProjectOrder,
+    manual: &'a [String],
+    environment: Option<&'a str>,
 }
 
-fn choices<'a>(scope: &ProjectScope, shell: &'a Shell) -> Vec<Choice<'a>> {
+impl<'a> ProjectOrdering<'a> {
+    pub(in crate::ui) fn current(state: &'a State) -> Self {
+        Self::from_settings(&state.client_settings, state.draft_environment.as_deref())
+    }
+
+    pub(in crate::ui) fn from_settings(
+        settings: &'a ClientSettings,
+        environment: Option<&'a str>,
+    ) -> Self {
+        Self {
+            mode: settings.project_order(),
+            manual: settings.manual_project_order(),
+            environment,
+        }
+    }
+
+    pub(in crate::ui) fn ordered(self, shell: &'a Shell, pinned_first: bool) -> Vec<&'a Project> {
+        let mut projects: Vec<_> = shell
+            .projects
+            .iter()
+            .filter(|project| project.archived_at.is_none())
+            .collect();
+        if self.mode == ProjectOrder::Manual {
+            self.apply_manual_order(&mut projects);
+        } else {
+            self.apply_time_order(shell, &mut projects);
+        }
+        if pinned_first {
+            projects.sort_by_key(|project| project.pinned_at.is_none());
+        }
+        projects
+    }
+
+    pub(in crate::ui) fn picker(self, shell: &'a Shell, current: Option<&str>) -> Vec<&'a Project> {
+        let mut projects = self.ordered(shell, true);
+        if let Some(index) = projects
+            .iter()
+            .position(|project| Some(project.id.as_str()) == current)
+        {
+            projects[..=index].rotate_right(1);
+        }
+        projects
+    }
+
+    fn apply_manual_order(self, projects: &mut Vec<&'a Project>) {
+        if self.manual.is_empty() {
+            return;
+        }
+        let mut by_key = HashMap::<String, VecDeque<usize>>::new();
+        for (index, project) in projects.iter().enumerate() {
+            let path = comparison_path(&project.path);
+            if let Some(environment) = self.environment {
+                by_key
+                    .entry(format!("{environment}:{path}"))
+                    .or_default()
+                    .push_back(index);
+            }
+            by_key
+                .entry(format!("{LEGACY_KEY}{path}"))
+                .or_default()
+                .push_back(index);
+        }
+        let mut emitted = vec![false; projects.len()];
+        let preferred = self
+            .manual
+            .iter()
+            .filter_map(|key| {
+                let matches = by_key.get_mut(key)?;
+                let index =
+                    std::iter::from_fn(|| matches.pop_front()).find(|&index| !emitted[index])?;
+                emitted[index] = true;
+                Some(projects[index])
+            })
+            .collect::<Vec<_>>();
+        *projects = preferred
+            .into_iter()
+            .chain(
+                projects
+                    .iter()
+                    .zip(emitted)
+                    .filter_map(|(project, emitted)| (!emitted).then_some(*project)),
+            )
+            .collect();
+    }
+
+    fn apply_time_order(self, shell: &Shell, projects: &mut [&Project]) {
+        let mut activity = HashMap::<&str, Option<OffsetDateTime>>::new();
+        let created = self.mode == ProjectOrder::Created;
+        for thread in shell.threads.iter().filter(|thread| !thread.archived) {
+            let timestamp = if created {
+                sort_timestamp(&thread.created_at).or_else(|| sort_timestamp(&thread.updated_at))
+            } else {
+                thread.latest_user_activity()
+            };
+            activity
+                .entry(&thread.project_id)
+                .and_modify(|time| *time = (*time).max(timestamp))
+                .or_insert(timestamp);
+        }
+        for project in &*projects {
+            activity.entry(&project.id).or_insert_with(|| {
+                if created {
+                    sort_timestamp(&project.created_at)
+                } else {
+                    sort_timestamp(&project.updated_at)
+                        .or_else(|| sort_timestamp(&project.created_at))
+                }
+            });
+        }
+        let collator = Collator::try_new(locale!("en-US").into(), CollatorOptions::default())
+            .expect("English collation data is available");
+        projects.sort_by(|left, right| {
+            Reverse(activity[left.id.as_str()])
+                .cmp(&Reverse(activity[right.id.as_str()]))
+                .then_with(|| collator.compare(&left.name, &right.name))
+                .then_with(|| collator.compare(&left.path, &right.path))
+        });
+    }
+}
+
+fn sort_timestamp(value: &Option<String>) -> Option<OffsetDateTime> {
+    OffsetDateTime::parse(value.as_deref()?, &Rfc3339).ok()
+}
+
+fn choices<'a>(
+    scope: &ProjectScope,
+    shell: &'a Shell,
+    order: ProjectOrdering<'a>,
+) -> Vec<Choice<'a>> {
     let query = normalized_search(scope.query.text.trim());
-    let order: HashMap<_, _> = scope
+    let open_order: HashMap<_, _> = scope
         .order
         .iter()
         .enumerate()
         .map(|(i, id)| (id.as_str(), i))
         .collect();
-    let mut projects = ordered_projects(shell, true);
+    let mut projects = order.ordered(shell, true);
     projects.sort_by_key(|project| {
-        order
+        open_order
             .get(project.id.as_str())
             .copied()
             .unwrap_or(usize::MAX)
@@ -172,7 +277,8 @@ pub(super) fn view_trigger(
     let scoped: Vec<_> = if selected.is_empty() {
         Vec::new()
     } else {
-        ordered_projects(shell, true)
+        ProjectOrdering::current(state)
+            .ordered(shell, true)
             .into_iter()
             .filter(|project| selected.contains(&project.id))
             .collect()
@@ -227,7 +333,11 @@ pub(super) fn view_trigger(
                     .as_ref()
                     .and_then(|workspace| workspace.shell.as_ref())
                 {
-                    state.sidebar.scope.remember_order(shell);
+                    let order = ProjectOrdering::from_settings(
+                        &state.client_settings,
+                        state.draft_environment.as_deref(),
+                    );
+                    state.sidebar.scope.remember_order(shell, order);
                 }
                 tx.focus_when_shown(SEARCH_FIELD, false);
             }
@@ -241,7 +351,11 @@ pub(in crate::ui) fn overlay(state: &State, palette: Palette, height: f32) -> Op
     }
     let workspace = state.workspace.as_ref()?;
     let scope = &state.sidebar.scope;
-    let items = choices(scope, workspace.shell.as_ref()?);
+    let items = choices(
+        scope,
+        workspace.shell.as_ref()?,
+        ProjectOrdering::current(state),
+    );
     let active_index = highlighted(scope, &items);
     let [fill, ink, muted, accent, border] = if palette.dark {
         ["#111111", "#f5f5f5", "#a3a3a3", "#346bf1", "#ffffff"]
@@ -446,7 +560,7 @@ fn key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
         return false;
     };
     let scope = &state.sidebar.scope;
-    let items = choices(scope, shell);
+    let items = choices(scope, shell, ProjectOrdering::current(state));
     let Some(index) = highlighted(scope, &items) else {
         return true;
     };

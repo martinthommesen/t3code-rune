@@ -1771,7 +1771,11 @@ impl State {
         let Some(workspace) = &mut self.workspace else {
             return;
         };
-        self.sidebar.update_project_scope(&shell);
+        let order = sidebar::project_scope::ProjectOrdering::from_settings(
+            &self.client_settings,
+            self.draft_environment.as_deref(),
+        );
+        self.sidebar.update_project_scope(&shell, order);
         if let Some(project) = &mut workspace.selection {
             let project_present = shell.projects.iter().any(|entry| entry.id == project.id);
             if let ProjectView::Conversation(conversation) = &project.view
@@ -2574,6 +2578,9 @@ pub(crate) fn run(
         client_settings
             .import_electron_appearance(profile)
             .map_err(|error| format!("Could not import Electron appearance. {error}"))?;
+        client_settings
+            .import_electron_project_order(profile)
+            .map_err(|error| format!("Could not import Electron project order. {error}"))?;
     }
     let spec = AppSpec {
         min_size: Some((400.0, 360.0)),

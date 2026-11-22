@@ -10,11 +10,13 @@ use crate::server::parse_settings_json;
 mod appearance;
 mod chromium;
 mod editor;
+mod project_order;
 mod reasoning;
 mod terminal;
 
 pub(crate) use appearance::AppearanceMode;
 use appearance::AppearancePreference;
+pub(crate) use project_order::{LEGACY_KEY, ProjectOrder};
 pub(crate) use terminal::{SavedTerminalGroup, SavedTerminalLayout, SplitDirection};
 
 const FILE_NAME: &str = "client-settings.json";
@@ -42,6 +44,7 @@ pub(crate) struct ClientSettings {
     closed_thread_details: ClosedThreadDetails,
     appearance: AppearancePreference,
     reasoning: reasoning::Preferences,
+    project_order: project_order::Preferences,
 }
 
 impl Default for ClientSettings {
@@ -56,6 +59,7 @@ impl Default for ClientSettings {
             closed_thread_details: ClosedThreadDetails::new(),
             appearance: AppearancePreference::default(),
             reasoning: reasoning::Preferences::default(),
+            project_order: project_order::Preferences::default(),
         }
     }
 }
@@ -97,6 +101,10 @@ impl ClientSettings {
             terminal_layouts,
             closed_thread_details,
             appearance: AppearancePreference::at_state_dir(state_dir),
+            project_order: document
+                .as_ref()
+                .map(project_order::Preferences::read)
+                .unwrap_or_default(),
             reasoning: document
                 .as_ref()
                 .and_then(|value| reasoning::Preferences::read(value).ok())

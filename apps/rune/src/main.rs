@@ -7,6 +7,7 @@ mod server;
 mod snooze;
 mod ui;
 mod workspace_image;
+mod workspace_path;
 
 use clap::{Parser, Subcommand};
 use std::{env, error::Error, ffi::OsString, io, path::PathBuf};
@@ -43,7 +44,7 @@ struct Arguments {
     #[arg(
         long,
         value_name = "PATH",
-        help = "Read the appearance preference from an Electron desktop profile"
+        help = "Read appearance and saved project order from an Electron desktop profile"
     )]
     electron_profile: Option<PathBuf>,
 

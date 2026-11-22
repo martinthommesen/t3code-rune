@@ -107,9 +107,14 @@ pub(super) fn view(
     if sidebar::draft_picker_open(state) {
         let popup_width = width.min(288.0);
         let left = (trigger_center - popup_width / 2.0).clamp(0.0, width - popup_width);
-        if let Some(picker) =
-            sidebar::draft_project_picker(workspace, project, left, popup_width, palette.dark)
-        {
+        if let Some(picker) = sidebar::draft_project_picker(
+            state,
+            workspace,
+            project,
+            left,
+            popup_width,
+            palette.dark,
+        ) {
             stack = stack.child(picker);
         }
     }

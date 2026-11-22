@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::client_settings::AppearanceMode;
 use crate::connection::Keybindings;
 
-use super::sidebar::{normalized_search, project_badge, project_scope::ordered_projects};
+use super::sidebar::{normalized_search, project_badge, project_scope::ProjectOrdering};
 use super::{Destination, Draft, Palette, Project, ProjectView, State, Workspace};
 
 mod commands;
@@ -196,35 +196,30 @@ impl State {
     }
 }
 
-fn project_choices<'a>(workspace: &'a Workspace, query: &str) -> Vec<Choice<'a>> {
+fn project_choices<'a>(state: &'a State, workspace: &'a Workspace, query: &str) -> Vec<Choice<'a>> {
     let query = normalized_search(query.trim());
-    let mut projects: Vec<_> = workspace
-        .shell
+    let current = workspace
+        .selection
         .as_ref()
-        .into_iter()
-        .flat_map(|shell| ordered_projects(shell, true))
-        .filter(|project| !workspace.is_scratch(project))
-        .collect();
-    if let Some(selection) = &workspace.selection {
-        projects.sort_by_key(|project| (project.pinned_at.is_none(), project.id != selection.id));
+        .map(|selection| selection.id.as_str());
+    let projects = workspace.shell.as_ref().map_or_else(Vec::new, |shell| {
+        ProjectOrdering::current(state).picker(shell, current)
+    });
+    let mut items = Vec::new();
+    let mut scratch_position = None;
+    let mut pinned = 0;
+    for project in projects {
+        if workspace.is_scratch(project) {
+            if project.pinned_at.is_some() || Some(project.id.as_str()) == current {
+                scratch_position.get_or_insert(items.len());
+            }
+        } else {
+            pinned += usize::from(project.pinned_at.is_some());
+            items.push(Choice::Project(project, 0));
+        }
     }
-    let no_project_position = if workspace.scratch_projects && workspace.project_writes {
-        Some(
-            (projects
-                .iter()
-                .take_while(|project| project.pinned_at.is_some())
-                .count()
-                + 1)
-            .min(projects.len()),
-        )
-    } else {
-        None
-    };
-    let mut items: Vec<_> = projects
-        .into_iter()
-        .map(|project| Choice::Project(project, 0))
-        .collect();
-    if let Some(position) = no_project_position {
+    if workspace.scratch_projects && workspace.project_writes {
+        let position = scratch_position.unwrap_or_else(|| (pinned + 1).min(items.len()));
         items.insert(position, Choice::Scratch);
     }
     if items.is_empty() && workspace.project_writes {
@@ -284,7 +279,7 @@ fn sections<'a>(state: &'a State, workspace: &'a Workspace, picker: &Picker) -> 
     let query = &picker.query.text;
     let (label, items) = match picker.page {
         Page::Commands => return command_sections(state, workspace, query),
-        Page::Projects => ("Projects", project_choices(workspace, query)),
+        Page::Projects => ("Projects", project_choices(state, workspace, query)),
         Page::Appearance => {
             let query = ranking::Query::new(query);
             let items = [

@@ -72,6 +72,13 @@ const SETTINGS: &[Setting] = &[
     },
     Setting {
         page: Page::General,
+        id: "project-order",
+        anchor: super::project_order::ROW,
+        title: "Project order",
+        terms: "sort projects sidebar manual created recent",
+    },
+    Setting {
+        page: Page::General,
         id: "delete-confirmation",
         anchor: "delete-confirmation",
         title: "Delete confirmation",

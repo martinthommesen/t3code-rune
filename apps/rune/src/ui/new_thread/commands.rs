@@ -4,7 +4,7 @@ use rune::Tx;
 
 use super::ranking::{Query, Rank};
 use crate::ui::settings::search as settings_search;
-use crate::ui::sidebar::{most_recent_project, project_scope::ordered_projects};
+use crate::ui::sidebar::{most_recent_project, project_scope::ProjectOrdering};
 use crate::ui::{Project, ProjectView, State, Thread, Workspace};
 
 #[derive(Clone, Copy)]
@@ -258,9 +258,10 @@ pub(super) fn sections<'a>(
             .iter()
             .find(|project| project.id == selection.id)
     });
+    let new_here = current.or_else(|| most_recent_project(shell));
     let mut actions = Vec::new();
     if workspace.launch_writes && !workspace.reconnecting {
-        if let Some(project) = current.or_else(|| most_recent_project(shell)) {
+        if let Some(project) = new_here {
             actions.push(Choice::NewHere(project));
         }
         actions.push(Choice::ChooseProject);
@@ -328,7 +329,8 @@ pub(super) fn sections<'a>(
         }
         return sections;
     }
-    let projects: Vec<_> = ordered_projects(shell, true)
+    let projects: Vec<_> = ProjectOrdering::current(state)
+        .picker(shell, current.map(|project| project.id.as_str()))
         .into_iter()
         .filter(|project| !workspace.is_scratch(project))
         .collect();
@@ -338,6 +340,7 @@ pub(super) fn sections<'a>(
             entries: projects
                 .iter()
                 .enumerate()
+                .filter(|(_, project)| new_here.is_none_or(|here| here.id != project.id))
                 .map(|(index, project)| Choice::NewIn(project, index + 1))
                 .collect(),
         });

@@ -6,25 +6,45 @@ use std::path::{Path, PathBuf};
 
 use super::AppearanceMode;
 use super::appearance::MODE_KEY;
+use super::project_order::UI_STATE_KEY;
 
 mod record;
 
 use record::{Reader, decompress_snappy, invalid, matches_checksum, visit_log};
 
 const ORIGINS: [&[u8]; 2] = [b"_t3code://app\0", b"_t3code-dev://app\0"];
-const KEYS: [&str; 3] = [MODE_KEY, "t3code:theme-follow-system", "t3code:theme"];
+const KEYS: [&str; 4] = [
+    MODE_KEY,
+    "t3code:theme-follow-system",
+    "t3code:theme",
+    UI_STATE_KEY,
+];
 const MAX_FILE_SIZE: u64 = 64 * 1024 * 1024;
 const TABLE_FOOTER_SIZE: usize = 48;
 const BLOCK_TRAILER_SIZE: usize = 5;
 
 /// Read Chromium's files directly so importing never opens or mutates its LevelDB database.
 pub(super) fn read_appearance(electron_profile: &Path) -> io::Result<Option<AppearanceMode>> {
+    Ok(read_storage(electron_profile)?.mode())
+}
+
+pub(super) fn read_project_order(electron_profile: &Path) -> io::Result<Option<String>> {
+    Ok(read_storage(electron_profile)?
+        .0
+        .into_iter()
+        .find_map(|origin| {
+            let [_, _, _, value] = origin;
+            value.and_then(|entry| entry.value)
+        }))
+}
+
+fn read_storage(electron_profile: &Path) -> io::Result<StoredValues> {
     let profile = electron_profile.canonicalize()?;
     let directory = confined_path(&profile, &profile.join("Local Storage").join("leveldb"))?;
     let current = current_manifest(&directory)?;
     let manifest = read_file(&directory, &current)?;
     let live = read_manifest(&manifest)?;
-    let mut values = StoredAppearance::default();
+    let mut values = StoredValues::default();
     for number in live.tables {
         let bytes = match read_file(&directory, &format!("{number:06}.ldb")) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -61,7 +81,7 @@ pub(super) fn read_appearance(electron_profile: &Path) -> io::Result<Option<Appe
             "Chromium Local Storage changed while reading",
         ));
     }
-    Ok(values.mode())
+    Ok(values)
 }
 
 fn current_manifest(directory: &Path) -> io::Result<String> {
@@ -156,7 +176,7 @@ fn read_manifest(bytes: &[u8]) -> io::Result<LiveFiles> {
     Ok(live)
 }
 
-fn read_batch(batch: &[u8], values: &mut StoredAppearance) -> io::Result<()> {
+fn read_batch(batch: &[u8], values: &mut StoredValues) -> io::Result<()> {
     let mut reader = Reader::new(batch);
     let base_sequence = reader.u64()?;
     for index in 0..reader.u32()? {
@@ -175,7 +195,7 @@ fn read_batch(batch: &[u8], values: &mut StoredAppearance) -> io::Result<()> {
     Ok(())
 }
 
-fn read_table(table: &[u8], values: &mut StoredAppearance) -> io::Result<()> {
+fn read_table(table: &[u8], values: &mut StoredValues) -> io::Result<()> {
     let footer_offset = table
         .len()
         .checked_sub(TABLE_FOOTER_SIZE)
@@ -250,14 +270,14 @@ fn visit_block(
 }
 
 #[derive(Default)]
-struct StoredAppearance([[Option<Entry>; KEYS.len()]; ORIGINS.len()]);
+struct StoredValues([[Option<Entry>; KEYS.len()]; ORIGINS.len()]);
 
 struct Entry {
     sequence: u64,
     value: Option<String>,
 }
 
-impl StoredAppearance {
+impl StoredValues {
     fn record(&mut self, raw_key: &[u8], raw_value: Option<&[u8]>, sequence: u64) {
         for (index, origin) in ORIGINS.into_iter().enumerate() {
             if let Some(key) = raw_key.strip_prefix(origin)
@@ -272,7 +292,7 @@ impl StoredAppearance {
                 {
                     *entry = Some(Entry {
                         sequence,
-                        value: raw_value.and_then(chromium_string),
+                        value: raw_value.and_then(|value| chromium_string(value, KEYS[key_index])),
                     });
                 }
                 return;
@@ -282,7 +302,7 @@ impl StoredAppearance {
 
     fn mode(&self) -> Option<AppearanceMode> {
         self.0.iter().find_map(|origin| {
-            let [mode, follow, theme] = origin
+            let [mode, follow, theme, _] = origin
                 .each_ref()
                 .map(|entry| entry.as_ref().and_then(|entry| entry.value.as_deref()));
             if let Some(mode) = mode.and_then(AppearanceMode::parse) {
@@ -321,9 +341,8 @@ fn matches_chromium_key(actual: &[u8], expected: &str) -> bool {
     }
 }
 
-fn chromium_string(bytes: &[u8]) -> Option<String> {
-    const MAX_APPEARANCE_VALUE_BYTES: usize = 4096;
-    if bytes.len() > MAX_APPEARANCE_VALUE_BYTES {
+fn chromium_string(bytes: &[u8], key: &str) -> Option<String> {
+    if key != UI_STATE_KEY && bytes.len() > 4096 {
         return None;
     }
     match bytes.split_first()? {
