@@ -17,11 +17,16 @@ use super::project_favicons::ProjectFavicons;
 use super::sidebar_header::{self, Colors, Layout};
 use super::{Project, ProjectView, Shell, State, Thread, Workspace};
 
+pub(super) mod draft_project_picker;
 pub(super) mod project_badge;
 pub(super) mod project_scope;
 pub(super) mod provider_badge;
 pub(super) mod thread_actions;
 
+pub(super) use draft_project_picker::{
+    overlay as draft_project_overlay, poll as poll_draft_project_picker,
+    toggle as toggle_draft_project_picker,
+};
 pub(super) use project_scope::overlay as project_scope_overlay;
 
 pub(super) fn most_recent_project(shell: &Shell) -> Option<&Project> {
@@ -81,6 +86,7 @@ enum ProjectPicker {
 pub(super) struct SidebarState {
     search: TextEdit,
     scope: project_scope::ProjectScope,
+    draft_project_picker: draft_project_picker::Panel,
     picker: Option<ProjectPicker>,
     now_minute: i64,
     rename: Option<Rename>,
@@ -289,14 +295,11 @@ pub(super) fn view(
         .child(toolbar(state, workspace, shell, colors, dark))
         .child(list);
     if state.sidebar.picker == Some(ProjectPicker::NewThread) {
-        sidebar = sidebar.child(project_picker(
+        sidebar = sidebar.child(new_thread_project_picker(
             workspace,
             ProjectOrdering::current(state).ordered(shell, true),
-            ProjectPicker::NewThread,
-            None,
             colors,
             dark,
-            false,
         ));
     }
     sidebar
@@ -442,37 +445,6 @@ fn start_new_thread(state: &mut State, tx: &mut Tx) {
     }
 }
 
-pub(super) fn toggle_draft_project_picker(state: &mut State, project_id: &str, tx: &mut Tx) {
-    state.draft_workspace_popup = None;
-    if draft_picker_open(state) {
-        state.sidebar.picker = None;
-    } else {
-        state.sidebar.picker = Some(ProjectPicker::Draft);
-        let focus = state.workspace.as_ref().and_then(|workspace| {
-            let shell = workspace.shell.as_ref()?;
-            let current = shell
-                .projects
-                .iter()
-                .find(|project| project.id == project_id)?;
-            if workspace.is_scratch(current) {
-                let first = ProjectOrdering::current(state)
-                    .ordered(shell, true)
-                    .into_iter()
-                    .find(|project| !workspace.is_scratch(project));
-                Some(first.map_or_else(
-                    || "draft-add-project".to_owned(),
-                    |project| format!("project-option-{}", project.id),
-                ))
-            } else {
-                Some(format!("project-option-{project_id}"))
-            }
-        });
-        if let Some(focus) = focus {
-            tx.focus_when_shown(focus, tx.focus_visible());
-        }
-    }
-}
-
 pub(super) fn draft_picker_open(state: &State) -> bool {
     state.sidebar.picker == Some(ProjectPicker::Draft)
 }
@@ -485,30 +457,6 @@ pub(super) fn close_draft_project_picker(sidebar: &mut SidebarState) {
     if sidebar.picker == Some(ProjectPicker::Draft) {
         sidebar.picker = None;
     }
-}
-
-pub(super) fn draft_project_picker(
-    state: &State,
-    workspace: &Workspace,
-    project: &Project,
-    left: f32,
-    width: f32,
-    dark: bool,
-) -> Option<El> {
-    Some(
-        project_picker(
-            workspace,
-            ProjectOrdering::current(state).picker(workspace.shell.as_ref()?, Some(&project.id)),
-            ProjectPicker::Draft,
-            Some(project),
-            Colors::new(dark),
-            dark,
-            workspace.project_writes,
-        )
-        .absolute(left, -40.0)
-        .w(width)
-        .max_h(260.0),
-    )
 }
 
 pub(super) fn change_draft_project(state: &mut State, target: &str) {
@@ -549,59 +497,33 @@ pub(super) fn change_draft_project(state: &mut State, target: &str) {
     state.navigate(Destination::NewThread(target.to_owned()));
 }
 
-fn project_picker(
+fn new_thread_project_picker(
     workspace: &Workspace,
     projects: Vec<&Project>,
-    picker: ProjectPicker,
-    scope: Option<&Project>,
     colors: Colors,
     dark: bool,
-    can_add: bool,
 ) -> El {
-    let mut items = col().w_full().padding(4.0);
-    for project in projects {
-        if picker == ProjectPicker::Draft && workspace.is_scratch(project) {
-            continue;
-        }
-        let id = project.id.clone();
-        let key = format!("project-option-{id}");
-        let choose = move |state: &mut State| {
-            state.sidebar.picker = None;
-            if picker == ProjectPicker::Draft {
-                change_draft_project(state, &id);
-            } else {
+    let items = col()
+        .w_full()
+        .padding(4.0)
+        .children(projects.into_iter().map(|project| {
+            let id = project.id.clone();
+            let choose = move |state: &mut State| {
+                state.sidebar.picker = None;
                 state.navigate(Destination::NewThread(id.clone()));
-            }
-        };
-        items = items.child(
+            };
             project_option(
-                key,
+                format!("project-option-{}", project.id),
                 &project.name,
-                scope.is_some_and(|current| current.id == project.id),
+                false,
                 Some(project_badge::view(project, &workspace.favicons, dark)),
                 colors,
             )
             .on_press(choose.clone())
             .on_key(move |state, event, tx| {
                 sidebar_header::activate_on_return(state, event, tx, |state, _| choose(state))
-            }),
-        );
-    }
-    if can_add {
-        items = items.child(
-            project_option(
-                "draft-add-project".into(),
-                "Add project",
-                false,
-                Some(icon(&ADD_PROJECT, 16.0).color(colors.muted).a11y_hidden()),
-                colors,
-            )
-            .on_press_tx(|state: &mut State, tx| {
-                state.sidebar.picker = None;
-                state.show_add_project(tx);
-            }),
-        );
-    }
+            })
+        }));
     col()
         .key("project-picker")
         .label("Projects")
@@ -616,21 +538,13 @@ fn project_picker(
             stick_bottom: false,
         })
         .child(items)
-        .on_key(move |state: &mut State, event, tx| {
-            if event.key == rune::Key::Escape {
-                state.sidebar.picker = None;
-                tx.focus(
-                    match picker {
-                        ProjectPicker::NewThread => "new-thread",
-                        ProjectPicker::Draft => "draft-project-selector",
-                        ProjectPicker::Filter => unreachable!("scope has its own popup"),
-                    },
-                    tx.focus_visible(),
-                );
-                true
-            } else {
-                false
+        .on_key(|state: &mut State, event, tx| {
+            if event.key != rune::Key::Escape {
+                return false;
             }
+            state.sidebar.picker = None;
+            tx.focus("new-thread", tx.focus_visible());
+            true
         })
 }
 

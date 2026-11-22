@@ -1080,6 +1080,7 @@ impl State {
         changed |= project::folder_collision::poll(self, tx);
         changed |= self.poll_question(clock);
         changed |= sidebar::poll_rename(self);
+        changed |= sidebar::poll_draft_project_picker(self);
         changed |= self.thread_actions.undo.poll(tx);
         changed |= settings::poll_worktree_location(self, tx);
         changed |= settings::poll_snooze_options(self, tx);
@@ -2109,6 +2110,9 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
             && let Some(overlays) = sidebar::project_scope_overlay(state, palette, pane_size[1])
         {
             body = body.children(overlays);
+        } else if !palette_open && let Some(picker) = sidebar::draft_project_overlay(state, palette)
+        {
+            body = body.child(picker);
         } else if !palette_open
             && let Some(overlays) = worktree_setup::overlay(state, palette, width)
         {

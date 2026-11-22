@@ -3,13 +3,12 @@ use rune::{El, TextStyle, col, el, row, text};
 
 use super::conversation::{Layout, MAX_LANE};
 use super::project::clone_banner;
-use super::{Draft, Palette, Project, State, Workspace, sidebar};
+use super::{Draft, Palette, Project, State, Workspace, sidebar, sidebar_header};
 
 mod workspace;
 pub(super) use workspace::Popup as WorkspacePopup;
 
 const SUBTITLE: TextStyle = TextStyle::new(16.0, 500.0).lh(24.0);
-const CHOOSE_PROJECT: &str = "Choose project";
 
 pub(super) fn gutter(layout: Layout) -> f32 {
     if layout.viewport[0] < 640.0 {
@@ -69,7 +68,7 @@ pub(super) fn view(
         stack = stack.child(banner);
     }
     stack = stack.child(el().h(clearance));
-    let (headline, trigger_center) = headline(
+    stack = stack.child(headline(
         state,
         project,
         width,
@@ -77,8 +76,7 @@ pub(super) fn view(
         draft.pending || workspace.reconnecting,
         scratch,
         palette,
-    );
-    stack = stack.child(headline);
+    ));
     if workspace.scratch_projects && !scratch {
         let enabled = !draft.pending && !workspace.reconnecting && state.scratch_request.is_none();
         let muted = if palette.dark {
@@ -104,20 +102,6 @@ pub(super) fn view(
                 ),
         );
     }
-    if sidebar::draft_picker_open(state) {
-        let popup_width = width.min(288.0);
-        let left = (trigger_center - popup_width / 2.0).clamp(0.0, width - popup_width);
-        if let Some(picker) = sidebar::draft_project_picker(
-            state,
-            workspace,
-            project,
-            left,
-            popup_width,
-            palette.dark,
-        ) {
-            stack = stack.child(picker);
-        }
-    }
     let body = col()
         .key("draft-composer")
         .w_full()
@@ -141,7 +125,7 @@ fn headline(
     disabled: bool,
     scratch: bool,
     palette: Palette,
-) -> (El, f32) {
+) -> El {
     let [window_width, window_height] = layout.viewport;
     let phrase = "What should we build in";
     let ink = if palette.dark {
@@ -166,24 +150,26 @@ fn headline(
     let total = lead + name_width + rune::text::measure("?", &[], regular, None).0;
     let show_greeting = window_height > 448.0;
     let inline = !scratch && show_greeting && window_width >= 1024.0 && total <= width;
-    let project_id = project.id.clone();
+    let picker_open = sidebar::draft_picker_open(state);
     let mut button = el()
-        .key("draft-project-selector")
+        .key(sidebar::draft_project_picker::TRIGGER)
         .max_w(width)
         .center()
         .radius(4.0)
-        .role("button")
-        .label(if scratch {
-            project_name
-        } else {
-            CHOOSE_PROJECT
-        })
-        .expanded(sidebar::draft_picker_open(state))
+        .role("combobox")
+        .label(project_name)
+        .expanded(picker_open)
         .disabled(disabled)
         .focusable(!disabled)
         .focus_ring(1.0, -1.0, palette.accent)
-        .on_press_tx(move |state: &mut State, tx| {
-            sidebar::toggle_draft_project_picker(state, &project_id, tx)
+        .on_press_tx(sidebar::toggle_draft_project_picker)
+        .on_key(|state, event, tx| {
+            sidebar_header::activate_on_return(
+                state,
+                event,
+                tx,
+                sidebar::toggle_draft_project_picker,
+            )
         })
         .child(
             text(project_name)
@@ -191,10 +177,12 @@ fn headline(
                 .color(ink)
                 .truncate(),
         );
-    if !scratch {
+    if picker_open {
+        button = button.press_on_down();
+    } else if !scratch {
         button = button.help(&project.name);
     }
-    let (content, height, center) = if inline {
+    let (content, height) = if inline {
         (
             row()
                 .center()
@@ -207,7 +195,6 @@ fn headline(
                         .child(text("?").font(regular).color(ink)),
                 ),
             height,
-            (width - total) / 2.0 + lead + name_width / 2.0,
         )
     } else {
         let mut content = col().items_center().gap(8.0);
@@ -226,17 +213,13 @@ fn headline(
         (
             content.child(button),
             24.0 + if show_greeting { height + 8.0 } else { 0.0 },
-            width / 2.0,
         )
     };
     let composer_gap = if scratch { 16.0 } else { 48.0 };
-    (
-        content.key("draft-headline").role("heading").pin(
-            Some(0.0),
-            Some(-height - composer_gap),
-            Some(0.0),
-            None,
-        ),
-        center,
+    content.key("draft-headline").role("heading").pin(
+        Some(0.0),
+        Some(-height - composer_gap),
+        Some(0.0),
+        None,
     )
 }
