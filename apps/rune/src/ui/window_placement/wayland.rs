@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
+use std::time::Instant;
 
-use rune::{App, Display, NativeDisplayId, WindowSpec, tooling::Args};
+use rune::{App, Display, NativeDisplayId, WindowHandle, WindowSpec, tooling::Args};
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::reexports::client::{
     Connection, QueueHandle, globals::registry_queue_init, protocol::wl_output,
@@ -11,40 +12,120 @@ use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
 use smithay_client_toolkit::{delegate_output, delegate_registry, registry_handlers};
 
 use super::super::State;
-use super::document::{Bounds, Placement};
+use super::document::{Bounds, Placement, Store};
+use super::{Geometry, POLL_INTERVAL, TrackedWindow};
 
 pub(super) fn restore(
     mut app: App<State>,
     mut args: Vec<String>,
+    store: Store,
     saved: Option<Placement>,
     displays: &[Display],
 ) -> WindowSpec<State> {
-    if let Some(saved) = saved {
-        app = app.maximized(saved.maximized);
-        if Args::parse_from(args.clone()).size.is_none() && fits_output(saved.bounds, displays) {
-            // The compositor places the window. Pass a logical size so the first output's
-            // integer buffer scale can't leak into the dimensions of a fractional-scale window.
-            let Bounds { width, height, .. } = saved.bounds;
-            args.extend(["--size".to_owned(), format!("{width}x{height}")]);
-            app = app.args(args);
-        }
+    let outputs = output_bounds(displays);
+    let restorable = saved.filter(|saved| outputs.iter().any(|output| saved.bounds.fits(*output)));
+    let explicit_size = Args::parse_from(args.clone()).size;
+    if explicit_size.is_none()
+        && let Some(restored) = restorable
+    {
+        // Let the compositor apply its actual scale to the saved logical size.
+        let Bounds { width, height, .. } = restored.bounds;
+        args.extend(["--size".to_owned(), format!("{width}x{height}")]);
+        app = app.args(args);
     }
+    let maximized = saved.is_some_and(|saved| saved.maximized);
+    let anchor = saved.map(|saved| saved.bounds);
+    let normal = if let Some((width, height)) = explicit_size {
+        compatible_bounds((f64::from(width), f64::from(height)), anchor, &outputs)
+    } else {
+        restorable.map(|saved| saved.bounds)
+    };
+    let preserve_unrestored = saved.is_some() && (restorable.is_none() || explicit_size.is_some());
+    let handle = app.handle();
+    let app = app
+        .maximized(maximized)
+        .on_ready(move |window| {
+            let now = Instant::now();
+            let mut tracker = TrackedWindow {
+                store: store.clone(),
+                window: window.clone(),
+                geometry: Geometry::Wayland(outputs.clone()),
+                normal,
+                latest: None,
+                last_content_size: None,
+                saved,
+                changed_at: None,
+                preserve_unrestored,
+                initial_maximized: maximized,
+                opening_maximize: None,
+                x11: false,
+            };
+            tracker.observe(now, false);
+            handle.update_if(move |state, tx| {
+                state.window_placement.0 = Some(tracker);
+                tx.wake_after(POLL_INTERVAL);
+                false
+            });
+        })
+        .on_close(|state, _| state.window_placement.flush(true))
+        .on_quit(|state, _| state.window_placement.flush(false));
     WindowSpec::from_app("main", app)
 }
 
-fn fits_output(bounds: Bounds, displays: &[Display]) -> bool {
-    let outputs = logical_outputs().unwrap_or_default();
-    displays.iter().any(|display| {
-        let Some(NativeDisplayId::Wayland(id)) = display.native_id() else {
-            return false;
-        };
-        bounds.fits(
-            outputs
-                .get(&id)
-                .copied()
-                .unwrap_or_else(|| display.native_bounds()),
-        )
+pub(super) fn capture(
+    window: &WindowHandle,
+    normal: Option<Bounds>,
+    saved: Option<Placement>,
+    outputs: &[[f64; 4]],
+) -> Option<Placement> {
+    let maximized = window.is_maximized()?;
+    let bounds = if maximized || window.is_full_screen()? {
+        normal?
+    } else {
+        let anchor = normal.or_else(|| saved.map(|saved| saved.bounds));
+        compatible_bounds(window.logical_content_size()?, anchor, outputs)?
+    };
+    Some(Placement { bounds, maximized })
+}
+
+fn compatible_bounds(
+    (width, height): (f64, f64),
+    anchor: Option<Bounds>,
+    outputs: &[[f64; 4]],
+) -> Option<Bounds> {
+    let width = width.round() as i64;
+    let height = height.round() as i64;
+    if let Some(anchor) = anchor {
+        let reused = Bounds::new(anchor.x, anchor.y, width, height)?;
+        if outputs.iter().any(|output| reused.fits(*output)) {
+            return Some(reused);
+        }
+    }
+    // Wayland supplies the content size. Retain a compatible restore anchor or use a display
+    // origin that the placement reader accepts. Moving the window never changes this anchor.
+    outputs.iter().find_map(|output| {
+        let [x, y, ..] = *output;
+        let bounds = Bounds::new(x.ceil() as i64, y.ceil() as i64, width, height)?;
+        bounds.fits(*output).then_some(bounds)
     })
+}
+
+fn output_bounds(displays: &[Display]) -> Vec<[f64; 4]> {
+    let outputs = logical_outputs().unwrap_or_default();
+    displays
+        .iter()
+        .filter_map(|display| {
+            let Some(NativeDisplayId::Wayland(id)) = display.native_id() else {
+                return None;
+            };
+            Some(
+                outputs
+                    .get(&id)
+                    .copied()
+                    .unwrap_or_else(|| display.native_bounds()),
+            )
+        })
+        .collect()
 }
 
 fn logical_outputs() -> Option<HashMap<u32, [f64; 4]>> {
@@ -102,3 +183,27 @@ impl ProvidesRegistryState for OutputQuery {
 
 delegate_output!(OutputQuery);
 delegate_registry!(OutputQuery);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reserves_only_a_restore_anchor_that_fits_the_resized_wayland_window() {
+        let outputs = [[0.0, 0.0, 819.0, 614.0], [-1280.0, 0.0, 1280.0, 720.0]];
+        let previous = Bounds::new(61, 43, 680, 520);
+        assert_eq!(
+            compatible_bounds((702.4, 536.0), previous, &outputs),
+            Bounds::new(61, 43, 702, 536)
+        );
+        assert_eq!(
+            compatible_bounds((780.0, 560.0), previous, &outputs),
+            Bounds::new(0, 0, 780, 560)
+        );
+        assert_eq!(
+            compatible_bounds((930.0, 650.0), None, &outputs),
+            Bounds::new(-1280, 0, 930, 650)
+        );
+        assert_eq!(compatible_bounds((1320.0, 760.0), previous, &outputs), None);
+    }
+}

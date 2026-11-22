@@ -43,10 +43,16 @@ impl Tracker {
     }
 }
 
+enum Geometry {
+    Desktop(Vec<Monitor>),
+    #[cfg(target_os = "linux")]
+    Wayland(Vec<[f64; 4]>),
+}
+
 struct TrackedWindow {
     store: Store,
     window: WindowHandle,
-    displays: Vec<Monitor>,
+    geometry: Geometry,
     normal: Option<Bounds>,
     latest: Option<Placement>,
     last_content_size: Option<(u32, u32)>,
@@ -60,27 +66,41 @@ struct TrackedWindow {
 
 impl TrackedWindow {
     fn observe(&mut self, now: Instant, closing: bool) {
-        let Some(mut placement) = self.window.placement() else {
-            return;
-        };
-        if closing && self.x11 {
-            // The window manager can clear the maximized flag as it unmaps the window.
-            if !placement.maximized
-                && self.latest.is_some_and(|latest| latest.maximized)
-                && self.last_content_size == Some(placement.content_size)
-            {
-                return;
+        let current = match &self.geometry {
+            Geometry::Desktop(displays) => {
+                let Some(mut placement) = self.window.placement() else {
+                    return;
+                };
+                if closing && self.x11 {
+                    // The window manager can clear the maximized flag as it unmaps the window.
+                    if !placement.maximized
+                        && self.latest.is_some_and(|latest| latest.maximized)
+                        && self.last_content_size == Some(placement.content_size)
+                    {
+                        return;
+                    }
+                    // The server can withdraw the frame before Winit updates its insets.
+                    let Some(position) = x11::frame_origin(&self.window) else {
+                        return;
+                    };
+                    placement.position = position;
+                }
+                let Some(current) = capture(placement, self.normal, displays) else {
+                    return;
+                };
+                self.last_content_size = Some(placement.content_size);
+                current
             }
-            // The server can withdraw the frame before Winit updates its insets.
-            let Some(position) = x11::frame_origin(&self.window) else {
-                return;
-            };
-            placement.position = position;
-        }
-        let Some(current) = capture(placement, self.normal, &self.displays) else {
-            return;
+            #[cfg(target_os = "linux")]
+            Geometry::Wayland(outputs) => {
+                let Some(current) =
+                    wayland::capture(&self.window, self.normal, self.saved, outputs)
+                else {
+                    return;
+                };
+                current
+            }
         };
-        self.last_content_size = Some(placement.content_size);
         self.normal = Some(current.bounds);
         if let Some(deadline) = self.opening_maximize {
             if !closing && !current.maximized && now < deadline {
@@ -159,7 +179,7 @@ pub(super) fn run(
         };
         #[cfg(target_os = "linux")]
         if wayland_backend {
-            let mut spec = wayland::restore(app, window_args, saved, displays);
+            let mut spec = wayland::restore(app, window_args, store, saved, displays);
             spec.options.borderless = borderless;
             return [spec];
         }
@@ -187,7 +207,7 @@ pub(super) fn run(
                 let mut tracker = TrackedWindow {
                     store: store.clone(),
                     window: window.clone(),
-                    displays: displays.clone(),
+                    geometry: Geometry::Desktop(displays.clone()),
                     normal: original_normal,
                     latest: None,
                     last_content_size: None,

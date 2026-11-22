@@ -163,6 +163,13 @@ impl WindowHandle {
     pub fn is_full_screen(&self) -> Option<bool> {
         self.window().ok().map(|window| window.fullscreen().is_some())
     }
+    /// The content size in logical points, including on compositors that hide window positions.
+    /// Call on the UI thread.
+    pub fn logical_content_size(&self) -> Option<(f64, f64)> {
+        let window = self.window().ok()?;
+        let size = window.inner_size().to_logical::<f64>(window.scale_factor());
+        Some((size.width, size.height))
+    }
     /// Physical desktop pixels; retained across recreation. Unsupported on Wayland.
     pub fn set_position(&self, position: (i32, i32)) {
         self.send(move |slot| WakeEvent::Position(slot, position));
