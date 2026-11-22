@@ -34,6 +34,7 @@ pub(crate) use turn_worker::{CommandColor, CommandPen, TerminalOutput};
 mod vcs_checkout;
 mod vcs_refs;
 mod vcs_status;
+mod workspace_attachment;
 mod workspace_file;
 mod workspace_search;
 
@@ -93,6 +94,7 @@ type SharedEnvironment = Arc<Environment>;
 struct LocalOperations {
     projects: ProjectCommands,
     project_favicons: project_favicon::Service,
+    workspace_attachments: workspace_attachment::Service,
     workspace_search: workspace_search::Indexes,
     named_projects_root: PathBuf,
     project_clones: ProjectClones,
@@ -215,6 +217,7 @@ impl LocalHost {
                     let local = LocalOperations {
                         projects,
                         project_favicons,
+                        workspace_attachments: workspace_attachment::Service::default(),
                         workspace_search: workspace_search::Indexes::default(),
                         named_projects_root,
                         project_clones: project_clones.clone(),
@@ -370,6 +373,10 @@ fn router(environment: SharedEnvironment) -> Router {
         .route("/oauth/token", post(exchange))
         .route("/api/auth/websocket-ticket/rpc", post(issue_ticket))
         .route("/api/orchestration/shell", get(shell_http::snapshot))
+        .route(
+            "/api/assets/workspace/{token}/{file}",
+            get(workspace_attachment::get),
+        )
         .route("/api/assets/{*tail}", get(project_favicon::get))
         .route("/ws", get(upgrade))
         .layer(DefaultBodyLimit::max(8 * 1024))

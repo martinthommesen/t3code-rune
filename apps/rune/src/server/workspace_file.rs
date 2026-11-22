@@ -96,9 +96,36 @@ pub(in crate::server) async fn read(input: Input, state_dir: PathBuf) -> Result<
 }
 
 fn read_file(input: &Input, host_path: &Path, state_dir: &Path) -> Result<FileText, Failure> {
+    let (relative, opened) = open_workspace_file(input, host_path, state_dir)?;
+    match opened {
+        Some((path, file)) => read_text(file, path, relative),
+        None => Ok(FileText::missing(relative)),
+    }
+}
+
+pub(super) fn open_attachment(
+    cwd: &Path,
+    path: &str,
+    state_dir: &Path,
+) -> io::Result<Option<(PathBuf, File)>> {
+    let input = Input {
+        cwd: cwd.to_string_lossy().into_owned(),
+        path: path.into(),
+        allow_missing: false,
+    };
+    open_workspace_file(&input, Path::new(path), state_dir)
+        .map(|(_, file)| file)
+        .map_err(|_| io::Error::other("Could not open the workspace attachment."))
+}
+
+fn open_workspace_file(
+    input: &Input,
+    host_path: &Path,
+    state_dir: &Path,
+) -> Result<(String, Option<(PathBuf, File)>), Failure> {
     let (relative_path, resolved) = resolve(input, host_path)?;
     let Some(resolved) = resolved else {
-        return Ok(FileText::missing(relative_path));
+        return Ok((relative_path, None));
     };
     if super::internal_paths::protects(state_dir, &resolved) {
         return Err(Failure::OutsideWorkspace);
@@ -117,11 +144,11 @@ fn read_file(input: &Input, host_path: &Path, state_dir: &Path) -> Result<FileTe
     let file = match options.open(&resolved) {
         Ok(file) => file,
         Err(error) if input.allow_missing && error.kind() == io::ErrorKind::NotFound => {
-            return Ok(FileText::missing(relative_path));
+            return Ok((relative_path, None));
         }
         Err(error) => return Err(Failure::operation("open", &resolved, &resolved, error)),
     };
-    read_text(file, resolved, relative_path)
+    Ok((relative_path, Some((resolved, file))))
 }
 
 fn read_text(file: File, path: PathBuf, relative_path: String) -> Result<FileText, Failure> {

@@ -941,6 +941,7 @@ impl State {
         changed |= settings::poll_worktree_location(self, tx);
         changed |= settings::poll_project(self);
         changed |= settings::poll_project_files(self, tx);
+        changed |= self.poll_file_preview_save(tx);
         changed |= worktree_setup::poll(self, tx);
         if self.sidebar_open
             && self
@@ -1132,6 +1133,7 @@ impl State {
                 conversation::command_row::update(self, &thread_id, attachment, output);
             }
             Event::FilePreviewLoaded { id, result } => self.file_preview_loaded(id, result, tx),
+            Event::FilePreviewAsset { id, result } => self.file_preview_asset(id, result, tx),
             Event::QueuedMessages {
                 thread_id,
                 messages,

@@ -1,3 +1,5 @@
+mod binary;
+
 use std::borrow::Cow;
 use std::sync::Arc;
 
@@ -145,6 +147,7 @@ impl TextFile {
 enum Load {
     Pending,
     Text(Arc<TextFile>),
+    Binary(binary::Phase),
     Failed(ReadFailure),
 }
 
@@ -244,6 +247,16 @@ impl State {
                 }
                 Load::Text(contents)
             }
+            Err(error) if error.binary => {
+                let Some(connection) = &self.connection else {
+                    return;
+                };
+                connection.prepare_file_asset(
+                    file.request(),
+                    crate::connection::file_preview::AssetPurpose::Inspect,
+                );
+                Load::Binary(binary::Phase::Checking)
+            }
             Err(error) => Load::Failed(error),
         };
     }
@@ -311,6 +324,17 @@ impl Colors {
             accent,
             separator,
             error,
+        }
+    }
+}
+
+impl Preview {
+    fn request(&self) -> ReadRequest {
+        ReadRequest {
+            id: self.id,
+            thread_id: self.thread_id.clone(),
+            cwd: self.cwd.clone(),
+            relative_path: self.target.path.clone(),
         }
     }
 }
@@ -434,6 +458,7 @@ pub(super) fn view(
                 .role("status"),
         ),
         Load::Text(file) => source(preview, file, colors, palette),
+        Load::Binary(phase) => binary::view(preview, phase, colors, palette),
         Load::Failed(error) => error_view(preview, error, colors),
     };
     Some(pane.child(body))

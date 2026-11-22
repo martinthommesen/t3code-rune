@@ -3,6 +3,7 @@ mod browse;
 mod command_output;
 mod draft_defaults;
 pub(crate) mod file_preview;
+mod file_preview_asset;
 mod keybindings;
 mod launch;
 mod project_favicon;
@@ -170,6 +171,10 @@ pub(crate) enum Event {
     FilePreviewLoaded {
         id: Uuid,
         result: Result<file_preview::Contents, file_preview::ReadFailure>,
+    },
+    FilePreviewAsset {
+        id: Uuid,
+        result: file_preview::AssetOutcome,
     },
     QueuedMessages {
         thread_id: String,
@@ -386,6 +391,10 @@ enum Command {
         cwd: Option<String>,
     },
     ReadFilePreview(file_preview::ReadRequest),
+    PrepareFileAsset {
+        input: file_preview::ReadRequest,
+        purpose: file_preview::AssetPurpose,
+    },
     CancelFilePreview(Uuid),
     SearchProjectImages {
         search_id: Uuid,
@@ -743,6 +752,16 @@ impl Connection {
 
     pub(crate) fn read_file_preview(&self, request: file_preview::ReadRequest) {
         let _ = self.commands.send(Command::ReadFilePreview(request));
+    }
+
+    pub(crate) fn prepare_file_asset(
+        &self,
+        input: file_preview::ReadRequest,
+        purpose: file_preview::AssetPurpose,
+    ) {
+        let _ = self
+            .commands
+            .send(Command::PrepareFileAsset { input, purpose });
     }
 
     pub(crate) fn cancel_file_preview(&self, id: Uuid) {
@@ -1244,6 +1263,7 @@ struct Session {
     pending_project_edits: HashMap<String, (String, ProjectEditKind, Instant)>,
     pending_folder: Option<(String, Uuid, Instant)>,
     pending_file_preview: Option<file_preview::PendingRead>,
+    preview_downloads: file_preview_asset::Downloads,
     pending_project_images: Option<(String, Uuid, Instant)>,
     pending_launches: HashMap<String, (LaunchStage, Instant)>,
     pending_git_refs: HashMap<String, GitRefsRequest>,
@@ -1373,6 +1393,7 @@ impl Session {
             pending_project_edits: HashMap::new(),
             pending_folder: None,
             pending_file_preview: None,
+            preview_downloads: file_preview_asset::Downloads::new(environment),
             pending_project_images: None,
             pending_launches: HashMap::new(),
             pending_git_refs: HashMap::new(),
@@ -1890,6 +1911,9 @@ impl Session {
                 }
             }
             Command::ReadFilePreview(input) => self.read_file_preview(input, events).await?,
+            Command::PrepareFileAsset { input, purpose } => {
+                self.prepare_file_asset(input, purpose, events).await?;
+            }
             Command::CancelFilePreview(id) => self.cancel_file_preview(Some(id)).await?,
             Command::AddProject {
                 command_id,
@@ -3258,6 +3282,10 @@ async fn run_socket(
                     events.send(Event::ProjectFavicon { target, image });
                 }
                 session.request_project_favicons().await?;
+            }
+            asset = session.preview_downloads.next() => {
+                let (id, result) = asset;
+                events.send(Event::FilePreviewAsset { id, result });
             }
             frame = session.socket.next() => {
                 let frame = frame

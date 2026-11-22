@@ -304,6 +304,62 @@ pub(super) async fn serve(
                 }
             }
             ClientMessage::Request { id, tag, payload }
+                if tag == "assets.createUrl"
+                    && local.is_some()
+                    && super::workspace_attachment::Input::applies(&payload) =>
+            {
+                match super::workspace_attachment::Input::decode(&payload) {
+                    _ if !permissions.filesystem_read => Ok(failure(
+                        id,
+                        json!({
+                            "_tag": "EnvironmentAuthorizationError",
+                            "requiredScope": "orchestration:read",
+                            "requiredPermission": "filesystem:read",
+                            "message": "The authenticated token is missing required scope: filesystem:read."
+                        }),
+                    )),
+                    None => Ok(defect(
+                        id,
+                        "Invalid workspace attachment resource.".to_owned(),
+                    )),
+                    Some(_) if operation_requests.contains_key(&id) => Ok(failure(
+                        id,
+                        RpcError::InvalidRequest {
+                            message: "Request ID is already in use.",
+                        },
+                    )),
+                    Some(input) => {
+                        let local = Arc::clone(local.as_ref().expect("local operations"));
+                        let store = store.clone();
+                        let request_id = id.clone();
+                        let task = operations.spawn(async move {
+                            let result = tokio::task::spawn_blocking(move || {
+                                let state_dir = local
+                                    .settings
+                                    .path()
+                                    .parent()
+                                    .expect("local state directory");
+                                local.workspace_attachments.issue(&store, state_dir, input)
+                            })
+                            .await;
+                            let frame = match result {
+                                Ok(Ok(asset)) => success(id.clone(), asset),
+                                Ok(Err(error)) => failure(id.clone(), error),
+                                Err(_) => failure(
+                                    id.clone(),
+                                    RpcError::InvalidRequest {
+                                        message: "Could not prepare the workspace attachment.",
+                                    },
+                                ),
+                            };
+                            (id, frame)
+                        });
+                        operation_requests.insert(request_id, task);
+                        continue;
+                    }
+                }
+            }
+            ClientMessage::Request { id, tag, payload }
                 if tag == "projects.readFile" && local.is_some() =>
             {
                 match super::workspace_file::Input::decode(&payload) {

@@ -1,10 +1,12 @@
+use std::fs::File;
+
 use serde::Deserialize;
+use serde_json::{Value, json};
+use uuid::Uuid;
 
 use super::{
     Event, EventSender, Instant, REQUEST_TIMEOUT, RpcCause, RpcExit, Session, SessionStop,
 };
-use serde_json::json;
-use uuid::Uuid;
 
 const MAX_PREVIEW_BYTES: usize = 1024 * 1024;
 
@@ -39,6 +41,7 @@ pub(crate) struct ReadFailure {
     pub(crate) message: String,
     pub(crate) attempted_path: Option<String>,
     pub(crate) cwd: Option<String>,
+    pub(crate) binary: bool,
 }
 
 impl ReadFailure {
@@ -47,14 +50,33 @@ impl ReadFailure {
             message: message.into(),
             attempted_path: None,
             cwd: None,
+            binary: false,
         }
     }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum AssetPurpose {
+    Inspect,
+    Download,
+}
+
+pub(crate) enum AssetOutcome {
+    Available,
+    Prepared(File),
+    Failed(String),
+}
+
+enum Operation {
+    Read,
+    Asset(AssetPurpose),
 }
 
 pub(super) struct PendingRead {
     request_id: String,
     id: Uuid,
     started: Instant,
+    operation: Operation,
 }
 
 impl Session {
@@ -63,37 +85,80 @@ impl Session {
         input: ReadRequest,
         events: &EventSender<impl Fn()>,
     ) -> Result<(), SessionStop> {
-        if !self.filesystem_read
-            || !self
-                .thread
-                .as_ref()
-                .is_some_and(|thread| thread.thread_id == input.thread_id)
-        {
+        if !self.can_read_preview(&input.thread_id) {
             events.send(Event::FilePreviewLoaded {
                 id: input.id,
                 result: Err(ReadFailure::new("This connection cannot read host files.")),
             });
             return Ok(());
         }
-        self.cancel_file_preview(None).await?;
-        let request_id = self.allocate_id();
-        self.pending_file_preview = Some(PendingRead {
-            request_id: request_id.clone(),
-            id: input.id,
-            started: Instant::now(),
-        });
-        self.send_request(
-            &request_id,
+        self.request_preview(
+            input.id,
+            Operation::Read,
             "projects.readFile",
             json!({"cwd": input.cwd, "relativePath": input.relative_path}),
         )
         .await
     }
 
+    pub(super) async fn prepare_file_asset(
+        &mut self,
+        input: ReadRequest,
+        purpose: AssetPurpose,
+        events: &EventSender<impl Fn()>,
+    ) -> Result<(), SessionStop> {
+        if !self.can_read_preview(&input.thread_id) {
+            events.send(Event::FilePreviewAsset {
+                id: input.id,
+                result: AssetOutcome::Failed("This connection cannot read host files.".into()),
+            });
+            return Ok(());
+        }
+        self.request_preview(
+            input.id,
+            Operation::Asset(purpose),
+            "assets.createUrl",
+            json!({"resource": {
+                "_tag":"media-file",
+                "threadId": input.thread_id,
+                "path": input.relative_path,
+                "disposition": "attachment",
+            }}),
+        )
+        .await
+    }
+
+    fn can_read_preview(&self, thread_id: &str) -> bool {
+        self.filesystem_read
+            && self
+                .thread
+                .as_ref()
+                .is_some_and(|thread| thread.thread_id == thread_id)
+    }
+
+    async fn request_preview(
+        &mut self,
+        id: Uuid,
+        operation: Operation,
+        method: &'static str,
+        payload: Value,
+    ) -> Result<(), SessionStop> {
+        self.cancel_file_preview(None).await?;
+        let request_id = self.allocate_id();
+        self.pending_file_preview = Some(PendingRead {
+            request_id: request_id.clone(),
+            id,
+            started: Instant::now(),
+            operation,
+        });
+        self.send_request(&request_id, method, payload).await
+    }
+
     pub(super) async fn cancel_file_preview(
         &mut self,
         preview_id: Option<Uuid>,
     ) -> Result<(), SessionStop> {
+        self.preview_downloads.cancel(preview_id);
         if self
             .pending_file_preview
             .as_ref()
@@ -112,11 +177,32 @@ impl Session {
     }
 
     pub(super) fn finish_file_preview(&mut self, exit: RpcExit, events: &EventSender<impl Fn()>) {
-        if let Some(pending) = self.pending_file_preview.take() {
-            events.send(Event::FilePreviewLoaded {
+        let Some(pending) = self.pending_file_preview.take() else {
+            return;
+        };
+        match pending.operation {
+            Operation::Read => events.send(Event::FilePreviewLoaded {
                 id: pending.id,
                 result: result(exit),
-            });
+            }),
+            Operation::Asset(purpose) => {
+                let url = exit.into_result().ok().and_then(|value| {
+                    self.preview_downloads
+                        .resolve_url(value["relativeUrl"].as_str()?)
+                });
+                let result = match (url, purpose) {
+                    (Some(url), AssetPurpose::Download) => {
+                        self.preview_downloads.start(pending.id, url);
+                        return;
+                    }
+                    (Some(_), AssetPurpose::Inspect) => AssetOutcome::Available,
+                    (None, _) => AssetOutcome::Failed("Unable to load file preview.".into()),
+                };
+                events.send(Event::FilePreviewAsset {
+                    id: pending.id,
+                    result,
+                });
+            }
         }
     }
 
@@ -130,11 +216,16 @@ impl Session {
             .is_some_and(|pending| pending.started.elapsed() >= REQUEST_TIMEOUT)
             && let Some(pending) = self.pending_file_preview.take()
         {
-            events.send(Event::FilePreviewLoaded {
-                id: pending.id,
-                result: Err(ReadFailure::new(
-                    "The environment did not return the file in time.",
-                )),
+            let message = "The environment did not return the file in time.";
+            events.send(match pending.operation {
+                Operation::Read => Event::FilePreviewLoaded {
+                    id: pending.id,
+                    result: Err(ReadFailure::new(message)),
+                },
+                Operation::Asset(_) => Event::FilePreviewAsset {
+                    id: pending.id,
+                    result: AssetOutcome::Failed(message.into()),
+                },
             });
             self.interrupt(&pending.request_id).await?;
         }
@@ -191,5 +282,6 @@ fn read_failure(fields: FailureFields, fallback: Option<String>) -> ReadFailure 
         message: message.to_owned(),
         attempted_path: fields.resolved_path.or(fields.operation_path),
         cwd: fields.cwd,
+        binary: fields.failure.as_deref() == Some("binary_file"),
     }
 }

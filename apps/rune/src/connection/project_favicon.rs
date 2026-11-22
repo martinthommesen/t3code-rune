@@ -125,7 +125,7 @@ impl Session {
     }
 }
 
-fn asset_url(base: &Url, relative: &str) -> Option<Url> {
+pub(super) fn asset_url(base: &Url, relative: &str) -> Option<Url> {
     if !relative.starts_with("/api/assets/") {
         return None;
     }
