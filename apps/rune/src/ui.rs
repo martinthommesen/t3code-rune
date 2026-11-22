@@ -947,7 +947,14 @@ impl State {
 
     fn apply_event(&mut self, event: Event, tx: &mut Tx) {
         match event {
-            Event::Keybindings(bindings) => self.keybindings = Some(bindings),
+            Event::Keybindings(bindings) => {
+                self.keybindings = Some(bindings);
+                self.keybindings_catalog_available(true);
+            }
+            Event::KeybindingsUnavailable => self.keybindings_catalog_available(false),
+            Event::KeybindingSettled { operation, result } => {
+                self.settle_keybinding(operation, result, tx);
+            }
             Event::Connected {
                 environment_id,
                 label,
@@ -970,6 +977,7 @@ impl State {
                 self.pairing_code.clear();
                 if self.draft_environment.as_deref() != Some(&environment_id) {
                     self.keybindings = None;
+                    self.reset_keybindings_panel();
                     self.drafts.clear();
                     self.new_thread_drafts.clear();
                     self.questions.clear();
@@ -1463,6 +1471,7 @@ impl State {
             event @ (Event::Reconnecting | Event::Reconnected) => {
                 if matches!(event, Event::Reconnecting) {
                     self.workspace_settings_disconnected(false);
+                    self.keybindings_catalog_available(false);
                 } else {
                     self.ensure_open_workspace_settings();
                 }
@@ -1498,6 +1507,7 @@ impl State {
             }
             Event::Disconnected(reason) => {
                 self.workspace_settings_disconnected(true);
+                self.reset_keybindings_panel();
                 self.onboarding.finish_refresh();
                 sidebar::cancel_rename(self);
                 self.connection = None;

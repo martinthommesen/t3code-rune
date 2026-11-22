@@ -41,7 +41,9 @@ use uuid::Uuid;
 pub(crate) use browse::FolderListing;
 pub(crate) use command_output::{CommandInspection, CommandOutput};
 pub(crate) use draft_defaults::WorkspaceMode;
-pub(crate) use keybindings::Keybindings;
+pub(crate) use keybindings::{
+    Binding, Edit as KeybindingEdit, Keybindings, Rule as KeybindingRule, TERMINAL_TOGGLE,
+};
 pub(crate) use launch::Workspace as LaunchWorkspace;
 pub(crate) use project_favicon::{FaviconBytes, FaviconTarget};
 pub(crate) use projection::WorkspaceFailure;
@@ -94,6 +96,11 @@ pub(crate) enum ThreadAction {
 
 pub(crate) enum Event {
     Keybindings(Keybindings),
+    KeybindingsUnavailable,
+    KeybindingSettled {
+        operation: Uuid,
+        result: Result<(), String>,
+    },
     Connected {
         environment_id: String,
         label: String,
@@ -276,6 +283,10 @@ pub(crate) enum Event {
 }
 
 enum Command {
+    EditKeybinding {
+        edit: KeybindingEdit,
+        operation: Uuid,
+    },
     RefreshProviderCatalog,
     EnsureWorkspaceSettings,
     ReadWorkspaceProjectFile {
@@ -1199,6 +1210,8 @@ struct Session {
     pending_setup_cancels: HashMap<String, (String, Instant)>,
     pending_workspace_retries: HashMap<String, (WorkspaceRetry, Instant)>,
     pending_projects: HashMap<String, (String, Instant, ProjectCreation)>,
+    keybindings_writable: bool,
+    pending_keybinding: Option<keybindings::PendingEdit>,
     pending_project_edits: HashMap<String, (String, ProjectEditKind, Instant)>,
     pending_folder: Option<(String, Uuid, Instant)>,
     pending_project_images: Option<(String, Uuid, Instant)>,
@@ -1277,6 +1290,11 @@ impl Session {
                 .split_whitespace()
                 .any(|scope| scope == "orchestration:operate")
         };
+        let settings_write = scope.is_some_and(|scopes| {
+            scopes
+                .split_whitespace()
+                .any(|scope| scope == "settings:write")
+        });
         let prompt_writes = capabilities
             .prompt_writes
             .unwrap_or(!capabilities.read_only)
@@ -1302,13 +1320,7 @@ impl Session {
             archive_writes: capabilities.thread_unarchive && scope.is_some_and(can_operate),
             pending_unarchive: HashMap::new(),
             providers_request_id: None,
-            workspace_settings: workspace_settings::Subscription::new(scope.is_some_and(
-                |scopes| {
-                    scopes
-                        .split_whitespace()
-                        .any(|scope| scope == "settings:write")
-                },
-            )),
+            workspace_settings: workspace_settings::Subscription::new(settings_write),
             project_clones_request_id: None,
             command_output_streaming: capabilities.command_output_streaming,
             command_outputs: command_output::Subscriptions::default(),
@@ -1324,6 +1336,8 @@ impl Session {
             pending_setup_cancels: HashMap::new(),
             pending_workspace_retries: HashMap::new(),
             pending_projects: HashMap::new(),
+            keybindings_writable: settings_write,
+            pending_keybinding: None,
             pending_project_edits: HashMap::new(),
             pending_folder: None,
             pending_project_images: None,
@@ -1694,6 +1708,9 @@ impl Session {
             } => {
                 self.save_workspace_mode(project_id, mode, operation, events)
                     .await?;
+            }
+            Command::EditKeybinding { edit, operation } => {
+                self.edit_keybinding(edit, operation, events).await?;
             }
             Command::RefreshProviderCatalog => {
                 if let Some(request) = self.providers_request_id.take() {
@@ -2444,7 +2461,9 @@ impl Session {
                     if let Some(settings) = self.workspace_settings.apply(&values) {
                         events.send(Event::WorkspaceConfiguration(Some(settings)));
                     }
-                    if let Some(bindings) = Keybindings::config_events(&values) {
+                    if let Some(bindings) =
+                        Keybindings::config_events(&values, self.keybindings_writable)
+                    {
                         events.send(Event::Keybindings(bindings));
                     }
                     if let Some(providers) = provider_metadata::last_catalog(values) {
@@ -2524,6 +2543,10 @@ impl Session {
                 }
             }
             ServerFrame::Exit { request_id, exit } => {
+                if self.keybinding_write_matches(&request_id) {
+                    self.keybinding_write_result(exit.into_result(), events);
+                    return Ok(());
+                }
                 if self.workspace_project_file_matches(&request_id) {
                     self.workspace_project_file_result(exit.into_result(), events);
                     return Ok(());
@@ -2535,6 +2558,7 @@ impl Session {
                 if self.providers_request_id.as_ref() == Some(&request_id) {
                     self.providers_request_id = None;
                     events.send(Event::WorkspaceConfiguration(None));
+                    events.send(Event::KeybindingsUnavailable);
                     if exit.into_result().is_err() {
                         events.send(Event::ProviderCatalogUnavailable);
                     }
@@ -2968,6 +2992,10 @@ async fn run(
             attempt = 0;
         }
         events.send(Event::Reconnecting);
+        session.fail_keybinding_write(
+            events,
+            "The connection closed before confirming the keybinding change.",
+        );
         session.fail_workspace_write(
             events,
             "The connection closed before confirming the workspace setting.",
@@ -3154,6 +3182,7 @@ async fn run_socket(
                 }
                 session.expire_terminal(events).await?;
                 session.expire_workspace_retries(events);
+                session.expire_keybinding_write(events);
                 session.expire_workspace_write(events);
                 session.favicons.expire(events);
                 session.request_project_favicons().await?;

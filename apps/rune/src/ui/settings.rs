@@ -3,6 +3,7 @@ use rune::{Color, El, Icon, Key, ScrollSpec, TextStyle, Tx, col, el, icon, row, 
 use super::{Palette, State, error_text, sidebar_header};
 
 mod appearance;
+mod keybinding_catalog;
 mod project;
 mod workspace;
 
@@ -27,6 +28,7 @@ macro_rules! glyph {
 }
 
 mod archive;
+mod keybindings;
 pub(super) use archive::settle as settle_archive_unarchive;
 
 static GEAR: Icon = glyph!(
@@ -40,6 +42,10 @@ static GENERAL: Icon = glyph!(
 static APPEARANCE: Icon = glyph!(
     "palette",
     r#"<path d="M12 3a9 9 0 1 0 0 18h1.5a1.5 1.5 0 0 0 0-3H13a1 1 0 0 1 0-2h2a6 6 0 0 0 0-12z"/><circle cx="7.5" cy="12" r=".5"/><circle cx="9" cy="8" r=".5"/><circle cx="13" cy="7.5" r=".5"/><circle cx="16.5" cy="10" r=".5"/>"#
+);
+static KEYBOARD: Icon = glyph!(
+    "keyboard",
+    r#"<rect x="2" y="5" width="20" height="14" rx="2"/><path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M6 13h.01M10 13h.01M14 13h.01M18 13h.01M8 16h8"/>"#
 );
 static THREADS: Icon = glyph!(
     "messages-square",
@@ -59,6 +65,7 @@ pub(super) struct Panel {
     page: Page,
     project: Option<project::Form>,
     workspace: workspace::Panel,
+    keybindings: keybindings::Panel,
     return_focus: &'static str,
 }
 
@@ -77,6 +84,7 @@ impl Default for Panel {
             page: Page::General,
             project: None,
             workspace: workspace::Panel::default(),
+            keybindings: keybindings::Panel::default(),
             return_focus: "open-client-settings",
         }
     }
@@ -87,6 +95,7 @@ enum Page {
     #[default]
     General,
     Appearance,
+    Keybindings,
     Threads,
     Projects,
     Archive,
@@ -97,6 +106,7 @@ impl Page {
         match self {
             Self::General => "General",
             Self::Appearance => "Appearance",
+            Self::Keybindings => "Keybindings",
             Self::Threads => "Threads",
             Self::Projects => "Projects",
             Self::Archive => "Archive",
@@ -115,6 +125,7 @@ impl State {
     fn close_client_settings(&mut self, tx: &mut Tx) {
         self.save_project_name();
         self.settings.open = false;
+        self.settings.keybindings.clear_view();
         self.settings.archive.leave();
         self.settings.workspace.close_popups();
         self.settings.error = None;
@@ -140,6 +151,9 @@ impl State {
 
     fn select_settings_page(&mut self, page: Page) {
         self.save_project_name();
+        if self.settings.page == Page::Keybindings && page != Page::Keybindings {
+            self.settings.keybindings.clear_view();
+        }
         self.settings.page = page;
         if page != Page::Archive {
             self.settings.archive.leave();
@@ -232,6 +246,7 @@ pub(super) fn overlay(state: &State, palette: Palette, width: f32, height: f32) 
     let content = match page {
         Page::General => general(state, palette, content_width, width < 640.0),
         Page::Appearance => appearance::page(state, palette, content_width),
+        Page::Keybindings => keybindings::page(state, palette, content_width),
         Page::Threads => workspace::page(state, palette, content_width),
         Page::Projects => project::page(state, palette, content_width),
         Page::Archive => archive::page(state, palette, content_width),
@@ -313,6 +328,7 @@ fn navigation(active: Page, width: f32, colors: sidebar_header::Colors) -> El {
     for (page, glyph, key) in [
         (Page::General, &GENERAL, "settings-general"),
         (Page::Appearance, &APPEARANCE, "settings-appearance"),
+        (Page::Keybindings, &KEYBOARD, "settings-keybindings"),
         (Page::Threads, &THREADS, "settings-threads"),
         (Page::Projects, &GEAR, "settings-projects"),
         (Page::Archive, &archive::ARCHIVE, "settings-archive"),
@@ -346,6 +362,12 @@ fn navigation(active: Page, width: f32, colors: sidebar_header::Colors) -> El {
         let select = move |state: &mut State, _: &mut Tx| state.select_settings_page(page);
         button = if page == Page::Archive {
             archive::press(button, select)
+        } else if page == Page::Keybindings {
+            button
+                .on_press_tx(select)
+                .on_key(move |state: &mut State, event, tx| {
+                    sidebar_header::activate_on_return(state, event, tx, select)
+                })
         } else {
             button.on_press_tx(select)
         };
