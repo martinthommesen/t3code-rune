@@ -108,7 +108,7 @@ pub(in crate::server) async fn retry_preparation(
         if let Some(preparing) = preparing {
             let resumed = !committed;
             let run_id = input.run_id.0.clone();
-            let plan = preparing.launch(
+            let plan = (*preparing).launch(
                 input,
                 database,
                 scratch_root.with_file_name("worktrees"),
@@ -140,7 +140,7 @@ pub(in crate::server) async fn retry_preparation(
 enum Outcome {
     Accepted {
         sequence: u64,
-        preparing: Option<Preparation>,
+        preparing: Option<Box<Preparation>>,
         committed: bool,
     },
     Rejected(String),
@@ -295,7 +295,7 @@ fn record_retry(path: &Path, input: &RetryInput) -> rusqlite::Result<Outcome> {
         }
         let preparing = Preparation::load(&tx, input, "preparing")?;
         let preparing = match preparing {
-            Some(preparing) if preparing.validate()? => Some(preparing),
+            Some(preparing) if preparing.validate()? => Some(Box::new(preparing)),
             _ => None,
         };
         return Ok(Outcome::Accepted {
@@ -370,7 +370,7 @@ fn record_retry(path: &Path, input: &RetryInput) -> rusqlite::Result<Outcome> {
     tx.commit()?;
     Ok(Outcome::Accepted {
         sequence,
-        preparing: Some(preparing),
+        preparing: Some(Box::new(preparing)),
         committed: true,
     })
 }
