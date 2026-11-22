@@ -1,7 +1,10 @@
 use serde_json::{Value, json};
 
 use super::providers::{ProviderInstance, driver_default};
-use super::{Fields, nonblank, secret_slug, slug, text, trim};
+use super::{
+    Fields, nonblank, project_overrides as overrides, project_scripts, secret_slug, slug, text,
+    trim,
+};
 
 const MODEL_SELECTIONS: &[&str] = &[
     "defaultModelSelection",
@@ -165,7 +168,12 @@ fn project_overrides(public: &mut Fields, raw: &Fields) -> Option<()> {
             copy_toggles(&mut fields, value, PROJECT_TOGGLES);
             copy_model_selections(&mut fields, value);
             copy_literal(&mut fields, value, "defaultRuntimeMode", RUNTIME_MODES);
-            copy_literal(&mut fields, value, "defaultThreadEnvMode", THREAD_ENV_MODES);
+            if let Some(mode) = value.get("defaultThreadEnvMode") {
+                fields.insert(
+                    "defaultThreadEnvMode".to_owned(),
+                    literal(mode, THREAD_ENV_MODES)?.into(),
+                );
+            }
             copy_streaming_mode(&mut fields, value);
             if let Some(instances) = value.get("providerInstances") {
                 let mut mapped = Fields::new();
@@ -182,13 +190,21 @@ fn project_overrides(public: &mut Fields, raw: &Fields) -> Option<()> {
                 }
                 fields.insert("providerInstances".to_owned(), mapped.into());
             }
+            if let Some(scripts) = value.get("defaultProjectScripts") {
+                fields.insert(
+                    "defaultProjectScripts".to_owned(),
+                    project_scripts::decode(scripts, "").ok()?,
+                );
+            }
+            overrides::copy_unknown(&mut fields, value);
             if trim(id).is_empty() {
                 return None;
             }
             projects.insert(trim(id).to_owned(), fields.into());
         }
     }
-    if public["projectSettingsFolded"] == false {
+    let already_folded = public["projectSettingsFolded"] == true;
+    if !already_folded {
         let mut folded = false;
         for (legacy, field) in [
             (
@@ -217,17 +233,20 @@ fn project_overrides(public: &mut Fields, raw: &Fields) -> Option<()> {
             public.insert("projectSettingsFolded".to_owned(), true.into());
         }
     }
-    for (legacy, field) in [
-        (
-            "projectAgentBrowserAccessOverrides",
-            "enableAgentBrowserAccess",
-        ),
-        ("projectAutoPullOverrides", "defaultAutoPull"),
-    ] {
-        let values = projects
-            .iter()
-            .filter_map(|(id, project)| Some((id.clone(), project.get(field)?.clone())))
-            .collect::<Fields>();
+    for &(legacy, field) in overrides::LEGACY {
+        let values = if already_folded {
+            raw.get(legacy)
+                .and_then(Value::as_object)
+                .into_iter()
+                .flatten()
+                .map(|(id, value)| (trim(id).to_owned(), value.clone()))
+                .collect()
+        } else {
+            projects
+                .iter()
+                .filter_map(|(id, project)| Some((id.clone(), project.get(field)?.clone())))
+                .collect::<Fields>()
+        };
         public.insert(legacy.to_owned(), values.into());
     }
     public.insert("projectSettingsOverrides".to_owned(), projects.into());
@@ -330,7 +349,7 @@ fn copy_model_selections(target: &mut Fields, raw: &Fields) {
     }
 }
 
-fn model_selection(raw: &Value) -> Option<Value> {
+pub(super) fn model_selection(raw: &Value) -> Option<Value> {
     let fields = raw.as_object()?;
     let instance_id = nonblank(
         fields

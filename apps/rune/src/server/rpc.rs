@@ -1195,7 +1195,7 @@ fn response(
                 Err(error) => failure(id, error),
             }
         }
-        "server.updateSettings" => update_settings(id, local, permissions, payload),
+        "server.updateSettings" => update_settings(id, store.path(), local, permissions, payload),
         "server.getSettings" if local.is_some() => {
             let settings = &local.expect("local operations are present").settings;
             match settings.read() {
@@ -1292,6 +1292,7 @@ fn browse(id: RequestId, allowed: bool, payload: Value) -> Value {
 
 fn update_settings(
     id: RequestId,
+    database: &std::path::Path,
     local: Option<&LocalOperations>,
     permissions: Permissions,
     payload: Value,
@@ -1329,7 +1330,7 @@ fn update_settings(
             ),
         );
     }
-    match settings.update(patch) {
+    match settings.update(patch, database) {
         Ok(settings) => success(id, settings),
         Err(error) => failure(id, error),
     }

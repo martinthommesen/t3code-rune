@@ -203,3 +203,75 @@ fn invalid_persisted_settings_get_safe_defaults_without_permitting_work() {
         ));
     }
 }
+
+#[test]
+fn rejects_a_null_project_workspace_mode_without_keeping_the_environment_default() {
+    let settings = SettingsSnapshot::decode(
+        r#"{
+        "defaultThreadEnvMode": "local",
+        "projectSettingsFolded": true,
+        "projectSettingsOverrides": {"project": {"defaultThreadEnvMode": null}}
+    }"#,
+    );
+    assert!(!settings.readable);
+    let public = settings.for_client();
+    assert!(public.get("defaultThreadEnvMode").is_none());
+    assert_eq!(public["continueThreadsAfterServerUpdate"], false);
+    assert_eq!(public["projectSettingsOverrides"], serde_json::json!({}));
+}
+
+#[test]
+fn first_project_override_write_folds_legacy_defaults_without_reviving_a_reset() {
+    let temp = tempfile::tempdir().unwrap();
+    let database = temp.path().join("statev2.sqlite");
+    let settings_path = temp.path().join("settings.json");
+    let connection = rusqlite::Connection::open(&database).unwrap();
+    connection
+        .execute_batch(include_str!("../bootstrap/schema.sql"))
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO projection_projects
+             (project_id,title,workspace_root,default_thread_env_mode,auto_pull,created_at,updated_at,scripts_json)
+             VALUES ('legacy','legacy','/legacy','worktree',1,'2026-01-01','2026-01-01','[]')",
+            [],
+        )
+        .unwrap();
+    fs::write(
+        &settings_path,
+        r#"{"projectAutoPullOverrides":{"legacy":false},"projectSettingsOverrides":{
+            "legacy":{"providerInstances":{"codex":{"enabled":true}},"futurePreference":3}
+        }}"#,
+    )
+    .unwrap();
+    let file = SettingsFile::new(settings_path.clone());
+    let update = serde_json::json!({"patch":{"projectSettingsOverrides":{"second":{"defaultAutoPull":true}}}});
+    let written = file
+        .update(Patch::decode(&update).unwrap(), &database)
+        .unwrap();
+    assert_eq!(written["projectSettingsFolded"], true);
+    assert_eq!(
+        written["projectSettingsOverrides"]["legacy"],
+        serde_json::json!({
+            "defaultThreadEnvMode":"worktree", "defaultAutoPull":false,
+            "providerInstances":{"codex":{"enabled":true}}, "futurePreference":3,
+        })
+    );
+    let reset = serde_json::json!({"patch":{"projectSettingsOverrides":{"legacy":null}}});
+    file.update(Patch::decode(&reset).unwrap(), &database)
+        .unwrap();
+    let restored = SettingsFile::new(settings_path)
+        .read()
+        .unwrap()
+        .for_client();
+    assert!(restored["projectSettingsOverrides"].get("legacy").is_none());
+    assert!(restored["projectAutoPullOverrides"].get("legacy").is_none());
+    let mode = connection
+        .query_row(
+            "SELECT default_thread_env_mode FROM projection_projects WHERE project_id='legacy'",
+            [],
+            |record| record.get::<_, String>(0),
+        )
+        .unwrap();
+    assert_eq!(mode, "worktree");
+}

@@ -2,13 +2,14 @@ use std::sync::OnceLock;
 
 use serde_json::Value;
 
-use super::Fields;
+use super::{Fields, project_overrides::ProjectPatch};
 
 const RUNTIME_MODES: &str =
     "Expected \"approval-required\" | \"auto-accept-edits\" | \"auto\" | \"full-access\"";
 
 pub(in crate::server) struct Patch {
     fields: Fields,
+    projects: Option<ProjectPatch>,
     settings: bool,
     providers: bool,
     access: bool,
@@ -26,6 +27,7 @@ impl Patch {
             .ok_or("Expected object\n  at [\"patch\"]")?;
         let mut patch = Self {
             fields: Fields::new(),
+            projects: None,
             settings: false,
             providers: false,
             access: false,
@@ -47,6 +49,15 @@ impl Patch {
                 }
                 "requireConnectDeviceApproval" | "enablePreviewTunnel" => patch.access = true,
                 _ => patch.settings = true,
+            }
+            if key == "projectSettingsOverrides" {
+                let mut projects = ProjectPatch::decode(value)?;
+                patch.providers |= projects.references_secret;
+                if patch.unsupported.is_none() {
+                    patch.unsupported = projects.unsupported.take();
+                }
+                patch.projects = Some(projects);
+                continue;
             }
             if let Some(expected) = invalid_value(key, value) {
                 return Err(format!("{expected}\n  at [\"patch\"][\"{key}\"]"));
@@ -83,7 +94,14 @@ impl Patch {
         self.unsupported.as_deref()
     }
 
-    pub(super) fn apply(self, stored: &mut Fields, defaults: &Value) {
+    pub(super) fn edits_projects(&self) -> bool {
+        self.projects.is_some()
+    }
+
+    pub(super) fn apply(self, stored: &mut Fields, defaults: &Value) -> Result<(), String> {
+        if let Some(projects) = self.projects {
+            projects.apply(stored)?;
+        }
         for (key, value) in self.fields {
             if value == defaults[&key] {
                 stored.shift_remove(&key);
@@ -91,6 +109,7 @@ impl Patch {
                 stored.insert(key, value);
             }
         }
+        Ok(())
     }
 }
 
@@ -113,7 +132,7 @@ fn supported(key: &str) -> bool {
     )
 }
 
-fn invalid_value(key: &str, value: &Value) -> Option<&'static str> {
+pub(super) fn invalid_value(key: &str, value: &Value) -> Option<&'static str> {
     match key {
         "continueThreadsAfterServerUpdate"
         | "defaultAutoPull"

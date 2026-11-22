@@ -359,7 +359,7 @@ impl Store {
     }
 }
 
-fn open_readonly(path: &Path) -> rusqlite::Result<Connection> {
+pub(super) fn open_readonly(path: &Path) -> rusqlite::Result<Connection> {
     let database = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     database.busy_timeout(Duration::from_secs(2))?;
     Ok(database)

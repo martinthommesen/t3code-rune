@@ -1,7 +1,7 @@
 use std::fmt;
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use serde_json::{Map, Value};
@@ -13,6 +13,8 @@ mod client;
 mod disk;
 mod jsonc;
 mod patch;
+mod project_overrides;
+mod project_scripts;
 mod providers;
 
 pub(crate) use jsonc::parse as parse_settings_json;
@@ -85,7 +87,7 @@ impl SettingsFile {
         self.shared.subscribers.subscribe()
     }
 
-    pub(super) fn update(&self, patch: Patch) -> Result<Value, Value> {
+    pub(super) fn update(&self, patch: Patch, database: &Path) -> Result<Value, Value> {
         let _write = self
             .shared
             .writes
@@ -93,14 +95,25 @@ impl SettingsFile {
             .unwrap_or_else(PoisonError::into_inner);
         let mut stored =
             disk::read(&self.path).map_err(|error| self.error("read-file", &error.to_string()))?;
-        patch.apply(&mut stored, &defaults());
+        if SettingsSnapshot::decode_fields(&stored).is_none() {
+            return Err(self.error("read-file", "Invalid settings file."));
+        }
+        let edits_projects = patch.edits_projects();
+        if edits_projects {
+            project_overrides::fold_legacy(&mut stored, database)
+                .map_err(|error| self.error("read-project-settings", &error.to_string()))?;
+        }
+        patch
+            .apply(&mut stored, &defaults())
+            .map_err(|error| self.error("normalize", &error))?;
+        if edits_projects || stored.get("projectSettingsFolded") == Some(&Value::Bool(true)) {
+            project_overrides::refresh_legacy(&mut stored);
+        }
+        let next = SettingsSnapshot::decode_fields(&stored)
+            .ok_or_else(|| self.error("normalize", "Could not normalize environment settings."))?;
         let mut contents = serde_json::to_string_pretty(&stored)
             .map_err(|error| self.error("normalize", &error.to_string()))?;
         contents.push('\n');
-        let next = SettingsSnapshot::decode(&contents);
-        if !next.readable {
-            return Err(self.error("normalize", "Could not normalize environment settings."));
-        }
         disk::write(&self.path, contents.as_bytes())
             .map_err(|error| self.error("write-file", &error.to_string()))?;
         let settings = next.for_client();
@@ -119,14 +132,9 @@ impl SettingsFile {
 impl SettingsSnapshot {
     fn decode(content: &str) -> Self {
         if let Some(Value::Object(raw)) = super::parse_settings_json(content)
-            && let Ok(instances) = providers::resolve_instances(&raw)
-            && let Some(public) = client::project(defaults(), &raw, &instances)
+            && let Some(settings) = Self::decode_fields(&raw)
         {
-            return Self {
-                provider_instances: instances,
-                public,
-                readable: true,
-            };
+            return settings;
         }
 
         let mut public = defaults();
@@ -137,6 +145,16 @@ impl SettingsSnapshot {
             public,
             readable: false,
         }
+    }
+
+    fn decode_fields(raw: &Fields) -> Option<Self> {
+        let provider_instances = providers::resolve_instances(raw).ok()?;
+        let public = client::project(defaults(), raw, &provider_instances)?;
+        Some(Self {
+            provider_instances,
+            public,
+            readable: true,
+        })
     }
 
     pub(super) fn for_client(&self) -> Value {
