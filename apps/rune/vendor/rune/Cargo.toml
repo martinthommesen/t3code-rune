@@ -1,0 +1,73 @@
+[workspace]
+resolver = "3"
+members = ["crates/rune"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+procwatch = { git = "https://github.com/anomalyco/rune", rev = "dd672fc8257a1bfb55d2e8595f585fc411e709df" }
+rune-core = { git = "https://github.com/anomalyco/rune", rev = "dd672fc8257a1bfb55d2e8595f585fc411e709df" }
+rune-edit = { git = "https://github.com/anomalyco/rune", rev = "dd672fc8257a1bfb55d2e8595f585fc411e709df" }
+rune-gpu = { git = "https://github.com/anomalyco/rune", rev = "dd672fc8257a1bfb55d2e8595f585fc411e709df", default-features = false }
+rune-image = { git = "https://github.com/anomalyco/rune", rev = "dd672fc8257a1bfb55d2e8595f585fc411e709df", default-features = false }
+rune-media = { git = "https://github.com/anomalyco/rune", rev = "dd672fc8257a1bfb55d2e8595f585fc411e709df", default-features = false }
+rune-motion = { git = "https://github.com/anomalyco/rune", rev = "dd672fc8257a1bfb55d2e8595f585fc411e709df" }
+rune-spell = { git = "https://github.com/anomalyco/rune", rev = "dd672fc8257a1bfb55d2e8595f585fc411e709df" }
+rune-staging = { git = "https://github.com/anomalyco/rune", rev = "dd672fc8257a1bfb55d2e8595f585fc411e709df" }
+rune-taffy = { git = "https://github.com/anomalyco/rune", rev = "dd672fc8257a1bfb55d2e8595f585fc411e709df" }
+rune-text = { git = "https://github.com/anomalyco/rune", rev = "dd672fc8257a1bfb55d2e8595f585fc411e709df", default-features = false }
+blake3 = "1"
+block2 = "0.6"
+bytemuck = { version = "1.25", features = ["derive"] }
+half = "2"
+image = { version = "0.25", default-features = false }
+js-sys = "0.3"
+libc = "0.2"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false }
+objc2-core-foundation = { version = "0.3", default-features = false }
+objc2-core-graphics = { version = "0.3", default-features = false }
+objc2-core-video = { version = "0.3", default-features = false }
+objc2-foundation = { version = "0.3", default-features = false }
+objc2-metal = { version = "0.3", default-features = false }
+parley = { version = "0.12", default-features = false }
+png = "0.18"
+pollster = "1"
+rustc-hash = "2"
+serde = "1"
+serde_json = "1"
+swash = "0.2.10"
+taffy = { version = "0.15", default-features = false }
+unicode-segmentation = "1.13"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = "0.3"
+wgpu = { version = "~30.0.1", default-features = false }
+windows = "0.62"
+windows-core = "0.62"
+windows-sys = "0.61"
+winit = { version = "0.30.13", default-features = false }
+zeroize = "1.8"
+
+[workspace.lints.rust]
+# shared-lints begin
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+# shared-lints end
+unsafe_code = "deny" # pure-Rust crates use #![forbid(unsafe_code)]; FFI/SIMD leaf modules opt in locally
+
+[workspace.lints.clippy]
+# shared-lints begin
+await_holding_lock = "deny"
+await_holding_refcell_ref = "deny"
+dbg_macro = "deny"
+disallowed_methods = "deny"
+disallowed_types = "deny"
+expect_used = "warn"
+let_underscore_must_use = "deny"
+todo = "warn"
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "warn"
+# shared-lints end

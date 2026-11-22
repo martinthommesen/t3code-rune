@@ -6,6 +6,9 @@ use rune::{App, Color, Drag, El, Icon, Phase, Tx, WindowHandle, el, icon};
 use super::State;
 
 #[cfg(target_os = "linux")]
+mod wayland;
+
+#[cfg(target_os = "linux")]
 mod x11;
 
 const HEIGHT: f32 = 40.0;
@@ -60,6 +63,25 @@ impl Default for CaptionLayout {
 }
 
 impl CaptionLayout {
+    #[cfg(target_os = "linux")]
+    fn from_desktop_order(value: &str) -> Self {
+        let (left, right) = value.split_once(':').unwrap_or((value, ""));
+        let buttons = |side: &str| {
+            side.split(',')
+                .filter_map(|value| match value.trim() {
+                    "minimize" => Some(CaptionButton::Minimize),
+                    "maximize" => Some(CaptionButton::Maximize),
+                    "close" => Some(CaptionButton::Close),
+                    _ => None,
+                })
+                .collect()
+        };
+        Self {
+            leading: buttons(left),
+            trailing: buttons(right),
+        }
+    }
+
     fn width(buttons: &[CaptionButton]) -> f32 {
         if buttons.is_empty() {
             0.0
@@ -78,6 +100,8 @@ pub(super) struct ChromeState {
     caption_layout: CaptionLayout,
     #[cfg(target_os = "linux")]
     resize_frame: Option<x11::ResizeFrame>,
+    #[cfg(target_os = "linux")]
+    wayland: Option<wayland::Frame>,
 }
 
 #[derive(Clone, Copy)]
@@ -94,6 +118,18 @@ impl ChromeState {
             return false;
         };
         tx.wake_after(Duration::from_millis(33));
+        #[cfg(target_os = "linux")]
+        if let Some(frame) = &mut self.wayland {
+            let maximized = window.is_maximized().unwrap_or(self.maximized);
+            let full_screen = window.is_full_screen().unwrap_or(self.full_screen);
+            let decorated = window.is_decorated().unwrap_or(frame.decorated);
+            let changed = (self.maximized, self.full_screen, frame.decorated)
+                != (maximized, full_screen, decorated);
+            self.maximized = maximized;
+            self.full_screen = full_screen;
+            frame.decorated = decorated;
+            return changed;
+        }
         let Some(placement) = window.placement() else {
             return false;
         };
@@ -111,8 +147,19 @@ impl ChromeState {
         changed
     }
 
+    fn has_caption(&self) -> bool {
+        if self.window.is_none() || self.full_screen {
+            return false;
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(frame) = &self.wayland {
+            return !frame.decorated;
+        }
+        true
+    }
+
     pub(super) fn leading_inset(&self) -> f32 {
-        if self.window.is_some() && !self.full_screen {
+        if self.has_caption() {
             CaptionLayout::width(&self.caption_layout.leading)
         } else {
             0.0
@@ -120,7 +167,7 @@ impl ChromeState {
     }
 
     pub(super) fn trailing_inset(&self) -> f32 {
-        if self.window.is_some() && !self.full_screen {
+        if self.has_caption() {
             CaptionLayout::width(&self.caption_layout.trailing)
         } else {
             0.0
@@ -128,7 +175,7 @@ impl ChromeState {
     }
 
     pub(super) fn drag_band(&self, left: f32) -> Option<El> {
-        (self.window.is_some() && !self.full_screen).then(|| {
+        self.has_caption().then(|| {
             let left = left.max(self.leading_inset());
             self.drag_region(
                 el().key("window-drag-band")
@@ -139,6 +186,14 @@ impl ChromeState {
     }
 
     pub(super) fn drag_region(&self, element: El) -> El {
+        #[cfg(target_os = "linux")]
+        if let Some(frame) = &self.wayland {
+            return if frame.decorated {
+                element.window_drag()
+            } else {
+                wayland::drag_region(element)
+            };
+        }
         if self.window.is_none() {
             return element.window_drag();
         }
@@ -218,7 +273,19 @@ impl ChromeState {
         #[cfg(target_os = "linux")]
         if let Some(frame) = &self.resize_frame {
             let _ = frame.minimize();
+        } else if self.wayland.is_some()
+            && let Some(window) = &self.window
+        {
+            let _ = window.minimize();
         }
+    }
+
+    pub(super) fn resize_overlay(&self) -> Option<El> {
+        #[cfg(target_os = "linux")]
+        if self.wayland.is_some() && self.has_caption() && !self.maximized {
+            return Some(wayland::edges());
+        }
+        None
     }
 
     pub(super) fn overlay(&self, dark: bool) -> Option<El> {
@@ -340,17 +407,25 @@ pub(super) fn configure(app: App<State>) -> App<State> {
     {
         let handle = app.handle();
         app.on_window(move |window| {
-            let Some((resize_frame, caption_layout)) = x11::ResizeFrame::install(window) else {
-                return;
-            };
-            let window = window.clone();
-            handle.update(move |state, tx| {
-                state.window_chrome = ChromeState {
-                    window: Some(window),
-                    resize_frame: Some(resize_frame),
-                    caption_layout,
-                    ..ChromeState::default()
+            let mut chrome =
+                if let Some((frame, caption_layout)) = x11::ResizeFrame::install(window) {
+                    ChromeState {
+                        resize_frame: Some(frame),
+                        caption_layout,
+                        ..ChromeState::default()
+                    }
+                } else if let Some((frame, caption_layout)) = wayland::Frame::install(window) {
+                    ChromeState {
+                        wayland: Some(frame),
+                        caption_layout,
+                        ..ChromeState::default()
+                    }
+                } else {
+                    return;
                 };
+            chrome.window = Some(window.clone());
+            handle.update(move |state, tx| {
+                state.window_chrome = chrome;
                 state.window_chrome.poll(tx);
             });
         })

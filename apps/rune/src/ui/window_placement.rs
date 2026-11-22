@@ -144,18 +144,24 @@ pub(super) fn run(
                 Some(NativeDisplayId::X11Crtc(_) | NativeDisplayId::X11Output(_))
             )
         });
-        let borderless = cfg!(target_os = "linux") && x11;
+        #[cfg(target_os = "linux")]
+        let wayland_backend = displays
+            .iter()
+            .any(|display| matches!(display.native_id(), Some(NativeDisplayId::Wayland(_))));
+        #[cfg(target_os = "linux")]
+        let borderless = x11 || wayland_backend;
+        #[cfg(not(target_os = "linux"))]
+        let borderless = false;
         let Some((store, saved)) = persistence else {
             let mut spec = WindowSpec::from_app("main", app);
             spec.options.borderless = borderless;
             return [spec];
         };
         #[cfg(target_os = "linux")]
-        if displays
-            .iter()
-            .any(|display| matches!(display.native_id(), Some(NativeDisplayId::Wayland(_))))
-        {
-            return [wayland::restore(app, window_args, saved, displays)];
+        if wayland_backend {
+            let mut spec = wayland::restore(app, window_args, saved, displays);
+            spec.options.borderless = borderless;
+            return [spec];
         }
         let displays: Vec<_> = displays.iter().map(Monitor::new).collect();
         let restored = saved.and_then(|placement| {

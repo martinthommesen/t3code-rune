@@ -2,7 +2,7 @@ use x11rb::connection::Connection;
 use x11rb::protocol::Event;
 use x11rb::protocol::xproto::{Atom, ChangeWindowAttributesAux, ConnectionExt, EventMask, Window};
 
-use super::super::{CaptionButton, CaptionLayout};
+use super::super::CaptionLayout;
 
 const PROPERTY_LIMIT: u32 = 16_384; // X11 counts four-byte units.
 const DECORATION_LAYOUT: &str = "Gtk/DecorationLayout";
@@ -126,7 +126,9 @@ fn decode(bytes: &[u8]) -> Option<CaptionLayout> {
                 let length = buffer.word()? as usize;
                 let value = buffer.padded(length)?;
                 if name == DECORATION_LAYOUT.as_bytes() {
-                    return Some(layout(std::str::from_utf8(value).ok()?));
+                    return Some(CaptionLayout::from_desktop_order(
+                        std::str::from_utf8(value).ok()?,
+                    ));
                 }
             }
             2 => {
@@ -173,26 +175,9 @@ impl<'a> SettingsBuffer<'a> {
     }
 }
 
-fn layout(value: &str) -> CaptionLayout {
-    let (left, right) = value.split_once(':').unwrap_or((value, ""));
-    let buttons = |side: &str| {
-        side.split(',')
-            .filter_map(|value| match value.trim() {
-                "minimize" => Some(CaptionButton::Minimize),
-                "maximize" => Some(CaptionButton::Maximize),
-                "close" => Some(CaptionButton::Close),
-                _ => None,
-            })
-            .collect()
-    };
-    CaptionLayout {
-        leading: buttons(left),
-        trailing: buttons(right),
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::super::CaptionButton;
     use super::*;
 
     fn packet(value: &str, little_endian: bool) -> Vec<u8> {

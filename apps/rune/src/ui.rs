@@ -1676,6 +1676,9 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
     if let Some(caption) = state.window_chrome.overlay(palette.dark) {
         body = body.child(caption);
     }
+    if let Some(edges) = state.window_chrome.resize_overlay() {
+        body = body.child(edges);
+    }
     body
 }
 
