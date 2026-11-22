@@ -1,7 +1,7 @@
 use rune::color::hex;
 use rune::{Color, El, Icon, TextStyle, Tx, col, edit_access, el, icon, row, text, text_input};
 
-use crate::connection::{ProviderMetadata, SavedModel, Thread};
+use crate::connection::{DraftClaudeModel, ProviderMetadata, ProviderModel, Thread, WorkspaceMode};
 
 use super::conversation::{Layout, MAX_LANE};
 use super::draft_hero;
@@ -55,6 +55,40 @@ pub(super) fn thread_provider_unavailable(workspace: &Workspace, thread: &Thread
     provider_unavailable(workspace, thread.providers.current_instance())
 }
 
+pub(super) fn draft_provider_unavailable(
+    workspace: &Workspace,
+    draft: &Draft,
+    project: &str,
+) -> bool {
+    if draft.claude_model.is_some() && native_root_claude_provider(workspace).is_some() {
+        return draft_claude_model(workspace, draft, project).is_none();
+    }
+    provider_unavailable(workspace, None)
+}
+
+fn native_root_claude_provider(workspace: &Workspace) -> Option<&ProviderMetadata> {
+    workspace
+        .providers
+        .as_ref()?
+        .get("claudeAgent")
+        .filter(|provider| provider.driver == "claudeAgent" && provider.native_root_launch)
+}
+
+pub(super) fn draft_claude_model<'a>(
+    workspace: &'a Workspace,
+    draft: &Draft,
+    project: &str,
+) -> Option<&'a ProviderModel> {
+    if matches!(draft.claude_model, Some(DraftClaudeModel::Sonnet46))
+        && draft.workspace_mode == WorkspaceMode::Local
+        && workspace.scratch_project.as_deref() != Some(project)
+    {
+        native_root_claude_provider(workspace)?.model("claude-sonnet-4-6")
+    } else {
+        None
+    }
+}
+
 fn native_claude_provider<'a>(
     workspace: &'a Workspace,
     thread: &Thread,
@@ -67,11 +101,11 @@ fn native_claude_provider<'a>(
         .filter(|provider| provider.driver == "claudeAgent" && provider.native_saved_thread_turns)
 }
 
-fn claude_model<'a>(thread: &Thread, provider: &'a ProviderMetadata) -> Option<&'a SavedModel> {
+fn claude_model<'a>(thread: &Thread, provider: &'a ProviderMetadata) -> Option<&'a ProviderModel> {
     if thread.worktree_path.is_some() || thread.archived {
         return None;
     }
-    provider.saved_model(thread.providers.plain_claude_model()?)
+    provider.model(thread.providers.plain_claude_model()?)
 }
 
 pub(super) fn thread(
@@ -175,20 +209,35 @@ fn surface(
     palette: Palette,
 ) -> El {
     let colors = Colors::new(palette.dark);
-    let unavailable = thread.map_or_else(
-        || provider_unavailable(workspace, None),
-        |thread| thread_provider_unavailable(workspace, thread),
-    );
-    let model =
-        thread.and_then(|thread| claude_model(thread, native_claude_provider(workspace, thread)?));
-    let open_picker = workspace
-        .selection
-        .as_ref()
-        .and_then(|selection| match &selection.view {
-            super::ProjectView::Conversation(conversation) => conversation.model_picker.as_ref(),
-            _ => None,
-        });
-    let thread_id = thread.map(|thread| thread.id.as_str());
+    let unavailable = match &target {
+        Target::Draft(project) => draft_provider_unavailable(workspace, draft, project),
+        Target::Thread { .. } => thread.map_or_else(
+            || provider_unavailable(workspace, None),
+            |thread| thread_provider_unavailable(workspace, thread),
+        ),
+    };
+    let picker = match &target {
+        Target::Draft(project) => draft_claude_model(workspace, draft, project).map(|model| {
+            (
+                model_picker::Target::Draft((*project).to_owned()),
+                model,
+                draft.model_picker.as_ref(),
+            )
+        }),
+        Target::Thread { .. } => thread.and_then(|thread| {
+            let model = claude_model(thread, native_claude_provider(workspace, thread)?)?;
+            let open = workspace
+                .selection
+                .as_ref()
+                .and_then(|selection| match &selection.view {
+                    super::ProjectView::Conversation(conversation) => {
+                        conversation.model_picker.as_ref()
+                    }
+                    _ => None,
+                });
+            Some((model_picker::Target::Thread(thread.id.clone()), model, open))
+        }),
+    };
     let project_id = match &target {
         Target::Draft(id) => Some(*id),
         Target::Thread { id, .. } => workspace
@@ -296,9 +345,9 @@ fn surface(
         );
     }
     footer = footer.child(el().grow(1.0));
-    if let Some((thread_id, model)) = thread_id.zip(model) {
+    if let Some((target, model, open)) = &picker {
         footer = footer.child(
-            model_picker::trigger(thread_id, model, open_picker.is_some(), palette)
+            model_picker::trigger(target.clone(), model, open.is_some(), palette)
                 .mr(if width >= 420.0 { 36.0 } else { 0.0 }),
         );
     }
@@ -392,10 +441,10 @@ fn surface(
         form = form.child(error_text(error, palette));
     }
     card = card.child(footer);
-    if let Some(((thread_id, model), query)) = thread_id.zip(model).zip(open_picker) {
+    if let Some((target, model, Some(query))) = picker {
         card = card
-            .child(model_picker::dismissal(thread_id, layout.viewport))
-            .child(model_picker::popup(thread_id, model, query, width, palette));
+            .child(model_picker::dismissal(target.clone(), layout.viewport))
+            .child(model_picker::popup(target, model, query, width, palette));
     }
     form.child(card)
 }

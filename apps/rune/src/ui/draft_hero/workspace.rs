@@ -6,7 +6,7 @@ use rune::{
 
 use crate::connection::GitRef;
 
-use super::super::{Draft, Palette, State, Workspace, WorkspaceMode, sidebar};
+use super::super::{Draft, Palette, State, Workspace, WorkspaceMode, composer, sidebar};
 
 const LABEL: TextStyle = TextStyle::new(12.0, 400.0).lh(16.0);
 const SMALL: TextStyle = TextStyle::new(12.0, 500.0).lh(16.0);
@@ -121,6 +121,7 @@ pub(super) fn view(
     palette: Palette,
 ) -> El {
     let colors = Colors::new(palette);
+    let full_access = composer::draft_claude_model(workspace, draft, project_id).is_some();
     let (mode_text, mode_icon, trigger_width) = mode_details(draft.workspace_mode);
     let available = workspace.worktree_launch
         && workspace.pending_clone(project_id).is_none()
@@ -175,7 +176,11 @@ pub(super) fn view(
         .w_full()
         .h(32.0)
         .pl(INSET)
-        .pr(branch_trailing_inset(width))
+        .pr(if full_access {
+            INSET
+        } else {
+            branch_trailing_inset(width)
+        })
         .pt(8.0)
         .gap(4.0)
         .center_y()
@@ -224,6 +229,15 @@ pub(super) fn view(
         );
     } else if let Some(branch) = selected {
         bar = bar.child(trigger(&branch.name, &BRANCH, colors));
+    }
+    if full_access {
+        let symbol = sidebar::project_badge::lookup_icon("ShieldOff").expect("permission icon");
+        bar = bar.child(
+            trigger("Full access", symbol, colors)
+                .key("draft-permissions")
+                .role("status")
+                .label("Permissions: Full access"),
+        );
     }
     if !available {
         return bar;

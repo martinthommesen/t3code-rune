@@ -379,6 +379,28 @@ fn disabled_and_hidden_project_models_inherit_the_environment_default() {
     assert_eq!(model(&settings), "custom");
 }
 
+#[test]
+fn native_draft_claude_model_matches_the_launch_defaults() {
+    let project = serde_json::from_value(json!({
+        "id": "project", "title": "Project", "workspaceRoot": "/project"
+    }))
+    .unwrap();
+    let mut settings = json!({
+        "defaultModelSelection": {"instanceId": "codex", "model": "default"},
+        "defaultRuntimeMode": "approval-required",
+        "projectSettingsOverrides": {"project": {
+            "defaultModelSelection": {"instanceId": "claudeAgent", "model": "claude-sonnet-4-6"}
+        }}
+    });
+    let preview = |settings: &Value| launch::draft_claude_model(settings, &project, "project");
+    assert_eq!(preview(&settings), Some(DraftClaudeModel::Unsupported));
+    settings["projectSettingsOverrides"]["project"]["defaultRuntimeMode"] = json!("full-access");
+    assert_eq!(preview(&settings), Some(DraftClaudeModel::Sonnet46));
+    settings["projectSettingsOverrides"]["project"]["providerInstances"] =
+        json!({"claudeAgent": {"enabled": false}});
+    assert_eq!(preview(&settings), None);
+}
+
 async fn serve_restored_thread(mut socket: WebSocket) {
     let shell = read(&mut socket).await;
     assert_eq!(shell["tag"], "orchestration.subscribeShell");

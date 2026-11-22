@@ -4,7 +4,7 @@ use rune::{
     text_input,
 };
 
-use crate::connection::SavedModel;
+use crate::connection::ProviderModel;
 
 use super::super::{Palette, State};
 
@@ -32,8 +32,27 @@ static CHECK: Icon = Icon {
     body: r#"<path d="m5 12 4 4 10-10" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
 
-pub(super) fn trigger(thread_id: &str, model: &SavedModel, open: bool, palette: Palette) -> El {
-    let id = thread_id.to_owned();
+#[derive(Clone)]
+pub(super) enum Target {
+    Thread(String),
+    Draft(String),
+}
+
+impl Target {
+    fn picker_mut<'a>(&self, state: &'a mut State) -> Option<&'a mut Option<TextEdit>> {
+        match self {
+            Self::Thread(id) => state
+                .conversation_mut(id)
+                .map(|entry| &mut entry.model_picker),
+            Self::Draft(id) => state
+                .new_thread_drafts
+                .get_mut(id)
+                .map(|draft| &mut draft.model_picker),
+        }
+    }
+}
+
+pub(super) fn trigger(target: Target, model: &ProviderModel, open: bool, palette: Palette) -> El {
     let name = model.short_name.as_deref().unwrap_or(&model.name);
     let color = Colors::new(palette.dark);
     row()
@@ -54,10 +73,10 @@ pub(super) fn trigger(thread_id: &str, model: &SavedModel, open: bool, palette: 
         .fill(color.control)
         .hover(color.hover)
         .on_press_tx(move |state: &mut State, tx| {
-            if let Some(conversation) = state.conversation_mut(&id)
-                && conversation.model_picker.take().is_none()
+            if let Some(picker) = target.picker_mut(state)
+                && picker.take().is_none()
             {
-                conversation.model_picker = Some(TextEdit::default());
+                *picker = Some(TextEdit::default());
                 tx.focus_when_shown(QUERY, false);
             }
         })
@@ -68,15 +87,14 @@ pub(super) fn trigger(thread_id: &str, model: &SavedModel, open: bool, palette: 
 }
 
 pub(super) fn popup(
-    thread_id: &str,
-    model: &SavedModel,
+    target: Target,
+    model: &ProviderModel,
     query: &TextEdit,
     lane: f32,
     palette: Palette,
 ) -> El {
-    let id = thread_id.to_owned();
-    let edit_id = id.clone();
-    let input_id = id.clone();
+    let edit_target = target.clone();
+    let input_target = target.clone();
     let color = Colors::new(palette.dark);
     let menu_width = 554.0_f32.min((lane - 16.0).max(220.0));
     let columns = menu_width >= 420.0;
@@ -97,15 +115,14 @@ pub(super) fn popup(
                     .single_line()
                     .placeholder("Search models...", color.muted)
                     .on_edit(edit_access(move |state: &mut State| {
-                        state
-                            .conversation_mut(&edit_id)
+                        edit_target
+                            .picker_mut(state)
                             .expect("open model picker")
-                            .model_picker
                             .as_mut()
                             .expect("model search")
                     }))
                     .on_input_key(move |state: &mut State, event, tx| {
-                        escape(state, &input_id, event, tx)
+                        escape(state, &input_target, event, tx)
                     }),
             ),
     );
@@ -234,7 +251,7 @@ pub(super) fn popup(
             Some(8.0_f32.max((lane - menu_width).min(84.0))),
             Some(42.0),
         )
-        .on_key(move |state: &mut State, event, tx| escape(state, &id, event, tx))
+        .on_key(move |state: &mut State, event, tx| escape(state, &target, event, tx))
         .child(body)
         .child(
             row()
@@ -253,27 +270,26 @@ pub(super) fn popup(
         )
 }
 
-pub(super) fn dismissal(thread_id: &str, viewport: [f32; 2]) -> El {
-    let id = thread_id.to_owned();
+pub(super) fn dismissal(target: Target, viewport: [f32; 2]) -> El {
     el().key("claude-model-dismiss")
         .absolute(-viewport[0], -viewport[1])
         .size(2.0 * viewport[0], 2.0 * viewport[1])
         .paint_order(2)
         .a11y_hidden()
-        .on_background_press_tx(move |state: &mut State, tx| close(state, &id, tx))
+        .on_background_press_tx(move |state: &mut State, tx| close(state, &target, tx))
 }
 
-fn escape(state: &mut State, id: &str, event: &KeyEvent, tx: &mut Tx) -> bool {
+fn escape(state: &mut State, target: &Target, event: &KeyEvent, tx: &mut Tx) -> bool {
     if event.key != Key::Escape {
         return false;
     }
-    close(state, id, tx);
+    close(state, target, tx);
     true
 }
 
-fn close(state: &mut State, id: &str, tx: &mut Tx) {
-    if let Some(conversation) = state.conversation_mut(id) {
-        conversation.model_picker = None;
+fn close(state: &mut State, target: &Target, tx: &mut Tx) {
+    if let Some(picker) = target.picker_mut(state) {
+        *picker = None;
     }
     tx.focus_when_shown(TRIGGER, tx.focus_visible());
 }

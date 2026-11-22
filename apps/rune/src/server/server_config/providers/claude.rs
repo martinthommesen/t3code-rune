@@ -23,7 +23,8 @@ pub(super) async fn status(settings: &SettingsSnapshot, cwd: &Path) -> Option<Va
     let mut provider = json!({
         "instanceId": INSTANCE, "driver": INSTANCE,
         "displayName": configured.and_then(|config| config["displayName"].as_str()).unwrap_or("Claude"),
-        "nativeSavedThreadTurns": true, "showInteractionModeToggle": false, "reportsContextWindow": true,
+        "nativeSavedThreadTurns": true, "nativeRootLaunch": true,
+        "showInteractionModeToggle": false, "reportsContextWindow": true,
         "supportedRuntimeModes":["full-access"], "supportsTextGeneration":false, "supportsConversationRollback":false,
         "enabled": true, "installed": false, "version": null, "status": "error",
         "auth":{"status":"unknown"},

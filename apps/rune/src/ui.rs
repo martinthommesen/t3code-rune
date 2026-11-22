@@ -221,6 +221,8 @@ struct Draft {
     edit: TextEdit,
     pending: bool,
     failure: Option<String>,
+    claude_model: Option<crate::connection::DraftClaudeModel>,
+    model_picker: Option<TextEdit>,
     workspace_mode: WorkspaceMode,
     workspace_edited: bool,
     base_ref: Option<String>,
@@ -714,40 +716,36 @@ impl State {
     }
 
     fn start_thread(&mut self, _: &mut Tx) {
-        let Some(ProjectSelection {
-            id,
-            view: ProjectView::NewThread,
-        }) = self
+        let Some(workspace) = self
             .workspace
             .as_ref()
-            .filter(|workspace| {
-                workspace.launch_writes
-                    && !workspace.reconnecting
-                    && !composer::provider_unavailable(workspace, None)
-            })
-            .and_then(|workspace| workspace.selection.as_ref())
+            .filter(|workspace| workspace.launch_writes && !workspace.reconnecting)
         else {
             return;
         };
-        if self
-            .workspace
-            .as_ref()
-            .is_some_and(|workspace| workspace.pending_clone(id).is_some())
-        {
+        let Some(ProjectSelection {
+            id,
+            view: ProjectView::NewThread,
+        }) = workspace.selection.as_ref()
+        else {
+            return;
+        };
+        if workspace.pending_clone(id).is_some() {
             return;
         }
         let Some(connection) = &self.connection else {
             return;
         };
-        let remote = self
-            .workspace
-            .as_ref()
-            .is_some_and(|workspace| workspace.remote_worktree_launch);
+        let remote = workspace.remote_worktree_launch;
         let draft = self
             .new_thread_drafts
             .get_mut(id)
             .expect("a new thread form has a draft");
-        if draft.pending || draft.refs.switching || draft.edit.text.trim().is_empty() {
+        if draft.pending
+            || draft.refs.switching
+            || draft.edit.text.trim().is_empty()
+            || composer::draft_provider_unavailable(workspace, draft, id)
+        {
             return;
         }
         let workspace =
@@ -770,6 +768,7 @@ impl State {
             };
         draft.pending = true;
         draft.failure = None;
+        draft.model_picker = None;
         let prompt = draft.edit.text.clone();
         let preparing_worktree = matches!(&workspace, LaunchWorkspace::Worktree { .. });
         let thread_id = connection.launch_thread(id.clone(), prompt.clone(), workspace);
@@ -1081,7 +1080,21 @@ impl State {
                 }
             }
             Event::ProviderCatalogUnavailable => self.onboarding.finish_refresh(),
-            Event::WorkspaceConfiguration(settings) => self.set_workspace_configuration(settings),
+            Event::WorkspaceConfiguration(settings) => {
+                if settings.is_some()
+                    && let Some(ProjectSelection {
+                        id,
+                        view: ProjectView::NewThread,
+                    }) = self
+                        .workspace
+                        .as_ref()
+                        .and_then(|workspace| workspace.selection.as_ref())
+                    && let Some(connection) = &self.connection
+                {
+                    connection.load_draft_preferences(id.clone());
+                }
+                self.set_workspace_configuration(settings);
+            }
             Event::WorkspaceProjectFile { operation, mode } => {
                 self.set_workspace_project_file(operation, mode);
             }
@@ -1355,6 +1368,14 @@ impl State {
                         draft.start_from_origin = draft.workspace_mode == WorkspaceMode::Worktree
                             && remote
                             && start_from_origin;
+                    }
+                }
+            }
+            Event::DraftClaudeDefault { project_id, model } => {
+                if let Some(draft) = self.new_thread_drafts.get_mut(&project_id) {
+                    draft.claude_model = model;
+                    if !matches!(model, Some(crate::connection::DraftClaudeModel::Sonnet46)) {
+                        draft.model_picker = None;
                     }
                 }
             }

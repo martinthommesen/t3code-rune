@@ -22,11 +22,13 @@ pub(crate) struct ProviderMetadata {
     #[serde(default)]
     pub(crate) native_saved_thread_turns: bool,
     #[serde(default)]
-    models: Vec<SavedModel>,
+    pub(crate) native_root_launch: bool,
+    #[serde(default)]
+    models: Vec<ProviderModel>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-pub(crate) struct SavedModel {
+pub(crate) struct ProviderModel {
     pub(crate) slug: String,
     pub(crate) name: String,
     #[serde(rename = "shortName")]
@@ -76,8 +78,8 @@ impl ProviderMetadata {
             && (explicitly_requested || self.status.as_deref() != Some("error"))
     }
 
-    pub(crate) fn saved_model(&self, slug: &str) -> Option<&SavedModel> {
-        if !self.native_saved_thread_turns || !self.selectable(false) {
+    pub(crate) fn model(&self, slug: &str) -> Option<&ProviderModel> {
+        if !self.selectable(false) {
             return None;
         }
         self.models.iter().find(|model| model.slug == slug)

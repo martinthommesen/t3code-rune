@@ -146,10 +146,20 @@ pub(crate) enum Workspace {
     },
 }
 
-pub(super) fn payload(config: Value, project: &ProjectRow, draft: &Draft) -> Result<Value, String> {
-    let settings: ServerSettings = serde_json::from_value(config)
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DraftClaudeModel {
+    Sonnet46,
+    Unsupported,
+}
+
+fn defaults(
+    config: &Value,
+    project: &ProjectRow,
+    project_id: &str,
+) -> Result<(Option<ModelSelection>, RuntimeMode), String> {
+    let settings: ServerSettings = ServerSettings::deserialize(config)
         .map_err(|_| "The environment returned invalid launch settings.".to_owned())?;
-    let overrides = settings.project_settings_overrides.get(&draft.project_id);
+    let overrides = settings.project_settings_overrides.get(project_id);
     let project_model = match overrides.and_then(|fields| fields.get("defaultModelSelection")) {
         Some(value) => Some(
             serde_json::from_value(value.clone())
@@ -171,6 +181,29 @@ pub(super) fn payload(config: Value, project: &ProjectRow, draft: &Draft) -> Res
             .map_err(|_| "The project has an invalid default runtime mode.".to_owned())?,
         None => settings.default_runtime_mode,
     };
+    Ok((model_selection, runtime_mode))
+}
+
+pub(super) fn draft_claude_model(
+    config: &Value,
+    project: &ProjectRow,
+    project_id: &str,
+) -> Option<DraftClaudeModel> {
+    let (model, runtime) = defaults(config, project, project_id).ok()?;
+    let model = model.filter(|model| model.instance_id() == "claudeAgent")?;
+    Some(
+        if model.plain_model() == Some("claude-sonnet-4-6")
+            && matches!(runtime, RuntimeMode::FullAccess)
+        {
+            DraftClaudeModel::Sonnet46
+        } else {
+            DraftClaudeModel::Unsupported
+        },
+    )
+}
+
+pub(super) fn payload(config: Value, project: &ProjectRow, draft: &Draft) -> Result<Value, String> {
+    let (model_selection, runtime_mode) = defaults(&config, project, &draft.project_id)?;
     let title = initial_title(&draft.prompt);
 
     Ok(json!({

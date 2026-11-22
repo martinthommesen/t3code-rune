@@ -46,7 +46,7 @@ pub(crate) use draft_defaults::WorkspaceMode;
 pub(crate) use keybindings::{
     Binding, Edit as KeybindingEdit, Keybindings, Rule as KeybindingRule, TERMINAL_TOGGLE,
 };
-pub(crate) use launch::Workspace as LaunchWorkspace;
+pub(crate) use launch::{DraftClaudeModel, Workspace as LaunchWorkspace};
 pub(crate) use project_favicon::{FaviconBytes, FaviconTarget};
 pub(crate) use projection::WorkspaceFailure;
 pub(crate) use projection::{
@@ -55,7 +55,7 @@ pub(crate) use projection::{
 };
 use projection::{Conversation, Shell};
 pub(crate) use provider_metadata::{
-    ProviderCatalog, ProviderMetadata, ProviderReadiness, SavedModel,
+    ProviderCatalog, ProviderMetadata, ProviderModel, ProviderReadiness,
 };
 pub(crate) use queue_mutation::QueueMutation;
 #[cfg(test)]
@@ -237,6 +237,10 @@ pub(crate) enum Event {
         project_id: String,
         mode: WorkspaceMode,
         start_from_origin: bool,
+    },
+    DraftClaudeDefault {
+        project_id: String,
+        model: Option<DraftClaudeModel>,
     },
     WorktreeSetup {
         thread_id: String,
@@ -2367,6 +2371,12 @@ impl Session {
             return Ok(());
         };
         let settings = exit.into_result().unwrap_or(Value::Null);
+        if self.native_model_discovery {
+            events.send(Event::DraftClaudeDefault {
+                project_id: project_id.clone(),
+                model: launch::draft_claude_model(&settings, project, &project_id),
+            });
+        }
         let preferences = draft_defaults::Preferences::from_settings(
             &settings,
             &project_id,
