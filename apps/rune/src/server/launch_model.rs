@@ -28,10 +28,11 @@ struct Page {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Model {
-    model: String,
+pub(super) struct Model {
+    pub(super) model: String,
     #[serde(default)]
-    is_default: bool,
+    pub(super) is_default: bool,
+    pub(super) display_name: Option<String>,
 }
 
 pub(super) async fn discover(
@@ -100,7 +101,7 @@ async fn default_model(
     Ok(selected.map_or_else(|| PREFERRED_MODELS[0].into(), |model| model.model.clone()))
 }
 
-async fn read_pages(server: &CodexAppServer) -> Result<Vec<Model>, &'static str> {
+pub(super) async fn read_pages(server: &CodexAppServer) -> Result<Vec<Model>, &'static str> {
     let client = server.client();
     let mut models = Vec::new();
     let mut cursors = HashSet::new();

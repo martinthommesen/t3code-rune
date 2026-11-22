@@ -1,0 +1,2273 @@
+{
+  "commands": [
+    "workspace.focusNext",
+    "workspace.focusPrevious",
+    "sidebar.toggle",
+    "navigation.back",
+    "navigation.forward",
+    "terminal.toggle",
+    "terminal.split",
+    "terminal.splitVertical",
+    "terminal.new",
+    "terminal.close",
+    "rightPanel.toggle",
+    "rightPanel.new",
+    "threadPanel.toggle",
+    "rightPanel.toggleMaximized",
+    "rightPanel.close",
+    "view.reopenClosed",
+    "pullRequest.copyNumber",
+    "diff.toggle",
+    "preview.toggle",
+    "preview.refresh",
+    "preview.focusUrl",
+    "preview.zoomIn",
+    "preview.zoomOut",
+    "preview.resetZoom",
+    "preview.find",
+    "commandPalette.toggle",
+    "filePicker.toggle",
+    "projectSearch.toggle",
+    "usage.open",
+    "theme.select",
+    "appearance.cycle",
+    "themeEditor.toggle",
+    "composer.stash",
+    "composer.sendAlternate",
+    "composer.sendBackground",
+    "composer.sendAndNewThread",
+    "composer.dictation",
+    "composer.host",
+    "composer.cycleHost",
+    "composer.effort",
+    "composer.increaseEffort",
+    "composer.decreaseEffort",
+    "composer.mode",
+    "composer.workspace",
+    "composer.previousWorktree",
+    "composer.branch",
+    "chat.new",
+    "chat.newLocal",
+    "chat.newWithoutProject",
+    "chat.find",
+    "editor.openFavorite",
+    "usage.cost",
+    "usage.tokens",
+    "usage.limits",
+    "usage.period.day",
+    "usage.period.week",
+    "usage.period.month",
+    "usage.period.quarter",
+    "modelPicker.toggle",
+    "modelPicker.previousProvider",
+    "modelPicker.nextProvider",
+    "modelPicker.jump.1",
+    "modelPicker.jump.2",
+    "modelPicker.jump.3",
+    "modelPicker.jump.4",
+    "modelPicker.jump.5",
+    "modelPicker.jump.6",
+    "modelPicker.jump.7",
+    "modelPicker.jump.8",
+    "modelPicker.jump.9",
+    "thread.stop",
+    "thread.steerQueuedMessage",
+    "thread.editQueuedMessage",
+    "thread.previous",
+    "thread.next",
+    "thread.copyReference",
+    "thread.settle",
+    "thread.pin",
+    "thread.regenerateTitle",
+    "thread.undo",
+    "thread.jump.1",
+    "thread.jump.2",
+    "thread.jump.3",
+    "thread.jump.4",
+    "thread.jump.5",
+    "thread.jump.6",
+    "thread.jump.7",
+    "thread.jump.8",
+    "thread.jump.9"
+  ],
+  "defaults": [
+    {
+      "raw": {
+        "key": "mod+b",
+        "command": "sidebar.toggle"
+      },
+      "resolved": {
+        "command": "sidebar.toggle",
+        "shortcut": {
+          "key": "b",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "f6",
+        "command": "workspace.focusNext"
+      },
+      "resolved": {
+        "command": "workspace.focusNext",
+        "shortcut": {
+          "key": "f6",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": false
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "shift+f6",
+        "command": "workspace.focusPrevious"
+      },
+      "resolved": {
+        "command": "workspace.focusPrevious",
+        "shortcut": {
+          "key": "f6",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": true,
+          "altKey": false,
+          "modKey": false
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+f6",
+        "command": "workspace.focusNext"
+      },
+      "resolved": {
+        "command": "workspace.focusNext",
+        "shortcut": {
+          "key": "f6",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+shift+f6",
+        "command": "workspace.focusPrevious"
+      },
+      "resolved": {
+        "command": "workspace.focusPrevious",
+        "shortcut": {
+          "key": "f6",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": true,
+          "altKey": false,
+          "modKey": true
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+[",
+        "command": "navigation.back",
+        "when": "!terminalFocus"
+      },
+      "resolved": {
+        "command": "navigation.back",
+        "shortcut": {
+          "key": "[",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "not",
+          "node": {
+            "type": "identifier",
+            "name": "terminalFocus"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+]",
+        "command": "navigation.forward",
+        "when": "!terminalFocus"
+      },
+      "resolved": {
+        "command": "navigation.forward",
+        "shortcut": {
+          "key": "]",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "not",
+          "node": {
+            "type": "identifier",
+            "name": "terminalFocus"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+j",
+        "command": "terminal.toggle"
+      },
+      "resolved": {
+        "command": "terminal.toggle",
+        "shortcut": {
+          "key": "j",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+alt+b",
+        "command": "rightPanel.toggle"
+      },
+      "resolved": {
+        "command": "rightPanel.toggle",
+        "shortcut": {
+          "key": "b",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": true,
+          "modKey": true
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+shift+b",
+        "command": "threadPanel.toggle",
+        "when": "!terminalFocus"
+      },
+      "resolved": {
+        "command": "threadPanel.toggle",
+        "shortcut": {
+          "key": "b",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": true,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "not",
+          "node": {
+            "type": "identifier",
+            "name": "terminalFocus"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+t",
+        "command": "rightPanel.new",
+        "when": "rightPanelOpen && !terminalFocus"
+      },
+      "resolved": {
+        "command": "rightPanel.new",
+        "shortcut": {
+          "key": "t",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "and",
+          "left": {
+            "type": "identifier",
+            "name": "rightPanelOpen"
+          },
+          "right": {
+            "type": "not",
+            "node": {
+              "type": "identifier",
+              "name": "terminalFocus"
+            }
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+d",
+        "command": "terminal.split",
+        "when": "terminalFocus"
+      },
+      "resolved": {
+        "command": "terminal.split",
+        "shortcut": {
+          "key": "d",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "identifier",
+          "name": "terminalFocus"
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+shift+d",
+        "command": "terminal.splitVertical",
+        "when": "terminalFocus"
+      },
+      "resolved": {
+        "command": "terminal.splitVertical",
+        "shortcut": {
+          "key": "d",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": true,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "identifier",
+          "name": "terminalFocus"
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+shift+d",
+        "command": "composer.dictation",
+        "when": "!terminalFocus"
+      },
+      "resolved": {
+        "command": "composer.dictation",
+        "shortcut": {
+          "key": "d",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": true,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "not",
+          "node": {
+            "type": "identifier",
+            "name": "terminalFocus"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+n",
+        "command": "terminal.new",
+        "when": "terminalFocus"
+      },
+      "resolved": {
+        "command": "terminal.new",
+        "shortcut": {
+          "key": "n",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "identifier",
+          "name": "terminalFocus"
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+w",
+        "command": "terminal.close",
+        "when": "terminalFocus"
+      },
+      "resolved": {
+        "command": "terminal.close",
+        "shortcut": {
+          "key": "w",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "identifier",
+          "name": "terminalFocus"
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+w",
+        "command": "rightPanel.close",
+        "when": "!terminalFocus"
+      },
+      "resolved": {
+        "command": "rightPanel.close",
+        "shortcut": {
+          "key": "w",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "not",
+          "node": {
+            "type": "identifier",
+            "name": "terminalFocus"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+shift+t",
+        "command": "view.reopenClosed"
+      },
+      "resolved": {
+        "command": "view.reopenClosed",
+        "shortcut": {
+          "key": "t",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": true,
+          "altKey": false,
+          "modKey": true
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+d",
+        "command": "diff.toggle",
+        "when": "!terminalFocus"
+      },
+      "resolved": {
+        "command": "diff.toggle",
+        "shortcut": {
+          "key": "d",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "not",
+          "node": {
+            "type": "identifier",
+            "name": "terminalFocus"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+shift+j",
+        "command": "preview.toggle"
+      },
+      "resolved": {
+        "command": "preview.toggle",
+        "shortcut": {
+          "key": "j",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": true,
+          "altKey": false,
+          "modKey": true
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+r",
+        "command": "preview.refresh",
+        "when": "previewFocus"
+      },
+      "resolved": {
+        "command": "preview.refresh",
+        "shortcut": {
+          "key": "r",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "identifier",
+          "name": "previewFocus"
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+l",
+        "command": "preview.focusUrl",
+        "when": "previewFocus"
+      },
+      "resolved": {
+        "command": "preview.focusUrl",
+        "shortcut": {
+          "key": "l",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "identifier",
+          "name": "previewFocus"
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+=",
+        "command": "preview.zoomIn",
+        "when": "previewFocus"
+      },
+      "resolved": {
+        "command": "preview.zoomIn",
+        "shortcut": {
+          "key": "=",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "identifier",
+          "name": "previewFocus"
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod++",
+        "command": "preview.zoomIn",
+        "when": "previewFocus"
+      },
+      "resolved": {
+        "command": "preview.zoomIn",
+        "shortcut": {
+          "key": "+",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "identifier",
+          "name": "previewFocus"
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+-",
+        "command": "preview.zoomOut",
+        "when": "previewFocus"
+      },
+      "resolved": {
+        "command": "preview.zoomOut",
+        "shortcut": {
+          "key": "-",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "identifier",
+          "name": "previewFocus"
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+0",
+        "command": "preview.resetZoom",
+        "when": "previewFocus"
+      },
+      "resolved": {
+        "command": "preview.resetZoom",
+        "shortcut": {
+          "key": "0",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "identifier",
+          "name": "previewFocus"
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+f",
+        "command": "preview.find",
+        "when": "previewFocus"
+      },
+      "resolved": {
+        "command": "preview.find",
+        "shortcut": {
+          "key": "f",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "identifier",
+          "name": "previewFocus"
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+k",
+        "command": "commandPalette.toggle",
+        "when": "!terminalFocus"
+      },
+      "resolved": {
+        "command": "commandPalette.toggle",
+        "shortcut": {
+          "key": "k",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "not",
+          "node": {
+            "type": "identifier",
+            "name": "terminalFocus"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+p",
+        "command": "filePicker.toggle",
+        "when": "!terminalFocus"
+      },
+      "resolved": {
+        "command": "filePicker.toggle",
+        "shortcut": {
+          "key": "p",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "not",
+          "node": {
+            "type": "identifier",
+            "name": "terminalFocus"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+shift+f",
+        "command": "projectSearch.toggle",
+        "when": "!terminalFocus"
+      },
+      "resolved": {
+        "command": "projectSearch.toggle",
+        "shortcut": {
+          "key": "f",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": true,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "not",
+          "node": {
+            "type": "identifier",
+            "name": "terminalFocus"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+u",
+        "command": "usage.open",
+        "when": "!terminalFocus"
+      },
+      "resolved": {
+        "command": "usage.open",
+        "shortcut": {
+          "key": "u",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "not",
+          "node": {
+            "type": "identifier",
+            "name": "terminalFocus"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+alt+a",
+        "command": "theme.select",
+        "when": "!terminalFocus"
+      },
+      "resolved": {
+        "command": "theme.select",
+        "shortcut": {
+          "key": "a",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": true,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "not",
+          "node": {
+            "type": "identifier",
+            "name": "terminalFocus"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+alt+shift+a",
+        "command": "appearance.cycle",
+        "when": "!terminalFocus"
+      },
+      "resolved": {
+        "command": "appearance.cycle",
+        "shortcut": {
+          "key": "a",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": true,
+          "altKey": true,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "not",
+          "node": {
+            "type": "identifier",
+            "name": "terminalFocus"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+alt+shift+t",
+        "command": "themeEditor.toggle"
+      },
+      "resolved": {
+        "command": "themeEditor.toggle",
+        "shortcut": {
+          "key": "t",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": true,
+          "altKey": true,
+          "modKey": true
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+s",
+        "command": "composer.stash",
+        "when": "!terminalFocus"
+      },
+      "resolved": {
+        "command": "composer.stash",
+        "shortcut": {
+          "key": "s",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "not",
+          "node": {
+            "type": "identifier",
+            "name": "terminalFocus"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+shift+enter",
+        "command": "thread.steerQueuedMessage",
+        "when": "!terminalFocus"
+      },
+      "resolved": {
+        "command": "thread.steerQueuedMessage",
+        "shortcut": {
+          "key": "enter",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": true,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "not",
+          "node": {
+            "type": "identifier",
+            "name": "terminalFocus"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "alt+arrowup",
+        "command": "thread.editQueuedMessage",
+        "when": "composerFocus"
+      },
+      "resolved": {
+        "command": "thread.editQueuedMessage",
+        "shortcut": {
+          "key": "arrowup",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": true,
+          "modKey": false
+        },
+        "whenAst": {
+          "type": "identifier",
+          "name": "composerFocus"
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+enter",
+        "command": "composer.sendAlternate",
+        "when": "composerFocus && turnRunning"
+      },
+      "resolved": {
+        "command": "composer.sendAlternate",
+        "shortcut": {
+          "key": "enter",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "and",
+          "left": {
+            "type": "identifier",
+            "name": "composerFocus"
+          },
+          "right": {
+            "type": "identifier",
+            "name": "turnRunning"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+enter",
+        "command": "composer.sendBackground",
+        "when": "composerFocus && draftThreadRoute"
+      },
+      "resolved": {
+        "command": "composer.sendBackground",
+        "shortcut": {
+          "key": "enter",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "and",
+          "left": {
+            "type": "identifier",
+            "name": "composerFocus"
+          },
+          "right": {
+            "type": "identifier",
+            "name": "draftThreadRoute"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+alt+enter",
+        "command": "composer.sendBackground",
+        "when": "composerFocus && draftThreadRoute"
+      },
+      "resolved": {
+        "command": "composer.sendBackground",
+        "shortcut": {
+          "key": "enter",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": true,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "and",
+          "left": {
+            "type": "identifier",
+            "name": "composerFocus"
+          },
+          "right": {
+            "type": "identifier",
+            "name": "draftThreadRoute"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+alt+enter",
+        "command": "composer.sendAndNewThread",
+        "when": "composerFocus && !draftThreadRoute"
+      },
+      "resolved": {
+        "command": "composer.sendAndNewThread",
+        "shortcut": {
+          "key": "enter",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": true,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "and",
+          "left": {
+            "type": "identifier",
+            "name": "composerFocus"
+          },
+          "right": {
+            "type": "not",
+            "node": {
+              "type": "identifier",
+              "name": "draftThreadRoute"
+            }
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+n",
+        "command": "chat.new",
+        "when": "!terminalFocus"
+      },
+      "resolved": {
+        "command": "chat.new",
+        "shortcut": {
+          "key": "n",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "not",
+          "node": {
+            "type": "identifier",
+            "name": "terminalFocus"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+shift+o",
+        "command": "chat.new",
+        "when": "!terminalFocus"
+      },
+      "resolved": {
+        "command": "chat.new",
+        "shortcut": {
+          "key": "o",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": true,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "not",
+          "node": {
+            "type": "identifier",
+            "name": "terminalFocus"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+shift+n",
+        "command": "chat.newLocal",
+        "when": "!terminalFocus"
+      },
+      "resolved": {
+        "command": "chat.newLocal",
+        "shortcut": {
+          "key": "n",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": true,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "not",
+          "node": {
+            "type": "identifier",
+            "name": "terminalFocus"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+alt+n",
+        "command": "chat.newWithoutProject",
+        "when": "!terminalFocus"
+      },
+      "resolved": {
+        "command": "chat.newWithoutProject",
+        "shortcut": {
+          "key": "n",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": true,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "not",
+          "node": {
+            "type": "identifier",
+            "name": "terminalFocus"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+f",
+        "command": "chat.find",
+        "when": "!terminalFocus && !previewFocus"
+      },
+      "resolved": {
+        "command": "chat.find",
+        "shortcut": {
+          "key": "f",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "and",
+          "left": {
+            "type": "not",
+            "node": {
+              "type": "identifier",
+              "name": "terminalFocus"
+            }
+          },
+          "right": {
+            "type": "not",
+            "node": {
+              "type": "identifier",
+              "name": "previewFocus"
+            }
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+shift+m",
+        "command": "modelPicker.toggle",
+        "when": "!terminalFocus"
+      },
+      "resolved": {
+        "command": "modelPicker.toggle",
+        "shortcut": {
+          "key": "m",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": true,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "not",
+          "node": {
+            "type": "identifier",
+            "name": "terminalFocus"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+shift+h",
+        "command": "composer.host",
+        "when": "!terminalFocus"
+      },
+      "resolved": {
+        "command": "composer.host",
+        "shortcut": {
+          "key": "h",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": true,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "not",
+          "node": {
+            "type": "identifier",
+            "name": "terminalFocus"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+shift+e",
+        "command": "composer.effort",
+        "when": "!terminalFocus"
+      },
+      "resolved": {
+        "command": "composer.effort",
+        "shortcut": {
+          "key": "e",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": true,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "not",
+          "node": {
+            "type": "identifier",
+            "name": "terminalFocus"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+shift+a",
+        "command": "composer.mode",
+        "when": "!terminalFocus"
+      },
+      "resolved": {
+        "command": "composer.mode",
+        "shortcut": {
+          "key": "a",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": true,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "not",
+          "node": {
+            "type": "identifier",
+            "name": "terminalFocus"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+shift+x",
+        "command": "composer.workspace",
+        "when": "!terminalFocus"
+      },
+      "resolved": {
+        "command": "composer.workspace",
+        "shortcut": {
+          "key": "x",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": true,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "not",
+          "node": {
+            "type": "identifier",
+            "name": "terminalFocus"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+shift+g",
+        "command": "composer.branch",
+        "when": "!terminalFocus"
+      },
+      "resolved": {
+        "command": "composer.branch",
+        "shortcut": {
+          "key": "g",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": true,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "not",
+          "node": {
+            "type": "identifier",
+            "name": "terminalFocus"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+shift+l",
+        "command": "composer.previousWorktree",
+        "when": "!terminalFocus"
+      },
+      "resolved": {
+        "command": "composer.previousWorktree",
+        "shortcut": {
+          "key": "l",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": true,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "not",
+          "node": {
+            "type": "identifier",
+            "name": "terminalFocus"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+shift+k",
+        "command": "pullRequest.copyNumber",
+        "when": "!terminalFocus"
+      },
+      "resolved": {
+        "command": "pullRequest.copyNumber",
+        "shortcut": {
+          "key": "k",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": true,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "not",
+          "node": {
+            "type": "identifier",
+            "name": "terminalFocus"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+shift+arrowup",
+        "command": "modelPicker.previousProvider",
+        "when": "modelPickerOpen"
+      },
+      "resolved": {
+        "command": "modelPicker.previousProvider",
+        "shortcut": {
+          "key": "arrowup",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": true,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "identifier",
+          "name": "modelPickerOpen"
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+shift+arrowdown",
+        "command": "modelPicker.nextProvider",
+        "when": "modelPickerOpen"
+      },
+      "resolved": {
+        "command": "modelPicker.nextProvider",
+        "shortcut": {
+          "key": "arrowdown",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": true,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "identifier",
+          "name": "modelPickerOpen"
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+o",
+        "command": "editor.openFavorite"
+      },
+      "resolved": {
+        "command": "editor.openFavorite",
+        "shortcut": {
+          "key": "o",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+shift+[",
+        "command": "thread.previous"
+      },
+      "resolved": {
+        "command": "thread.previous",
+        "shortcut": {
+          "key": "[",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": true,
+          "altKey": false,
+          "modKey": true
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+shift+]",
+        "command": "thread.next"
+      },
+      "resolved": {
+        "command": "thread.next",
+        "shortcut": {
+          "key": "]",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": true,
+          "altKey": false,
+          "modKey": true
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+shift+c",
+        "command": "thread.copyReference",
+        "when": "!terminalFocus"
+      },
+      "resolved": {
+        "command": "thread.copyReference",
+        "shortcut": {
+          "key": "c",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": true,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "not",
+          "node": {
+            "type": "identifier",
+            "name": "terminalFocus"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+shift+s",
+        "command": "thread.settle",
+        "when": "!terminalFocus"
+      },
+      "resolved": {
+        "command": "thread.settle",
+        "shortcut": {
+          "key": "s",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": true,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "not",
+          "node": {
+            "type": "identifier",
+            "name": "terminalFocus"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+shift+p",
+        "command": "thread.pin",
+        "when": "!terminalFocus"
+      },
+      "resolved": {
+        "command": "thread.pin",
+        "shortcut": {
+          "key": "p",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": true,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "not",
+          "node": {
+            "type": "identifier",
+            "name": "terminalFocus"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+z",
+        "command": "thread.undo",
+        "when": "!terminalFocus && !editableFocus"
+      },
+      "resolved": {
+        "command": "thread.undo",
+        "shortcut": {
+          "key": "z",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "and",
+          "left": {
+            "type": "not",
+            "node": {
+              "type": "identifier",
+              "name": "terminalFocus"
+            }
+          },
+          "right": {
+            "type": "not",
+            "node": {
+              "type": "identifier",
+              "name": "editableFocus"
+            }
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+1",
+        "command": "thread.jump.1",
+        "when": "!modelPickerOpen && isDesktop"
+      },
+      "resolved": {
+        "command": "thread.jump.1",
+        "shortcut": {
+          "key": "1",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "and",
+          "left": {
+            "type": "not",
+            "node": {
+              "type": "identifier",
+              "name": "modelPickerOpen"
+            }
+          },
+          "right": {
+            "type": "identifier",
+            "name": "isDesktop"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+2",
+        "command": "thread.jump.2",
+        "when": "!modelPickerOpen && isDesktop"
+      },
+      "resolved": {
+        "command": "thread.jump.2",
+        "shortcut": {
+          "key": "2",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "and",
+          "left": {
+            "type": "not",
+            "node": {
+              "type": "identifier",
+              "name": "modelPickerOpen"
+            }
+          },
+          "right": {
+            "type": "identifier",
+            "name": "isDesktop"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+3",
+        "command": "thread.jump.3",
+        "when": "!modelPickerOpen && isDesktop"
+      },
+      "resolved": {
+        "command": "thread.jump.3",
+        "shortcut": {
+          "key": "3",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "and",
+          "left": {
+            "type": "not",
+            "node": {
+              "type": "identifier",
+              "name": "modelPickerOpen"
+            }
+          },
+          "right": {
+            "type": "identifier",
+            "name": "isDesktop"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+4",
+        "command": "thread.jump.4",
+        "when": "!modelPickerOpen && isDesktop"
+      },
+      "resolved": {
+        "command": "thread.jump.4",
+        "shortcut": {
+          "key": "4",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "and",
+          "left": {
+            "type": "not",
+            "node": {
+              "type": "identifier",
+              "name": "modelPickerOpen"
+            }
+          },
+          "right": {
+            "type": "identifier",
+            "name": "isDesktop"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+5",
+        "command": "thread.jump.5",
+        "when": "!modelPickerOpen && isDesktop"
+      },
+      "resolved": {
+        "command": "thread.jump.5",
+        "shortcut": {
+          "key": "5",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "and",
+          "left": {
+            "type": "not",
+            "node": {
+              "type": "identifier",
+              "name": "modelPickerOpen"
+            }
+          },
+          "right": {
+            "type": "identifier",
+            "name": "isDesktop"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+6",
+        "command": "thread.jump.6",
+        "when": "!modelPickerOpen && isDesktop"
+      },
+      "resolved": {
+        "command": "thread.jump.6",
+        "shortcut": {
+          "key": "6",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "and",
+          "left": {
+            "type": "not",
+            "node": {
+              "type": "identifier",
+              "name": "modelPickerOpen"
+            }
+          },
+          "right": {
+            "type": "identifier",
+            "name": "isDesktop"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+7",
+        "command": "thread.jump.7",
+        "when": "!modelPickerOpen && isDesktop"
+      },
+      "resolved": {
+        "command": "thread.jump.7",
+        "shortcut": {
+          "key": "7",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "and",
+          "left": {
+            "type": "not",
+            "node": {
+              "type": "identifier",
+              "name": "modelPickerOpen"
+            }
+          },
+          "right": {
+            "type": "identifier",
+            "name": "isDesktop"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+8",
+        "command": "thread.jump.8",
+        "when": "!modelPickerOpen && isDesktop"
+      },
+      "resolved": {
+        "command": "thread.jump.8",
+        "shortcut": {
+          "key": "8",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "and",
+          "left": {
+            "type": "not",
+            "node": {
+              "type": "identifier",
+              "name": "modelPickerOpen"
+            }
+          },
+          "right": {
+            "type": "identifier",
+            "name": "isDesktop"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+9",
+        "command": "thread.jump.9",
+        "when": "!modelPickerOpen && isDesktop"
+      },
+      "resolved": {
+        "command": "thread.jump.9",
+        "shortcut": {
+          "key": "9",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "and",
+          "left": {
+            "type": "not",
+            "node": {
+              "type": "identifier",
+              "name": "modelPickerOpen"
+            }
+          },
+          "right": {
+            "type": "identifier",
+            "name": "isDesktop"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+1",
+        "command": "modelPicker.jump.1",
+        "when": "modelPickerOpen && isDesktop"
+      },
+      "resolved": {
+        "command": "modelPicker.jump.1",
+        "shortcut": {
+          "key": "1",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "and",
+          "left": {
+            "type": "identifier",
+            "name": "modelPickerOpen"
+          },
+          "right": {
+            "type": "identifier",
+            "name": "isDesktop"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+2",
+        "command": "modelPicker.jump.2",
+        "when": "modelPickerOpen && isDesktop"
+      },
+      "resolved": {
+        "command": "modelPicker.jump.2",
+        "shortcut": {
+          "key": "2",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "and",
+          "left": {
+            "type": "identifier",
+            "name": "modelPickerOpen"
+          },
+          "right": {
+            "type": "identifier",
+            "name": "isDesktop"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+3",
+        "command": "modelPicker.jump.3",
+        "when": "modelPickerOpen && isDesktop"
+      },
+      "resolved": {
+        "command": "modelPicker.jump.3",
+        "shortcut": {
+          "key": "3",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "and",
+          "left": {
+            "type": "identifier",
+            "name": "modelPickerOpen"
+          },
+          "right": {
+            "type": "identifier",
+            "name": "isDesktop"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+4",
+        "command": "modelPicker.jump.4",
+        "when": "modelPickerOpen && isDesktop"
+      },
+      "resolved": {
+        "command": "modelPicker.jump.4",
+        "shortcut": {
+          "key": "4",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "and",
+          "left": {
+            "type": "identifier",
+            "name": "modelPickerOpen"
+          },
+          "right": {
+            "type": "identifier",
+            "name": "isDesktop"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+5",
+        "command": "modelPicker.jump.5",
+        "when": "modelPickerOpen && isDesktop"
+      },
+      "resolved": {
+        "command": "modelPicker.jump.5",
+        "shortcut": {
+          "key": "5",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "and",
+          "left": {
+            "type": "identifier",
+            "name": "modelPickerOpen"
+          },
+          "right": {
+            "type": "identifier",
+            "name": "isDesktop"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+6",
+        "command": "modelPicker.jump.6",
+        "when": "modelPickerOpen && isDesktop"
+      },
+      "resolved": {
+        "command": "modelPicker.jump.6",
+        "shortcut": {
+          "key": "6",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "and",
+          "left": {
+            "type": "identifier",
+            "name": "modelPickerOpen"
+          },
+          "right": {
+            "type": "identifier",
+            "name": "isDesktop"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+7",
+        "command": "modelPicker.jump.7",
+        "when": "modelPickerOpen && isDesktop"
+      },
+      "resolved": {
+        "command": "modelPicker.jump.7",
+        "shortcut": {
+          "key": "7",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "and",
+          "left": {
+            "type": "identifier",
+            "name": "modelPickerOpen"
+          },
+          "right": {
+            "type": "identifier",
+            "name": "isDesktop"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+8",
+        "command": "modelPicker.jump.8",
+        "when": "modelPickerOpen && isDesktop"
+      },
+      "resolved": {
+        "command": "modelPicker.jump.8",
+        "shortcut": {
+          "key": "8",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "and",
+          "left": {
+            "type": "identifier",
+            "name": "modelPickerOpen"
+          },
+          "right": {
+            "type": "identifier",
+            "name": "isDesktop"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+9",
+        "command": "modelPicker.jump.9",
+        "when": "modelPickerOpen && isDesktop"
+      },
+      "resolved": {
+        "command": "modelPicker.jump.9",
+        "shortcut": {
+          "key": "9",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "and",
+          "left": {
+            "type": "identifier",
+            "name": "modelPickerOpen"
+          },
+          "right": {
+            "type": "identifier",
+            "name": "isDesktop"
+          }
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "c",
+        "command": "usage.cost",
+        "when": "usagePageOpen"
+      },
+      "resolved": {
+        "command": "usage.cost",
+        "shortcut": {
+          "key": "c",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": false
+        },
+        "whenAst": {
+          "type": "identifier",
+          "name": "usagePageOpen"
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "t",
+        "command": "usage.tokens",
+        "when": "usagePageOpen"
+      },
+      "resolved": {
+        "command": "usage.tokens",
+        "shortcut": {
+          "key": "t",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": false
+        },
+        "whenAst": {
+          "type": "identifier",
+          "name": "usagePageOpen"
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "l",
+        "command": "usage.limits",
+        "when": "usagePageOpen"
+      },
+      "resolved": {
+        "command": "usage.limits",
+        "shortcut": {
+          "key": "l",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": false,
+          "altKey": false,
+          "modKey": false
+        },
+        "whenAst": {
+          "type": "identifier",
+          "name": "usagePageOpen"
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+shift+1",
+        "command": "usage.period.day",
+        "when": "usagePageOpen"
+      },
+      "resolved": {
+        "command": "usage.period.day",
+        "shortcut": {
+          "key": "1",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": true,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "identifier",
+          "name": "usagePageOpen"
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+shift+2",
+        "command": "usage.period.week",
+        "when": "usagePageOpen"
+      },
+      "resolved": {
+        "command": "usage.period.week",
+        "shortcut": {
+          "key": "2",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": true,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "identifier",
+          "name": "usagePageOpen"
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+shift+3",
+        "command": "usage.period.month",
+        "when": "usagePageOpen"
+      },
+      "resolved": {
+        "command": "usage.period.month",
+        "shortcut": {
+          "key": "3",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": true,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "identifier",
+          "name": "usagePageOpen"
+        }
+      }
+    },
+    {
+      "raw": {
+        "key": "mod+shift+4",
+        "command": "usage.period.quarter",
+        "when": "usagePageOpen"
+      },
+      "resolved": {
+        "command": "usage.period.quarter",
+        "shortcut": {
+          "key": "4",
+          "metaKey": false,
+          "ctrlKey": false,
+          "shiftKey": true,
+          "altKey": false,
+          "modKey": true
+        },
+        "whenAst": {
+          "type": "identifier",
+          "name": "usagePageOpen"
+        }
+      }
+    }
+  ]
+}

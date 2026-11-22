@@ -14,6 +14,7 @@ mod project_favicon;
 mod repository_identity;
 mod rpc;
 mod scratch_project;
+mod server_config;
 mod settings;
 mod shell_http;
 mod store;
@@ -92,6 +93,7 @@ struct LocalOperations {
     turns: TurnCommands,
     turn_queue: TurnQueue,
     settings: SettingsFile,
+    config: server_config::Host,
     projection_changes: broadcast::Sender<ProjectionChange>,
     terminals: Arc<terminal::TerminalManager>,
     vcs_status: vcs_status::Service,
@@ -199,6 +201,7 @@ impl LocalHost {
                         turns,
                         turn_queue: turn_worker.sender(),
                         settings,
+                        config: server_config::Host::new(cwd),
                         projection_changes,
                         terminals,
                         vcs_status: vcs_status::Service::default(),
@@ -378,16 +381,22 @@ async fn local_requests(
 }
 
 async fn descriptor(State(environment): State<SharedEnvironment>) -> Json<Value> {
+    let (description, _) = environment_description(&environment).await;
+    Json(description)
+}
+
+async fn environment_description(environment: &Environment) -> (Value, Option<PathBuf>) {
     let local = environment.local.is_some();
-    let scratch_projects = if let Some(base) = environment
+    let scratch_root = if let Some(base) = environment
         .local
         .as_ref()
         .and_then(|operations| operations.named_projects_root.parent())
     {
-        scratch_project::available_root(base).await.is_ok()
+        scratch_project::available_root(base).await.ok()
     } else {
-        false
+        None
     };
+    let scratch_projects = scratch_root.is_some();
     let os = match std::env::consts::OS {
         "macos" => "darwin",
         "linux" => "linux",
@@ -399,14 +408,15 @@ async fn descriptor(State(environment): State<SharedEnvironment>) -> Json<Value>
         "x86_64" => "x64",
         _ => "other",
     };
-    Json(json!({
+    let description = json!({
         "environmentId": environment.identity.id,
         "label": environment.identity.label,
         "platform": {"os": os, "arch": arch},
         "serverVersion": env!("CARGO_PKG_VERSION"),
         "orchestrationProtocolVersion": PROTOCOL_VERSION,
         "capabilities": {"t3ReadOnly": true, "t3ProjectWrites": local, "t3NamedProjects": local, "t3ScratchProjects": scratch_projects, "t3CloneProjects": local, "t3PromptWrites": local, "t3ThreadLaunch": local, "t3WorktreeLaunch": local, "t3RemoteWorktreeLaunch": local, "t3WorktreeSetup": local, "t3WorktreeQueue": local, "t3ShellHttp": local, "t3CheckoutSwitch": local, "t3ThreadStop": local, "t3ArchiveSnapshots": local, "t3ThreadVisits": local, "t3Terminal": local, "commandOutputStreaming": local}
-    }))
+    });
+    (description, scratch_root)
 }
 
 #[derive(Deserialize)]
@@ -519,9 +529,7 @@ async fn upgrade(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .consume_ticket(ticket, Instant::now())
         .ok_or(StatusCode::UNAUTHORIZED)?;
-    let store = environment.store.clone();
-    let local = environment.local.clone();
-    let message_limit = if local.is_some() {
+    let message_limit = if environment.local.is_some() {
         MAX_LOCAL_RPC_MESSAGE
     } else {
         MAX_RPC_MESSAGE
@@ -531,8 +539,7 @@ async fn upgrade(
         .max_frame_size(message_limit)
         .on_upgrade(move |socket| async move {
             let deadline = tokio::time::Instant::from_std(expires);
-            let _ =
-                tokio::time::timeout_at(deadline, rpc::serve(socket, store, local, permissions))
-                    .await;
+            let _ = tokio::time::timeout_at(deadline, rpc::serve(socket, environment, permissions))
+                .await;
         }))
 }

@@ -22,7 +22,7 @@ use super::turn_commands::MessageDispatch;
 use super::turn_commands::interrupt_effect::ThreadStop;
 use super::turn_commands::runtime_requests::RuntimeResponse;
 use super::vcs_status;
-use super::{LocalOperations, ProjectionChange};
+use super::{LocalOperations, ProjectionChange, SharedEnvironment, server_config};
 use super::{vcs_checkout, vcs_refs};
 
 mod queued_run;
@@ -113,10 +113,11 @@ enum RpcError<'a> {
 
 pub(super) async fn serve(
     mut socket: WebSocket,
-    store: Store,
-    local: Option<Arc<LocalOperations>>,
+    environment: SharedEnvironment,
     permissions: Permissions,
 ) {
+    let store = environment.store.clone();
+    let local = environment.local.clone();
     let mut changes = local
         .as_ref()
         .map(|local| local.projection_changes.subscribe());
@@ -197,6 +198,32 @@ pub(super) async fn serve(
             break;
         };
         let response = match message {
+            ClientMessage::Request { id, tag, payload }
+                if tag == "subscribeServerConfig" && local.is_some() =>
+            {
+                if let Err(message) = server_config::validate_input(&payload) {
+                    Ok(defect(id, message))
+                } else if operation_requests.contains_key(&id) {
+                    Ok(failure(
+                        id,
+                        RpcError::InvalidRequest {
+                            message: "Request ID is already in use.",
+                        },
+                    ))
+                } else {
+                    let environment = Arc::clone(&environment);
+                    let request_id = id.clone();
+                    let task = operations.spawn(async move {
+                        let result = match server_config::snapshot(&environment).await {
+                            Ok(event) => chunk(id.clone(), event),
+                            Err(error) => failure(id.clone(), error),
+                        };
+                        (id, result)
+                    });
+                    operation_requests.insert(request_id, task);
+                    continue;
+                }
+            }
             ClientMessage::Request { id, tag, payload }
                 if tag == "orchestration.subscribeShell" =>
             {
@@ -956,6 +983,13 @@ fn response(
     payload: Value,
 ) -> Value {
     match tag {
+        "server.probe" => {
+            if payload.is_null() {
+                defect(id, "Expected object | array".into())
+            } else {
+                success(id, json!({}))
+            }
+        }
         "orchestration.getTurnItem" => {
             let Some(input) = super::store::CommandDetail::parse(payload) else {
                 return defect(id, "A thread and turn item ID are required.".into());
