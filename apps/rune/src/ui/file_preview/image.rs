@@ -115,6 +115,13 @@ impl PreviewImage {
                     clipboard: raster.clipboard,
                 })
             }
+            (AssetOutcome::Image(Source::Animated(animation)), Some(cache)) => {
+                Contents::Decoding(Raster {
+                    picture: cache.load(animation.bytes),
+                    size: animation.size,
+                    clipboard: animation.clipboard,
+                })
+            }
             _ => Contents::Failed,
         }
     }
