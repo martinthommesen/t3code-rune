@@ -6,6 +6,7 @@ mod connection;
 mod server;
 mod snooze;
 mod ui;
+mod workspace_image;
 
 use clap::{Parser, Subcommand};
 use std::{env, error::Error, ffi::OsString, io, path::PathBuf};

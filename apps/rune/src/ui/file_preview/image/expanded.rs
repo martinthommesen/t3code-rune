@@ -220,7 +220,7 @@ pub(in crate::ui) fn view(state: &State, layout: Layout, palette: Palette) -> Op
     };
     let dialog = image.expanded.as_deref()?;
     let raster = image.ready()?;
-    let geometry = Geometry::new(layout, raster.png.size());
+    let geometry = Geometry::new(layout, raster.size);
     let zoom = if dialog.window == geometry.window {
         dialog.zoom
     } else {

@@ -1,9 +1,10 @@
 use std::fs::File;
-use std::sync::Arc;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
+
+use crate::workspace_image::Source;
 
 use super::{
     Event, EventSender, Instant, REQUEST_TIMEOUT, RpcCause, RpcExit, Session, SessionStop,
@@ -67,7 +68,7 @@ pub(crate) enum AssetPurpose {
 pub(crate) enum AssetOutcome {
     Available,
     Prepared(File),
-    Image(Arc<[u8]>),
+    Image(Source),
     Failed(String),
 }
 

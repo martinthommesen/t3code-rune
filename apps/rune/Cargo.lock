@@ -4903,6 +4903,7 @@ dependencies = [
  "icu_collator",
  "icu_locale_core",
  "icu_properties",
+ "image",
  "libc",
  "notify",
  "portable-pty",

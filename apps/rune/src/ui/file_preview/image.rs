@@ -6,6 +6,7 @@ use rune::{
 };
 
 use crate::connection::file_preview::AssetOutcome;
+use crate::workspace_image::{self, Source};
 
 use super::{
     CRUMB, Colors, ERROR, Layout, Load, Palette, Preview, State, binary::Phase, control, filename,
@@ -56,9 +57,11 @@ enum Contents {
     Failed,
 }
 
+#[derive(Clone)]
 struct Raster {
     picture: Image,
-    png: ClipboardImage,
+    size: (u32, u32),
+    clipboard: Option<ClipboardImage>,
 }
 
 impl PreviewImage {
@@ -94,14 +97,22 @@ impl PreviewImage {
 
     pub(super) fn loaded(&mut self, outcome: AssetOutcome, cache: Option<&ImageCache>) {
         self.contents = match (outcome, cache) {
-            (AssetOutcome::Image(source), Some(cache)) => {
-                let Some(png) = ClipboardImage::from_png(source.clone()) else {
+            (AssetOutcome::Image(Source::Png(source)), Some(cache)) => {
+                let Some(clipboard) = ClipboardImage::from_png(source.clone()) else {
                     self.contents = Contents::Failed;
                     return;
                 };
                 Contents::Decoding(Raster {
                     picture: cache.load(source),
-                    png,
+                    size: clipboard.size(),
+                    clipboard: Some(clipboard),
+                })
+            }
+            (AssetOutcome::Image(Source::Decoded(raster)), Some(cache)) => {
+                Contents::Decoding(Raster {
+                    picture: cache.rgba(raster.width, raster.height, raster.pixels),
+                    size: (raster.width, raster.height),
+                    clipboard: raster.clipboard,
                 })
             }
             _ => Contents::Failed,
@@ -117,8 +128,7 @@ impl PreviewImage {
 }
 
 pub(super) fn supports(path: &str) -> bool {
-    path.rsplit_once('.')
-        .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("png"))
+    workspace_image::mime_type(path).is_some()
 }
 
 impl State {
@@ -140,10 +150,7 @@ impl State {
             return false;
         }
         image.contents = if raster.picture.size().is_some() {
-            Contents::Ready(Raster {
-                picture: raster.picture.clone(),
-                png: raster.png.clone(),
-            })
+            Contents::Ready(raster.clone())
         } else {
             Contents::Failed
         };
@@ -223,7 +230,7 @@ pub(super) fn view(
                 .color(colors.muted),
         });
     };
-    let (width, height) = raster.png.size();
+    let (width, height) = raster.size;
     let scale = image
         .zoom
         .unwrap_or_else(|| fit(bounds, width as f32, height as f32));

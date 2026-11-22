@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+use crate::workspace_image;
+
 use super::{SharedEnvironment, Store, workspace_file};
 
 const GRANT_LIFETIME: Duration = Duration::from_secs(3600);
@@ -76,6 +78,7 @@ struct Grant {
     path: PathBuf,
     metadata: Metadata,
     kind: Resource,
+    mime: &'static str,
 }
 
 #[derive(Default)]
@@ -98,9 +101,7 @@ impl Service {
         }
         let failure = |tag| json!({"_tag": tag, "resource": resource});
         if input.kind == Resource::WorkspaceFile
-            && !Path::new(&input.path)
-                .extension()
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("png"))
+            && workspace_image::mime_type(&input.path).is_none()
         {
             return Err(failure("AssetPreviewTypeValidationError"));
         }
@@ -121,6 +122,11 @@ impl Service {
             .file_name()
             .and_then(|part| part.to_str())
             .ok_or_else(|| failure("AssetWorkspaceAssetNotFoundError"))?;
+        let mime = match input.kind {
+            Resource::MediaFile => "application/octet-stream",
+            Resource::WorkspaceFile => workspace_image::mime_type(name)
+                .ok_or_else(|| failure("AssetPreviewTypeValidationError"))?,
+        };
         let token = Uuid::new_v4();
         let mut url = Url::parse("http://workspace.invalid/api/assets/workspace/")
             .expect("static workspace asset base");
@@ -146,6 +152,7 @@ impl Service {
             path,
             metadata,
             kind: input.kind,
+            mime,
         });
         Ok(Issued {
             relative_url,
@@ -153,8 +160,13 @@ impl Service {
         })
     }
 
-    fn file(&self, token: Uuid, name: &str, state_dir: &Path) -> io::Result<(File, u64, Resource)> {
-        let (cwd, requested, path, expected, kind) = {
+    fn file(
+        &self,
+        token: Uuid,
+        name: &str,
+        state_dir: &Path,
+    ) -> io::Result<(File, u64, Resource, &'static str)> {
+        let (cwd, requested, path, expected, kind, mime) = {
             let grants = self.0.lock().expect("workspace attachments");
             let grant = grants
                 .iter()
@@ -167,13 +179,14 @@ impl Service {
                 grant.path.clone(),
                 grant.metadata.clone(),
                 grant.kind,
+                grant.mime,
             )
         };
         let (opened_path, file, metadata) = open(&cwd, &requested, state_dir)?;
         if opened_path != path || !same_identity(&expected, &metadata) {
             return Err(io::ErrorKind::NotFound.into());
         }
-        Ok((file, metadata.len(), kind))
+        Ok((file, metadata.len(), kind, mime))
     }
 }
 
@@ -217,7 +230,7 @@ pub(super) async fn get(
         local.workspace_attachments.file(token, &name, state_dir)
     })
     .await;
-    let Ok(Ok((file, size, kind))) = opened else {
+    let Ok(Ok((file, size, kind, mime))) = opened else {
         let mut response = Response::new(Body::empty());
         *response.status_mut() = StatusCode::NOT_FOUND;
         return response;
@@ -245,9 +258,9 @@ pub(super) async fn get(
     let mut response = Response::new(body);
     let headers = response.headers_mut();
     headers.insert(header::CONTENT_LENGTH, size.into());
-    let (mime, disposition) = match kind {
-        Resource::MediaFile => ("application/octet-stream", "attachment"),
-        Resource::WorkspaceFile => ("image/png", "inline"),
+    let disposition = match kind {
+        Resource::MediaFile => "attachment",
+        Resource::WorkspaceFile => "inline",
     };
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(mime));
     headers.insert(

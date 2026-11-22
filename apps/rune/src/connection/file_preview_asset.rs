@@ -1,10 +1,11 @@
 use std::fs::File;
 use std::io::{self, Write};
-use std::sync::Arc;
 
 use reqwest::{Client, Response, StatusCode, Url};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
+
+use crate::workspace_image::Source;
 
 use super::file_preview::{AssetOutcome, AssetPurpose};
 use super::{Environment, project_favicon::asset_url};
@@ -81,7 +82,7 @@ async fn open(client: Client, url: Url) -> Option<Response> {
     (response.status() == StatusCode::OK).then_some(response)
 }
 
-async fn image(client: Client, url: Url) -> Option<Arc<[u8]>> {
+async fn image(client: Client, url: Url) -> Option<Source> {
     let mut response = open(client, url).await?;
     let mut source = Vec::new();
     let limit = rune::clipboard::MAX_IMAGE_BYTES;
@@ -91,9 +92,7 @@ async fn image(client: Client, url: Url) -> Option<Arc<[u8]>> {
         }
         source.extend(bytes);
     }
-    source
-        .starts_with(b"\x89PNG\r\n\x1a\n")
-        .then(|| source.into())
+    Source::read(source).await
 }
 
 async fn download(client: Client, url: Url) -> Option<File> {

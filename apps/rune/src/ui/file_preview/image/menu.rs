@@ -88,6 +88,9 @@ impl Action {
     fn enabled(self, image: &PreviewImage) -> bool {
         match self {
             Self::Save => matches!(image.save, Phase::Ready | Phase::SaveError(_)),
+            Self::CopyImage => image
+                .ready()
+                .is_some_and(|raster| raster.clipboard.is_some()),
             _ => true,
         }
     }
@@ -169,8 +172,8 @@ impl State {
             Action::CopyRelativePath => tx.copy(path(relative)),
             Action::Save => self.request_preview_asset(AssetPurpose::SaveImage),
             Action::CopyImage => {
-                if let Some(raster) = image.ready() {
-                    tx.copy_rich(ClipboardContent::default().with_image(raster.png.clone()));
+                if let Some(clipboard) = image.ready().and_then(|raster| raster.clipboard.clone()) {
+                    tx.copy_rich(ClipboardContent::default().with_image(clipboard));
                 }
             }
         }

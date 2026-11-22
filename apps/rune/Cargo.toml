@@ -17,6 +17,7 @@ hostname = "0.4"
 icu_collator = "=2.3.0"
 icu_locale_core = "=2.4.0"
 icu_properties = "=2.3.0"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 notify = "=9.0.0-rc.4"
 portable-pty = "0.9"
 regex-lite = "=0.1.8"
