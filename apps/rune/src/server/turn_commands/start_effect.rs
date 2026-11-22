@@ -192,7 +192,11 @@ const SELECT_READY_START: &str = "
                    SELECT 1 FROM orchestration_v2_projection_runs AS previous
                    JOIN orchestration_v2_projection_turn_items AS stopped
                      ON stopped.thread_id = previous.thread_id AND stopped.run_id = previous.run_id
-                   WHERE previous.thread_id = run.thread_id AND previous.ordinal = run.ordinal - 1
+                   WHERE previous.thread_id = run.thread_id AND previous.ordinal = (
+                       SELECT MAX(candidate.ordinal) FROM orchestration_v2_projection_runs AS candidate
+                       WHERE candidate.thread_id = run.thread_id AND candidate.ordinal < run.ordinal
+                         AND candidate.status != 'cancelled'
+                   )
                      AND previous.provider_thread_id = provider_thread.provider_thread_id
                      AND previous.status = 'interrupted' AND stopped.type = 'run_interrupt_result'
                      AND stopped.status = 'interrupted' AND stopped.provider_turn_id IS NULL

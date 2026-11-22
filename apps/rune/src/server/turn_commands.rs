@@ -7,6 +7,7 @@ pub(super) mod interrupt_effect;
 mod projection;
 pub(super) mod provider_session;
 pub(super) mod provider_turn;
+pub(super) mod queued_run;
 pub(super) mod queued_worktree;
 pub(super) mod reasoning;
 pub(super) mod runtime_requests;

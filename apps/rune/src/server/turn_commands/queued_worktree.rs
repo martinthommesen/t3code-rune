@@ -56,7 +56,11 @@ const READY: &str = "
     JOIN projection_projects AS project ON project.project_id = thread.project_id
     JOIN orchestration_v2_projection_runs AS first ON first.thread_id = thread.thread_id AND first.ordinal = 1
     JOIN orchestration_v2_projection_runs AS predecessor ON predecessor.thread_id = run.thread_id
-         AND predecessor.ordinal = run.ordinal - 1
+         AND predecessor.ordinal = (
+             SELECT MAX(previous.ordinal) FROM orchestration_v2_projection_runs AS previous
+             WHERE previous.thread_id = run.thread_id AND previous.ordinal < run.ordinal
+               AND previous.status != 'cancelled'
+         )
     JOIN orchestration_v2_projection_run_attempts AS attempt ON attempt.run_id = run.run_id
          AND attempt.attempt_id = json_extract(run.payload_json, '$.activeAttemptId')
     JOIN orchestration_v2_projection_nodes AS node ON node.node_id = attempt.root_node_id AND node.run_id = run.run_id
@@ -116,7 +120,7 @@ pub(super) const ROOT_SCOPE_MATCH: &str = "
             AND EXISTS (
                 SELECT 1 FROM orchestration_v2_projection_runs AS queued
                 WHERE queued.run_id = scope.run_id AND queued.thread_id = run.thread_id
-                  AND queued.provider_thread_id = run.provider_thread_id AND queued.status = 'queued'
+                  AND queued.provider_thread_id = run.provider_thread_id AND queued.status IN ('queued', 'cancelled')
             )
             AND EXISTS (
                 SELECT 1 FROM orchestration_events AS scope_event

@@ -25,6 +25,7 @@ use super::vcs_status;
 use super::{LocalOperations, ProjectionChange};
 use super::{vcs_checkout, vcs_refs};
 
+mod queued_run;
 mod shell_stream;
 mod streams;
 
@@ -1094,6 +1095,9 @@ fn dispatch_thread(
     if command_type == "queue.resume" {
         let thread_id = payload["threadId"].as_str().unwrap_or_default();
         return resume_worktree_queue(local, id, thread_id, &command_id);
+    }
+    if matches!(command_type, "queued-run.edit" | "queued-run.cancel") {
+        return queued_run::dispatch(local, id, &payload, &command_id, command_type);
     }
     if matches!(
         command_type,
