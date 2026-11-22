@@ -41,6 +41,7 @@ const RUNTIME_MODES: &[&str] = &[
     "full-access",
 ];
 const BRANCH_NAMING_MODES: &[&str] = &["static", "semantic", "custom"];
+const SUBMODULE_MODES: &[&str] = &["recursive", "top-level", "none"];
 const THREAD_ENV_MODES: &[&str] = &["local", "worktree"];
 const IDLE_MODES: &[&str] = &["onReturn", "beforeCacheExpires", "off"];
 const TEXT_GENERATION_DEFAULTS: &[(&str, &str)] = &[
@@ -72,6 +73,7 @@ pub(super) fn project(
     copy_model_selections(fields, raw);
     copy_literal(fields, raw, "defaultRuntimeMode", RUNTIME_MODES);
     copy_literal(fields, raw, "defaultThreadEnvMode", THREAD_ENV_MODES);
+    copy_literal(fields, raw, "worktreeSubmodules", SUBMODULE_MODES);
     copy_branch_naming(fields, raw);
     copy_streaming_mode(fields, raw);
     if let Some(value) = raw.get(snooze::KEY) {
@@ -195,6 +197,7 @@ fn project_overrides(public: &mut Fields, raw: &Fields) -> Option<()> {
                 );
             }
             copy_streaming_mode(&mut fields, value);
+            copy_literal(&mut fields, value, "worktreeSubmodules", SUBMODULE_MODES);
             copy_branch_naming(&mut fields, value);
             if let Some(cleanup) = value.get("worktreeCleanup") {
                 fields.insert("worktreeCleanup".to_owned(), worktree_cleanup(cleanup)?);

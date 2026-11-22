@@ -16,13 +16,14 @@ mod git;
 mod naming;
 mod rename;
 pub(super) mod rename_events;
+mod submodules;
 
 pub(super) use generation::{ResultName, name as generate_name};
 
 struct CheckoutConfig {
     workers: String,
     sparse: Option<Vec<u8>>,
-    submodules_disabled_by: Option<&'static str>,
+    submodules: Option<submodules::Mode>,
 }
 
 impl CheckoutConfig {
@@ -41,30 +42,7 @@ impl CheckoutConfig {
             .and_then(|bytes| String::from_utf8(bytes).ok())
             .and_then(|contents| super::super::parse_settings_json(&contents))
             .unwrap_or_default();
-        let configured = scoped_setting(&settings, &input.project_id.0, "worktreeSubmodules");
-        let submodules = configured
-            .as_str()
-            .map(|mode| (mode, "settings"))
-            .or_else(|| {
-                file["worktreeSubmodules"]
-                    .as_str()
-                    .map(|mode| (mode, "t3.json"))
-            });
-        let has_submodules = git::metadata(
-            repository,
-            &["cat-file", "-e", &format!("{commit}:.gitmodules")],
-        )
-        .await?
-        .status
-        .success();
-        let submodules_disabled_by = submodules
-            .filter(|(mode, _)| *mode == "none" && has_submodules)
-            .map(|(_, source)| source);
-        if has_submodules && submodules_disabled_by.is_none() {
-            return Err(io::Error::other(
-                "This worktree requires submodule preparation.",
-            ));
-        }
+        let submodules = submodules::Mode::from_settings(&settings, &input.project_id.0);
         let sparse = if let Some(patterns) = file["worktreeSparsePatternsPath"].as_str() {
             let patterns = patterns.trim_start_matches("./");
             if patterns.split('/').any(|part| part == "..") || patterns.starts_with('/') {
@@ -98,7 +76,7 @@ impl CheckoutConfig {
         Ok(Self {
             workers,
             sparse,
-            submodules_disabled_by,
+            submodules,
         })
     }
 }
@@ -171,6 +149,12 @@ fn hex_token(value: &str) -> bool {
 pub(super) struct LocalWorktree {
     lease: Lease,
     base: base::Base,
+}
+
+#[derive(Clone, Copy)]
+enum Rollback {
+    Clean,
+    InterruptedSubmodules,
 }
 
 struct Lease {
@@ -393,18 +377,30 @@ impl LocalWorktree {
             let checkout =
                 CheckoutConfig::read(input, settings_path, repository, &base.commit).await?;
             let worktree = Self { lease, base };
-            if let Err(error) = worktree.git_checkout(&checkout, cancelled).await {
-                if worktree.lease.owns().await.unwrap_or(false) {
-                    let _ = worktree.abort().await;
-                }
-                return Err(error);
+            let result = async {
+                worktree
+                    .git_checkout(&checkout, cancelled)
+                    .await
+                    .map_err(|error| (error, Rollback::Clean))?;
+                submodules::prepare(
+                    &worktree.lease.path,
+                    checkout.submodules,
+                    cancelled,
+                    progress,
+                )
+                .await
+                .map_err(|error| (error, Rollback::InterruptedSubmodules))?;
+                // Finish the refresh before setup or the provider can acquire the index lock.
+                let _ = git::metadata(&worktree.lease.path, &["update-index", "--refresh"]).await;
+                worktree
+                    .mark_checkout_finished()
+                    .await
+                    .map_err(|error| (error, Rollback::Clean))
             }
-            if let Some((progress, source)) = progress.zip(checkout.submodules_disabled_by) {
-                progress.stage(
-                    StageId::Submodules,
-                    Status::Skipped,
-                    Some(&format!("disabled in {source}")),
-                );
+            .await;
+            if let Err((error, rollback)) = result {
+                let _ = worktree.rollback(rollback).await;
+                return Err(error);
             }
             return Ok(worktree);
         }
@@ -460,10 +456,7 @@ impl LocalWorktree {
             )
             .await?;
         }
-        // A clean refreshed index avoids racing setup and the provider's first Git command.
-        let _ = git::metadata(&self.lease.path, &["update-index", "--refresh"]).await;
-        self.mark_checkout_finished().await?;
-        Ok(())
+        self.verify_commit().await
     }
 
     pub(super) fn branch(&self) -> &str {
@@ -527,17 +520,26 @@ impl LocalWorktree {
     }
 
     pub(super) async fn abort(self) -> io::Result<()> {
+        self.rollback(Rollback::Clean).await
+    }
+
+    async fn rollback(self, rollback: Rollback) -> io::Result<()> {
         if !self.lease.owns().await? {
             return Err(io::Error::other(
                 "The worktree registration is no longer owned by the launch.",
             ));
         }
-        self.require_clean().await?;
+        let partial = matches!(rollback, Rollback::InterruptedSubmodules);
+        self.require_clean(partial).await?;
         let path = path_text(&self.lease.path)?;
+        let mut remove = vec!["worktree", "remove"];
+        if partial || submodules::in_head(&self.lease.path).await {
+            // Git requires force even for a clean checkout with initialized submodules.
+            remove.push("--force");
+        }
+        remove.extend(["--", path]);
         git::text(&self.lease.repository, &["worktree", "unlock", "--", path]).await?;
-        if let Err(error) =
-            git::text(&self.lease.repository, &["worktree", "remove", "--", path]).await
-        {
+        if let Err(error) = git::text(&self.lease.repository, &remove).await {
             let _ = git::text(
                 &self.lease.repository,
                 &[
@@ -565,23 +567,42 @@ impl LocalWorktree {
         Ok(())
     }
 
-    async fn require_clean(&self) -> io::Result<()> {
-        let status = git::text(
-            &self.lease.path,
-            &[
-                "status",
-                "--porcelain",
-                "--untracked-files=all",
-                "--ignored=matching",
-            ],
-        )
-        .await?;
-        if !status.is_empty() {
+    async fn require_clean(&self, partial_submodules: bool) -> io::Result<()> {
+        let mut args = vec![
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+            "--ignored=matching",
+        ];
+        args.push(if partial_submodules {
+            "--ignore-submodules=all"
+        } else {
+            "--ignore-submodules=none"
+        });
+        let status = git::text(&self.lease.path, &args).await?;
+        if !status.is_empty() || (partial_submodules && !self.index_unchanged().await?) {
             return Err(io::Error::other(
                 "The reserved checkout has changed since launch began.",
             ));
         }
         self.verify_commit().await
+    }
+
+    async fn index_unchanged(&self) -> io::Result<bool> {
+        // Ignoring an interrupted submodule's working directory must retain staged changes.
+        let output = git::metadata(
+            &self.lease.path,
+            &[
+                "diff",
+                "--cached",
+                "--quiet",
+                "--ignore-submodules=none",
+                "HEAD",
+                "--",
+            ],
+        )
+        .await?;
+        Ok(output.status.success())
     }
 
     async fn verify_commit(&self) -> io::Result<()> {

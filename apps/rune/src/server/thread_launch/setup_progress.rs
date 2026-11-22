@@ -32,6 +32,7 @@ pub(super) enum Status {
     Running,
     Done,
     Skipped,
+    Warning,
     Failed,
 }
 
@@ -252,6 +253,12 @@ impl Progress {
             if let Some(detail) = detail {
                 stage.detail = Some(clamp(detail, 200));
             }
+        });
+    }
+
+    pub(super) fn submodule_detail(&self, detail: &str) {
+        self.update(|snapshot| {
+            snapshot.stage(StageId::Submodules).detail = Some(clamp(detail, 200));
         });
     }
 

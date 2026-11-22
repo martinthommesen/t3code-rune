@@ -47,6 +47,15 @@ pub(super) async fn fetch(
     run(cwd, args, Operation::Fetch(cancelled)).await
 }
 
+pub(super) async fn submodule_output(
+    cwd: &Path,
+    args: &[&str],
+    cancelled: &mut watch::Receiver<bool>,
+    lines: Option<&LineObserver<'_>>,
+) -> io::Result<Output> {
+    run(cwd, args, Operation::Submodule { cancelled, lines }).await
+}
+
 pub(super) async fn text(cwd: &Path, args: &[&str]) -> io::Result<String> {
     let output = metadata(cwd, args).await?;
     if !output.status.success() {
@@ -76,6 +85,8 @@ pub(super) async fn lock_config(cwd: &Path) -> io::Result<OwnedMutexGuard<()>> {
     Ok(lock.lock_owned().await)
 }
 
+pub(super) type LineObserver<'a> = dyn Fn(&str) + Sync + 'a;
+
 enum Operation<'a> {
     Metadata,
     Checkout {
@@ -83,15 +94,26 @@ enum Operation<'a> {
         cancelled: &'a mut watch::Receiver<bool>,
     },
     Fetch(&'a mut watch::Receiver<bool>),
+    Submodule {
+        cancelled: &'a mut watch::Receiver<bool>,
+        lines: Option<&'a LineObserver<'a>>,
+    },
 }
 
 async fn run(cwd: &Path, args: &[&str], operation: Operation<'_>) -> io::Result<Output> {
-    let capture_stdout = matches!(operation, Operation::Metadata);
-    let fetch = matches!(operation, Operation::Fetch(_));
-    let (input, cancellation, timeout) = match operation {
-        Operation::Metadata => (None, None, Some(METADATA_TIMEOUT)),
-        Operation::Checkout { input, cancelled } => (input, Some(cancelled), None),
-        Operation::Fetch(cancelled) => (None, Some(cancelled), Some(FETCH_TIMEOUT)),
+    let is_submodule = matches!(operation, Operation::Submodule { .. });
+    let capture_stdout = is_submodule || matches!(operation, Operation::Metadata);
+    let capture_stderr = is_submodule || matches!(operation, Operation::Fetch(_));
+    let (input, cancellation, timeout, lines) = match operation {
+        Operation::Metadata => (None, None, Some(METADATA_TIMEOUT), None),
+        Operation::Checkout { input, cancelled } => (input, Some(cancelled), None, None),
+        Operation::Fetch(cancelled) => (None, Some(cancelled), Some(FETCH_TIMEOUT), None),
+        Operation::Submodule { cancelled, lines } => (
+            None,
+            Some(cancelled),
+            (args.get(1) != Some(&"update")).then_some(METADATA_TIMEOUT),
+            lines,
+        ),
     };
     if cancellation
         .as_ref()
@@ -112,7 +134,11 @@ async fn run(cwd: &Path, args: &[&str], operation: Operation<'_>) -> io::Result<
         } else {
             Stdio::null()
         })
-        .stderr(if fetch { Stdio::piped() } else { Stdio::null() })
+        .stderr(if capture_stderr {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .kill_on_drop(true)
         .env("LC_ALL", "C")
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -123,13 +149,16 @@ async fn run(cwd: &Path, args: &[&str], operation: Operation<'_>) -> io::Result<
         .env_remove("GIT_INDEX_FILE")
         .args(["-c", "safe.bareRepository=explicit"])
         .args(args);
-    if fetch {
+    if capture_stderr {
         command.envs([
             ("GCM_INTERACTIVE", "never"),
             ("GIT_ASKPASS", ""),
             ("SSH_ASKPASS", ""),
             ("SSH_ASKPASS_REQUIRE", "never"),
         ]);
+    }
+    if lines.is_some() {
+        command.env("LANGUAGE", "C");
     }
     #[cfg(unix)]
     command.process_group(0);
@@ -146,8 +175,12 @@ async fn run(cwd: &Path, args: &[&str], operation: Operation<'_>) -> io::Result<
             }
             Ok(())
         };
-        let (_, status, stdout, stderr) =
-            tokio::try_join!(feed, child.wait(), read_output(stdout), read_output(stderr))?;
+        let (_, status, stdout, stderr) = tokio::try_join!(
+            feed,
+            child.wait(),
+            read_output(stdout, lines),
+            read_output(stderr, lines),
+        )?;
         Ok(Output {
             status,
             stdout,
@@ -179,23 +212,43 @@ async fn run(cwd: &Path, args: &[&str], operation: Operation<'_>) -> io::Result<
     result
 }
 
-async fn read_output(pipe: Option<impl AsyncRead + Unpin>) -> io::Result<Vec<u8>> {
+async fn read_output(
+    pipe: Option<impl AsyncRead + Unpin>,
+    lines: Option<&LineObserver<'_>>,
+) -> io::Result<Vec<u8>> {
     let Some(mut pipe) = pipe else {
         return Ok(Vec::new());
     };
     let mut output = Vec::new();
     let mut chunk = vec![0; 8192];
     let mut truncated = false;
+    let mut line = Vec::new();
     loop {
         let count = pipe.read(&mut chunk).await?;
         if count == 0 {
             break;
         }
+        if let Some(observe) = lines {
+            for &byte in &chunk[..count] {
+                if matches!(byte, b'\r' | b'\n') {
+                    if !line.is_empty() {
+                        observe(&String::from_utf8_lossy(&line));
+                        line.clear();
+                    }
+                } else if line.len() < 4096 {
+                    line.push(byte);
+                }
+            }
+        }
         let saved = count.min(MAX_OUTPUT - output.len());
         output.extend_from_slice(&chunk[..saved]);
         truncated |= saved < count;
     }
-    if truncated {
+    if let Some(observe) = lines {
+        if !line.is_empty() {
+            observe(&String::from_utf8_lossy(&line));
+        }
+    } else if truncated {
         return Err(io::Error::other("Git output exceeded the supported size."));
     }
     Ok(output)

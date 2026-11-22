@@ -6,6 +6,8 @@ use crate::snooze;
 
 use super::{Fields, favorites, project_overrides::ProjectPatch, text, worktree_location_history};
 
+const SUBMODULE_MODES: &str = "Expected \"recursive\" | \"top-level\" | \"none\"";
+
 const RUNTIME_MODES: &str =
     "Expected \"approval-required\" | \"auto-accept-edits\" | \"auto\" | \"full-access\"";
 
@@ -179,6 +181,7 @@ fn supported(key: &str) -> bool {
             | "defaultRuntimeMode"
             | "defaultThreadEnvMode"
             | "newWorktreesStartFromOrigin"
+            | "worktreeSubmodules"
             | "worktreesDirectory"
             | "branchNamingMode"
             | "branchNamePrefix"
@@ -212,6 +215,12 @@ pub(super) fn invalid_value(key: &str, value: &Value) -> Option<&'static str> {
             if !value.is_null() && !matches!(value.as_str(), Some("local" | "worktree")) =>
         {
             Some("Expected \"local\" | \"worktree\"")
+        }
+        "worktreeSubmodules"
+            if !value.is_null()
+                && !matches!(value.as_str(), Some("recursive" | "top-level" | "none")) =>
+        {
+            Some(SUBMODULE_MODES)
         }
         "defaultRuntimeMode"
             if !matches!(

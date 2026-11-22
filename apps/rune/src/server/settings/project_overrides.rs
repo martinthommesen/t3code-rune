@@ -80,6 +80,12 @@ impl ProjectPatch {
             for &key in KEYS {
                 if let Some(value) = fields.get(key) {
                     let path = at(&entry_path, key);
+                    if key == "worktreeSubmodules"
+                        && !matches!(value.as_str(), Some("recursive" | "top-level" | "none"))
+                    {
+                        // The stock optional codec ignores unknown values.
+                        continue;
+                    }
                     if supported(key) {
                         next.insert(key.to_owned(), decode_value(key, value, &path)?);
                     } else if result.unsupported.is_none() {
@@ -350,6 +356,7 @@ fn supported(key: &str) -> bool {
             | "defaultRuntimeMode"
             | "defaultThreadEnvMode"
             | "newWorktreesStartFromOrigin"
+            | "worktreeSubmodules"
             | "defaultAutoPull"
             | "defaultProjectScripts"
             | "enableAgentBrowserAccess"
