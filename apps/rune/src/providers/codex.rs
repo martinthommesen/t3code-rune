@@ -1,6 +1,7 @@
 mod events;
 mod reasoning;
 mod terminals;
+mod thread_subscription;
 mod usage;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -215,6 +216,7 @@ struct SessionState {
     approvals: HashMap<ThreadId, ThreadApprovals>,
     usage: HashMap<ThreadId, usage::ThreadUsage>,
     thread_names: HashMap<ThreadId, String>,
+    thread_closings: HashMap<ThreadId, tokio::sync::watch::Sender<()>>,
 }
 
 struct ThreadApprovals {
@@ -250,6 +252,22 @@ impl CodexSession {
     pub async fn next_event(&mut self) -> Result<CodexSessionEvent, CodexAdapterError> {
         loop {
             let raw = self.server.next_event().await?;
+            if let super::CodexEvent::Notification { method, params } = &raw
+                && method == "thread/closed"
+            {
+                if let Some(thread_id) = params
+                    .as_ref()
+                    .and_then(|payload| payload["threadId"].as_str())
+                {
+                    self.scope
+                        .state
+                        .lock()
+                        .expect("Codex session lock")
+                        .thread_closings
+                        .remove(&ThreadId::new(thread_id));
+                }
+                continue;
+            }
             let request_id = match &raw {
                 super::CodexEvent::Request { id, .. } => Some(id.clone()),
                 _ => None,
@@ -474,6 +492,10 @@ impl CodexSessionClient {
             {
                 self.request::<Value>("thread/unarchive", json!({"threadId": thread_id}))
                     .await?;
+                self.request(METHOD, params).await?
+            }
+            Err(error) if thread_subscription::is_closing(&error) => {
+                self.await_thread_closed(thread_id).await;
                 self.request(METHOD, params).await?
             }
             result => result?,

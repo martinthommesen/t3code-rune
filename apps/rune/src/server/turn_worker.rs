@@ -175,6 +175,7 @@ impl TurnWorker {
         commands.cancel_process_bound_interrupts()?;
         commands.recover_checkpoints()?;
         commands.cancel_lost_title_effects()?;
+        commands.requeue_provider_detaches(None)?;
         for thread_id in commands.recover_queued_worktrees()? {
             let _ = changes.send(ProjectionChange::Thread(thread_id));
         }
@@ -312,6 +313,12 @@ impl Worker {
                     if let Err(error) = result {
                         let detail = error.to_string();
                         self.reconcile_stopped(&effect_id, AbortReason::RuntimeFailure(&detail))?;
+                        if self
+                            .commands
+                            .requeue_provider_detaches(Some((&effect_id, &self.worker_id)))?
+                        {
+                            queue.wake();
+                        }
                         eprintln!("Provider worker: {error}");
                     }
                 }
@@ -382,6 +389,23 @@ impl Worker {
         claude: &mut claude_worker::Runtimes,
         queue: &TurnQueue,
     ) -> Result<Option<i64>, WorkerError> {
+        if let Some(thread_id) = self
+            .commands
+            .claim_provider_detach(effect_id, &self.worker_id)?
+        {
+            if let Some(runtime) = runtime.as_mut() {
+                runtime.threads.retain(|attached| attached != &thread_id);
+                if let Some(native) = runtime.loaded.remove(&thread_id)
+                    && let Err(error) = runtime.session.client().unsubscribe_thread(&native).await
+                {
+                    eprintln!("Could not unload detached Codex thread: {error}");
+                }
+            }
+            self.commands
+                .finish_provider_detach(effect_id, &self.worker_id)?;
+            queue.wake();
+            return Ok(None);
+        }
         if effect_id.starts_with("effect:checkpoint.capture:") {
             let thread_id = self.commands.checkpoint_thread(effect_id)?;
             let sequence = self

@@ -27,6 +27,7 @@ use super::{vcs_checkout, vcs_refs};
 
 mod editor_links;
 mod preview;
+mod provider_detach;
 mod queued_run;
 mod shell_stream;
 mod streams;
@@ -1687,6 +1688,9 @@ fn dispatch_thread(
     }
     if matches!(command_type, "queued-run.edit" | "queued-run.cancel") {
         return queued_run::dispatch(local, id, &payload, &command_id, command_type);
+    }
+    if command_type == super::turn_commands::provider_detach::COMMAND {
+        return provider_detach::dispatch(local, id, payload, &command_id);
     }
     if command_type == super::turn_commands::model_selection::COMMAND {
         let thread_id = payload["threadId"].as_str().unwrap_or_default().to_owned();

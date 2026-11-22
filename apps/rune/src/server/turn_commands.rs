@@ -8,6 +8,7 @@ pub(super) mod interrupt_effect;
 mod manual_continuation;
 pub(super) mod model_selection;
 mod projection;
+pub(super) mod provider_detach;
 pub(super) mod provider_session;
 pub(super) mod provider_turn;
 pub(super) mod queued_run;
@@ -115,6 +116,10 @@ pub(super) struct DispatchReceipt {
 #[derive(Debug)]
 pub(super) enum TurnCommandError {
     Unsupported(&'static str),
+    ProviderSessionNotBound {
+        session_id: String,
+        thread_id: String,
+    },
     Database(rusqlite::Error),
     InvalidProjection(serde_json::Error),
     Checkpoint(super::git_checkpoint::CheckpointError),
@@ -124,6 +129,15 @@ impl fmt::Display for TurnCommandError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Unsupported(reason) => formatter.write_str(reason),
+            Self::ProviderSessionNotBound {
+                session_id,
+                thread_id,
+            } => {
+                write!(
+                    formatter,
+                    "Provider session {session_id} does not belong to thread {thread_id}."
+                )
+            }
             Self::Database(error) => write!(formatter, "Could not record the Codex turn: {error}"),
             Self::InvalidProjection(error) => write!(formatter, "Invalid thread data: {error}"),
             Self::Checkpoint(error) => error.fmt(formatter),

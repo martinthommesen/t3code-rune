@@ -48,12 +48,19 @@ impl TurnCommands {
         let mut query = connection.prepare(
             "SELECT effect.rowid, effect.effect_id
              FROM orchestration_v2_effect_outbox AS effect
-             JOIN orchestration_v2_projection_runs AS run ON run.thread_id = effect.thread_id
+             LEFT JOIN orchestration_v2_projection_runs AS run ON run.thread_id = effect.thread_id
                AND run.run_id = json_extract(effect.payload_json, '$.runId')
              WHERE effect.rowid > ?1 AND effect.status = 'pending' AND effect.available_at <= ?2
-               AND run.ordinal > 0 AND run.provider_instance_id IN ('codex', 'claudeAgent')
-               AND ((effect.effect_type = 'provider-turn.start' AND run.status = 'starting')
-                    OR (effect.effect_type = 'checkpoint.capture' AND run.status IN ('waiting', 'interrupted', 'cancelled')))
+               AND (
+                   (run.ordinal > 0 AND run.provider_instance_id IN ('codex', 'claudeAgent')
+                    AND ((effect.effect_type = 'provider-turn.start' AND run.status = 'starting')
+                         OR (effect.effect_type = 'checkpoint.capture' AND run.status IN ('waiting', 'interrupted', 'cancelled'))))
+                   OR (effect.effect_type = 'provider-session.detach' AND EXISTS (
+                       SELECT 1 FROM orchestration_command_receipts AS receipt
+                        WHERE receipt.command_id = effect.command_id AND receipt.aggregate_id = effect.thread_id
+                          AND receipt.command_type = effect.effect_type AND receipt.status = 'accepted'
+                   ))
+               )
              ORDER BY effect.rowid LIMIT ?3",
         )?;
         Ok(query

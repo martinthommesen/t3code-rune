@@ -50,6 +50,13 @@ pub(super) fn apply(
                     .execute(params![encoded, thread_id])?;
             }
         }
+        "provider-session.detached" => {
+            transaction.execute(
+                "DELETE FROM orchestration_v2_projection_provider_session_bindings
+                  WHERE provider_session_id = json_extract(?1, '$.providerSessionId') AND thread_id = ?2",
+                params![encoded, thread_id],
+            )?;
+        }
         "provider-turn.updated" => {
             transaction
                 .prepare_cached(PROVIDER_TURN)?
