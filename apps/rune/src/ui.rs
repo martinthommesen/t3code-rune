@@ -1033,16 +1033,28 @@ impl State {
                     self.show_destination(draft);
                 }
             }
-            Event::ArchiveAvailable { readable, writable } => {
-                self.settings.archive.available(readable, writable);
+            Event::ArchiveAvailable {
+                readable,
+                writable,
+                deletable,
+            } => {
+                self.settings
+                    .archive
+                    .available(readable, writable, deletable);
             }
             Event::ArchivedThreads(threads) => self.settings.archive.update(threads),
-            Event::ThreadUnarchiveSettled {
+            Event::ArchiveActionSettled {
+                action,
                 thread_id,
                 operation,
                 result,
             } => {
-                settings::settle_archive_unarchive(self, &thread_id, operation, result, tx);
+                if action == crate::connection::ArchiveAction::Delete && result.is_ok() {
+                    self.drafts.remove(&thread_id);
+                    self.questions.remove(&thread_id);
+                    self.terminal_tabs.remove_thread(&thread_id);
+                }
+                settings::settle_archive_action(self, action, &thread_id, operation, result, tx);
             }
             Event::ScratchProjectsAvailable => {
                 if let Some(workspace) = &mut self.workspace {

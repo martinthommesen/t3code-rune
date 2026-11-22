@@ -716,6 +716,21 @@ impl TerminalManager {
     }
 
     pub fn close(&self, thread_id: &str, terminal_id: Option<&str>, delete_history: bool) {
+        if let Err(error) = self.close_with_history(thread_id, terminal_id, delete_history) {
+            eprintln!("Could not delete terminal history: {error}");
+        }
+    }
+
+    pub(super) fn cleanup_deleted_thread(&self, thread_id: &str) -> io::Result<()> {
+        self.close_with_history(thread_id, None, true)
+    }
+
+    fn close_with_history(
+        &self,
+        thread_id: &str,
+        terminal_id: Option<&str>,
+        delete_history: bool,
+    ) -> io::Result<()> {
         let mut sessions = lock(&self.sessions);
         for (key, session) in sessions.iter() {
             if key.thread_id != thread_id || terminal_id.is_some_and(|id| id != key.terminal_id) {
@@ -729,16 +744,21 @@ impl TerminalManager {
                 state.history_dirty = false;
             }
         }
-        if delete_history && let Some(persistence) = &self.persistence {
-            match terminal_id {
-                Some(terminal_id) => persistence.storage.delete(&TerminalKey {
+        let history_result = if delete_history && let Some(persistence) = &self.persistence {
+            if let Some(terminal_id) = terminal_id {
+                persistence.storage.delete(&TerminalKey {
                     thread_id: thread_id.to_owned(),
                     terminal_id: terminal_id.to_owned(),
-                }),
-                None => persistence.storage.delete_thread(thread_id),
+                });
+                Ok(())
+            } else {
+                persistence.storage.delete_thread(thread_id)
             }
-        }
+        } else {
+            Ok(())
+        };
         evict_inactive(&mut sessions);
+        history_result
     }
 
     fn session(&self, key: &TerminalKey) -> Result<Arc<Session>, TerminalError> {

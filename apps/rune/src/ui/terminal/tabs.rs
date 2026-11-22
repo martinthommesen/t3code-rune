@@ -40,6 +40,11 @@ impl TabsByThread {
         self.closing.clear();
     }
 
+    pub(in crate::ui) fn remove_thread(&mut self, thread_id: &str) {
+        self.layouts.remove(thread_id);
+        self.closing.retain(|target| target.thread_id != thread_id);
+    }
+
     pub(super) fn get(&self, thread_id: &str) -> Option<&Tabs> {
         self.layouts.get(thread_id)
     }

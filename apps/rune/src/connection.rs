@@ -39,6 +39,7 @@ use tokio_tungstenite::tungstenite::Message as WebSocketMessage;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 use uuid::Uuid;
 
+pub(crate) use archive::ArchiveAction;
 pub(crate) use browse::FolderListing;
 pub(crate) use command_output::{CommandInspection, CommandOutput};
 pub(crate) use draft_defaults::WorkspaceMode;
@@ -127,9 +128,11 @@ pub(crate) enum Event {
     ArchiveAvailable {
         readable: bool,
         writable: bool,
+        deletable: bool,
     },
     ArchivedThreads(Result<Vec<Thread>, String>),
-    ThreadUnarchiveSettled {
+    ArchiveActionSettled {
+        action: ArchiveAction,
         thread_id: String,
         operation: Uuid,
         result: Result<(), String>,
@@ -322,7 +325,8 @@ enum Command {
         source_run: String,
         operation: Uuid,
     },
-    UnarchiveThread {
+    ArchiveAction {
+        action: ArchiveAction,
         thread_id: String,
         operation: Uuid,
     },
@@ -876,6 +880,8 @@ struct Capabilities {
     archive_snapshots: Option<bool>,
     #[serde(default, rename = "t3ThreadUnarchive")]
     thread_unarchive: bool,
+    #[serde(default, rename = "t3ArchivedThreadDelete")]
+    thread_archive_delete: bool,
     #[serde(default, rename = "t3ThreadVisits")]
     thread_visits: bool,
     #[serde(rename = "t3Terminal")]
@@ -1210,7 +1216,8 @@ struct Session {
     initial_shell: bool,
     archive: ArchiveState,
     archive_writes: bool,
-    pending_unarchive: HashMap<String, archive::Unarchive>,
+    archive_deletes: bool,
+    pending_archive_actions: HashMap<String, archive::PendingAction>,
     providers_request_id: Option<String>,
     workspace_settings: workspace_settings::Subscription,
     project_clones_request_id: Option<String>,
@@ -1338,7 +1345,8 @@ impl Session {
                 ArchiveState::Disabled
             },
             archive_writes: capabilities.thread_unarchive && scope.is_some_and(can_operate),
-            pending_unarchive: HashMap::new(),
+            archive_deletes: capabilities.thread_archive_delete && scope.is_some_and(can_operate),
+            pending_archive_actions: HashMap::new(),
             providers_request_id: None,
             workspace_settings: workspace_settings::Subscription::new(settings_write),
             project_clones_request_id: None,
@@ -1790,10 +1798,14 @@ impl Session {
                     });
                 }
             }
-            Command::UnarchiveThread {
+            Command::ArchiveAction {
+                action,
                 thread_id,
                 operation,
-            } => self.submit_unarchive(thread_id, operation, events).await?,
+            } => {
+                self.submit_archive_action(action, thread_id, operation, events)
+                    .await?
+            }
             Command::StopThread(thread_id) => {
                 let locally_available = self.thread.as_ref().is_some_and(|thread| {
                     thread.thread_id == thread_id && thread.reported_stop == Some(true)
@@ -2724,9 +2736,9 @@ impl Session {
                     }
                     return Ok(());
                 }
-                if let Some(action) = self.pending_unarchive.remove(&request_id) {
+                if let Some(action) = self.pending_archive_actions.remove(&request_id) {
                     return self
-                        .finish_unarchive(action, exit.into_result(), events)
+                        .finish_archive_action(action, exit.into_result(), events)
                         .await;
                 }
                 if let Some(thread) = self
@@ -3002,13 +3014,14 @@ async fn run(
         events.send(Event::ArchiveAvailable {
             readable: !matches!(session.archive, ArchiveState::Disabled),
             writable: session.archive_writes,
+            deletable: session.archive_deletes,
         });
         let disconnected = match session.publish_initial_shell(events).await {
             Ok(()) => run_socket(&mut session, &mut commands, events).await,
             Err(error) => Err(error),
         };
         session.unconfirm_workspace_retries(events);
-        session.unconfirm_unarchive(events);
+        session.unconfirm_archive_actions(events);
         let reason = match disconnected {
             Ok(()) => return Ok(()),
             Err(SessionStop::Protocol(message)) => {
@@ -3143,7 +3156,7 @@ async fn run_socket(
                 if last_seen.elapsed() >= SOCKET_TIMEOUT {
                     return Err(SessionStop::Socket("The environment stopped responding.".to_owned()));
                 }
-                session.expire_unarchive(events);
+                session.expire_archive_actions(events);
                 session.pending_launches.retain(|_, (stage, started)| {
                     if started.elapsed() < stage.timeout() {
                         return true;

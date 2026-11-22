@@ -1517,7 +1517,11 @@ fn dispatch_thread(
     }
     if !matches!(
         command_type,
-        "thread.create" | "thread.visit" | "thread.metadata.update" | "thread.unarchive"
+        "thread.create"
+            | "thread.visit"
+            | "thread.metadata.update"
+            | "thread.unarchive"
+            | "thread.delete"
     ) {
         return failure(
             id,
@@ -1545,7 +1549,7 @@ fn dispatch_thread(
         Err(ThreadCommandError::InvalidRequest(message))
             if matches!(
                 command_type.as_str(),
-                "thread.metadata.update" | "thread.unarchive"
+                "thread.metadata.update" | "thread.unarchive" | "thread.delete"
             ) =>
         {
             defect(id, message)

@@ -26,6 +26,15 @@ pub(super) fn apply(
                 params![encoded, thread_id],
             )?;
         }
+        "thread.deleted" => {
+            transaction.execute(
+                "UPDATE orchestration_v2_projection_threads
+                 SET deleted_at = json_extract(?1, '$.deletedAt'),
+                     updated_at = json_extract(?1, '$.updatedAt'), payload_json = ?1
+                 WHERE thread_id = ?2",
+                params![encoded, thread_id],
+            )?;
+        }
         "provider-session.attached" | "provider-session.updated" => {
             transaction
                 .prepare_cached(PROVIDER_SESSION)?

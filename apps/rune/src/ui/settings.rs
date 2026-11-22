@@ -30,7 +30,7 @@ macro_rules! glyph {
 
 mod archive;
 mod keybindings;
-pub(super) use archive::settle as settle_archive_unarchive;
+pub(super) use archive::settle as settle_archive_action;
 
 static GEAR: Icon = glyph!(
     "settings",
@@ -260,7 +260,8 @@ pub(super) fn overlay(state: &State, palette: Palette, width: f32, height: f32) 
         Page::Archive => archive::page(state, palette, content_width),
     };
     let picker = project::icon_overlay(state, palette, width)
-        .or_else(|| project::file_overlay(state, palette, width, height));
+        .or_else(|| project::file_overlay(state, palette, width, height))
+        .or_else(|| archive::confirmation(state, palette));
     let dialog = row()
         .key(DIALOG)
         .hit()

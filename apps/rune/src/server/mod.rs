@@ -196,6 +196,11 @@ impl LocalHost {
                             eprintln!("The local thread title worker stopped: {error}");
                         }
                     });
+                    let archive_cleanup = tokio::spawn(thread_commands::delete_cleanup::run(
+                        threads.clone(),
+                        Arc::clone(&terminals),
+                        projection_changes.subscribe(),
+                    ));
                     let repository_identities = repository_identity::Identities::default();
                     let project_clones = ProjectClones::new(
                         projects.clone(),
@@ -227,7 +232,9 @@ impl LocalHost {
                         environment(address, identity, store, Some(Arc::new(local)));
                     if ready.send(code).is_err() {
                         titles.abort();
+                        archive_cleanup.abort();
                         let _ = titles.await;
+                        let _ = archive_cleanup.await;
                         let _ = turn_worker.shutdown().await;
                         return;
                     }
@@ -244,7 +251,9 @@ impl LocalHost {
                     let _ = keybindings_watch.await;
                     let _ = settings_watch.await;
                     titles.abort();
+                    archive_cleanup.abort();
                     let _ = titles.await;
+                    let _ = archive_cleanup.await;
                     project_clones.shutdown().await;
                     if let Err(error) = turn_worker.shutdown().await {
                         eprintln!("The local Codex worker stopped: {error}");
@@ -435,7 +444,7 @@ async fn environment_description(environment: &Environment) -> (Value, Option<Pa
         "platform": {"os": os, "arch": arch},
         "serverVersion": env!("CARGO_PKG_VERSION"),
         "orchestrationProtocolVersion": PROTOCOL_VERSION,
-        "capabilities": {"t3ReadOnly": true, "t3ProjectWrites": local, "t3NamedProjects": local, "t3ScratchProjects": scratch_projects, "t3CloneProjects": local, "t3PromptWrites": local, "t3ThreadLaunch": local, "t3WorktreeLaunch": local, "t3RemoteWorktreeLaunch": local, "t3WorktreeSetup": local, "t3WorktreeQueue": local, "t3ShellHttp": local, "t3CheckoutSwitch": local, "t3ThreadStop": local, "t3ArchiveSnapshots": local, "t3ThreadUnarchive": local, "t3ThreadVisits": local, "t3Terminal": local, "commandOutputStreaming": local, "projectOrganization": local}
+        "capabilities": {"t3ReadOnly": true, "t3ProjectWrites": local, "t3NamedProjects": local, "t3ScratchProjects": scratch_projects, "t3CloneProjects": local, "t3PromptWrites": local, "t3ThreadLaunch": local, "t3WorktreeLaunch": local, "t3RemoteWorktreeLaunch": local, "t3WorktreeSetup": local, "t3WorktreeQueue": local, "t3ShellHttp": local, "t3CheckoutSwitch": local, "t3ThreadStop": local, "t3ArchiveSnapshots": local, "t3ThreadUnarchive": local, "t3ArchivedThreadDelete": local, "t3ThreadVisits": local, "t3Terminal": local, "commandOutputStreaming": local, "projectOrganization": local}
     });
     (description, scratch_root)
 }

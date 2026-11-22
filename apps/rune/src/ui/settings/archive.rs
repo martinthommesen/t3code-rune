@@ -6,11 +6,14 @@ use rune::{Color, El, Icon, Key, ScrollSpec, TextStyle, Tx, col, el, icon, row, 
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use uuid::Uuid;
 
-use crate::connection::{Project, Thread};
+use crate::connection::{ArchiveAction, Project, Thread};
 use crate::ui::sidebar::project_badge;
 
 use super::super::{Palette, State, error_text};
 use super::{DESCRIPTION, Page, SECTION};
+
+mod delete;
+pub(super) use delete::confirmation;
 
 const ROW_TITLE: TextStyle = TextStyle::new(14.0, 400.0).lh(20.0);
 const PROJECT_SCOPE: &str = "archive-project-scope";
@@ -31,17 +34,20 @@ static CHECK: rune::Icon = glyph!("check", r#"<path d="m20 6-11 11-5-5"/>"#);
 pub(in crate::ui) struct Panel {
     available: bool,
     writable: bool,
+    deletable: bool,
+    confirmation: Option<delete::Confirmation>,
     threads: Option<Result<Vec<Thread>, String>>,
     project_id: Option<String>,
     scope_open: bool,
-    pending: HashMap<String, Uuid>,
+    pending: HashMap<String, (ArchiveAction, Uuid)>,
     error: Option<String>,
 }
 
 impl Panel {
-    pub(in crate::ui) fn available(&mut self, readable: bool, writable: bool) {
+    pub(in crate::ui) fn available(&mut self, readable: bool, writable: bool, deletable: bool) {
         self.available = readable;
         self.writable = writable;
+        self.deletable = deletable;
         if !readable {
             self.threads = None;
         }
@@ -61,6 +67,7 @@ impl Panel {
 
     pub(super) fn leave(&mut self) {
         self.scope_open = false;
+        self.confirmation = None;
         self.error = None;
     }
 }
@@ -71,44 +78,47 @@ impl State {
         self.settings.archive.dismiss_scope(tx);
     }
 
-    fn unarchive_thread(&mut self, thread_id: &str, tx: &mut Tx) {
+    fn submit_archive_action(&mut self, action: ArchiveAction, thread_id: &str, tx: &mut Tx) {
         let archive = &mut self.settings.archive;
+        let enabled = match action {
+            ArchiveAction::Unarchive => archive.writable,
+            ArchiveAction::Delete => archive.deletable,
+        };
         let connected = self
             .workspace
             .as_ref()
             .is_some_and(|workspace| !workspace.reconnecting);
-        let Some(connection) = self
-            .connection
-            .as_ref()
-            .filter(|_| connected && archive.writable)
-        else {
+        let Some(connection) = self.connection.as_ref().filter(|_| connected && enabled) else {
             return;
         };
         if archive.pending.contains_key(thread_id) {
             return;
         }
         let operation = Uuid::new_v4();
-        archive.pending.insert(thread_id.to_owned(), operation);
+        archive
+            .pending
+            .insert(thread_id.to_owned(), (action, operation));
         archive.error = None;
         if tx
             .focused()
-            .is_some_and(|key| key == unarchive_key(thread_id))
+            .is_some_and(|key| key == action_key(action, thread_id))
         {
             tx.focus("close-client-settings", tx.focus_visible());
         }
-        connection.unarchive_thread(thread_id.to_owned(), operation);
+        connection.archive_action(action, thread_id.to_owned(), operation);
     }
 }
 
 pub(in crate::ui) fn settle(
     state: &mut State,
+    action: ArchiveAction,
     thread_id: &str,
     operation: Uuid,
     result: Result<(), String>,
     tx: &mut Tx,
 ) {
     let archive = &mut state.settings.archive;
-    if archive.pending.get(thread_id) != Some(&operation) {
+    if archive.pending.get(thread_id) != Some(&(action, operation)) {
         return;
     }
     archive.pending.remove(thread_id);
@@ -118,13 +128,19 @@ pub(in crate::ui) fn settle(
                 threads.retain(|thread| thread.id != thread_id);
             }
             if state.settings.open && state.settings.page == Page::Archive {
-                let action = unarchive_key(thread_id);
+                let action = action_key(action, thread_id);
                 if tx.focused().is_none_or(|key| key == action) {
                     tx.focus("close-client-settings", tx.focus_visible());
                 }
             }
         }
-        Err(message) => archive.error = Some(format!("Failed to unarchive thread. {message}")),
+        Err(message) => {
+            let label = match action {
+                ArchiveAction::Unarchive => "Failed to unarchive thread.",
+                ArchiveAction::Delete => "Failed to delete thread.",
+            };
+            archive.error = Some(format!("{label} {message}"));
+        }
     }
 }
 
@@ -171,14 +187,13 @@ pub(super) fn page(state: &State, palette: Palette, width: f32) -> El {
                 .border(1.0, palette.line.alpha(0.58))
                 .border_layout();
             for (index, thread) in group.into_iter().enumerate() {
-                let enabled = archive.writable
-                    && !workspace.reconnecting
-                    && !archive.pending.contains_key(&thread.id);
+                let enabled = !workspace.reconnecting && !archive.pending.contains_key(&thread.id);
                 card = card.child(thread_row(
                     thread,
                     palette,
                     now,
                     archive.writable,
+                    archive.deletable && thread.worktree_path.is_none(),
                     enabled,
                     index != 0,
                 ));
@@ -417,6 +432,7 @@ fn thread_row(
     palette: Palette,
     now: OffsetDateTime,
     writable: bool,
+    deletable: bool,
     enabled: bool,
     divider: bool,
 ) -> El {
@@ -452,9 +468,10 @@ fn thread_row(
     if divider {
         entry = entry.border_sides([1.0, 0.0, 0.0, 0.0], palette.line.alpha(0.56));
     }
+    let mut actions = row().gap(8.0).items_center();
     if writable {
         let id = thread.id.clone();
-        entry = entry.child(press(
+        actions = actions.child(press(
             el().key(unarchive_key(&thread.id))
                 .role("button")
                 .label(format!("Unarchive {}", thread.title))
@@ -471,10 +488,15 @@ fn thread_row(
                 .focusable(enabled)
                 .focus_ring(1.0, 2.0, palette.accent)
                 .child(icon(&UNARCHIVE, 14.0).color(palette.muted).a11y_hidden()),
-            move |state: &mut State, tx| state.unarchive_thread(&id, tx),
+            move |state: &mut State, tx| {
+                state.submit_archive_action(ArchiveAction::Unarchive, &id, tx)
+            },
         ));
     }
-    entry
+    if deletable {
+        actions = actions.child(delete::opener(thread, enabled, palette));
+    }
+    entry.child(actions)
 }
 
 pub(super) fn press(control: El, action: impl Fn(&mut State, &mut Tx) + Clone + 'static) -> El {
@@ -516,4 +538,11 @@ fn project_key(project_id: &str) -> String {
 
 fn unarchive_key(thread_id: &str) -> String {
     format!("unarchive-thread-{thread_id}")
+}
+
+fn action_key(action: ArchiveAction, thread_id: &str) -> String {
+    match action {
+        ArchiveAction::Unarchive => unarchive_key(thread_id),
+        ArchiveAction::Delete => delete::key(thread_id),
+    }
 }

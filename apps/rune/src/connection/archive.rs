@@ -4,15 +4,39 @@ use uuid::Uuid;
 
 use super::{Command, Connection, Event, EventSender, REQUEST_TIMEOUT, Session, SessionStop};
 
-pub(super) struct Unarchive {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ArchiveAction {
+    Unarchive,
+    Delete,
+}
+
+impl ArchiveAction {
+    fn command(self) -> &'static str {
+        match self {
+            Self::Unarchive => "thread.unarchive",
+            Self::Delete => "thread.delete",
+        }
+    }
+
+    pub(crate) fn activity(self) -> &'static str {
+        match self {
+            Self::Unarchive => "unarchiving",
+            Self::Delete => "deleting",
+        }
+    }
+}
+
+pub(super) struct PendingAction {
+    action: ArchiveAction,
     thread_id: String,
     operation: Uuid,
     sent_at: Instant,
 }
 
-impl Unarchive {
+impl PendingAction {
     fn settled(&self, result: Result<(), String>) -> Event {
-        Event::ThreadUnarchiveSettled {
+        Event::ArchiveActionSettled {
+            action: self.action,
             thread_id: self.thread_id.clone(),
             operation: self.operation,
             result,
@@ -21,8 +45,9 @@ impl Unarchive {
 }
 
 impl Connection {
-    pub(crate) fn unarchive_thread(&self, thread_id: String, operation: Uuid) {
-        let _ = self.commands.send(Command::UnarchiveThread {
+    pub(crate) fn archive_action(&self, action: ArchiveAction, thread_id: String, operation: Uuid) {
+        let _ = self.commands.send(Command::ArchiveAction {
+            action,
             thread_id,
             operation,
         });
@@ -30,50 +55,59 @@ impl Connection {
 }
 
 impl Session {
-    pub(super) async fn submit_unarchive(
+    pub(super) async fn submit_archive_action(
         &mut self,
+        action: ArchiveAction,
         thread_id: String,
         operation: Uuid,
         events: &EventSender<impl Fn()>,
     ) -> Result<(), SessionStop> {
-        let action = Unarchive {
+        let request = PendingAction {
+            action,
             thread_id,
             operation,
             sent_at: Instant::now(),
         };
-        if !self.archive_writes || !self.shell.contains_archived_thread(&action.thread_id) {
-            events.send(action.settled(Err("This thread cannot be unarchived.".into())));
+        let allowed = match action {
+            ArchiveAction::Unarchive => self.archive_writes,
+            ArchiveAction::Delete => self.archive_deletes,
+        };
+        if !allowed || !self.shell.contains_archived_thread(&request.thread_id) {
+            events.send(request.settled(Err("This archive action is unavailable.".into())));
             return Ok(());
         }
         if self
-            .pending_unarchive
+            .pending_archive_actions
             .values()
-            .any(|other| other.thread_id == action.thread_id)
+            .any(|other| other.thread_id == request.thread_id)
         {
             return Ok(());
         }
         let payload = json!({
-            "type": "thread.unarchive",
-            "commandId": action.operation.to_string(),
-            "threadId": action.thread_id,
+            "type": action.command(),
+            "commandId": request.operation.to_string(),
+            "threadId": request.thread_id,
         });
         let request_id = self.allocate_id();
-        self.pending_unarchive.insert(request_id.clone(), action);
+        self.pending_archive_actions
+            .insert(request_id.clone(), request);
         self.send_request(&request_id, "orchestration.dispatchCommand", payload)
             .await
     }
 
-    pub(super) async fn finish_unarchive(
+    pub(super) async fn finish_archive_action(
         &mut self,
-        action: Unarchive,
+        action: PendingAction,
         receipt: Result<Value, String>,
         events: &EventSender<impl Fn()>,
     ) -> Result<(), SessionStop> {
         let result = receipt.and_then(|receipt| {
-            receipt["sequence"]
-                .as_u64()
-                .map(|_| ())
-                .ok_or_else(|| "The environment did not confirm unarchiving the thread.".into())
+            receipt["sequence"].as_u64().map(|_| ()).ok_or_else(|| {
+                format!(
+                    "The environment did not confirm {} the thread.",
+                    action.action.activity()
+                )
+            })
         });
         let reload = result.is_ok();
         events.send(action.settled(result));
@@ -83,23 +117,25 @@ impl Session {
         Ok(())
     }
 
-    pub(super) fn expire_unarchive(&mut self, events: &EventSender<impl Fn()>) {
-        self.pending_unarchive.retain(|_, action| {
+    pub(super) fn expire_archive_actions(&mut self, events: &EventSender<impl Fn()>) {
+        self.pending_archive_actions.retain(|_, action| {
             if action.sent_at.elapsed() < REQUEST_TIMEOUT {
                 return true;
             }
-            events.send(action.settled(Err(
-                "The environment did not confirm unarchiving the thread in time.".into(),
-            )));
+            events.send(action.settled(Err(format!(
+                "The environment did not confirm {} the thread in time.",
+                action.action.activity()
+            ))));
             false
         });
     }
 
-    pub(super) fn unconfirm_unarchive(&mut self, events: &EventSender<impl Fn()>) {
-        for (_, action) in self.pending_unarchive.drain() {
-            events.send(action.settled(Err(
-                "The connection closed before unarchiving was confirmed.".into(),
-            )));
+    pub(super) fn unconfirm_archive_actions(&mut self, events: &EventSender<impl Fn()>) {
+        for (_, action) in self.pending_archive_actions.drain() {
+            events.send(action.settled(Err(format!(
+                "The connection closed before {} the thread was confirmed.",
+                action.action.activity()
+            ))));
         }
     }
 }

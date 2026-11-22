@@ -196,26 +196,34 @@ impl Storage {
         }
     }
 
-    pub(super) fn delete_thread(&self, thread_id: &str) {
+    pub(super) fn delete_thread(&self, thread_id: &str) -> io::Result<()> {
         let encoded = encoded_thread(thread_id);
         let hashed = hashed_thread(thread_id);
         let legacy = legacy_name(thread_id);
-        let Ok(entries) = fs::read_dir(&self.directory) else {
-            return;
-        };
-        for entry in entries.flatten() {
+        let mut first_error = None;
+        for entry in fs::read_dir(&self.directory)? {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                    continue;
+                }
+            };
             let name = entry.file_name();
             let Some(name) = name.to_str() else { continue };
-            if legacy.as_deref() == Some(name)
+            if (legacy.as_deref() == Some(name)
                 || [encoded.as_str(), hashed.as_str()].into_iter().any(|part| {
                     name.strip_prefix(part).is_some_and(|rest| {
                         rest == ".log" || (rest.starts_with('_') && rest.ends_with(".log"))
                     })
-                })
+                }))
+                && let Err(error) = fs::remove_file(entry.path())
+                && error.kind() != io::ErrorKind::NotFound
             {
-                remove_file(&entry.path());
+                first_error.get_or_insert(error);
             }
         }
+        first_error.map_or(Ok(()), Err)
     }
 
     fn exists(&self, name: &str) -> io::Result<bool> {
