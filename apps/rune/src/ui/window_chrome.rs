@@ -128,7 +128,7 @@ impl ChromeState {
             self.maximized = maximized;
             self.full_screen = full_screen;
             frame.decorated = decorated;
-            return frame.poll_layout(&mut self.caption_layout) || changed;
+            return frame.poll_layout(window, &mut self.caption_layout) || changed;
         }
         let Some(placement) = window.placement() else {
             return false;

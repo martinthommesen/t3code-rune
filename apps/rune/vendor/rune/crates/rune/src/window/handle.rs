@@ -170,6 +170,13 @@ impl WindowHandle {
         let size = window.inner_size().to_logical::<f64>(window.scale_factor());
         Some((size.width, size.height))
     }
+    /// GNOME's caption button order for an application-drawn Linux titlebar.
+    /// None when the window or the desktop setting is unavailable. Call on the UI thread.
+    #[cfg(target_os = "linux")]
+    pub fn desktop_caption_button_layout(&self) -> Option<String> {
+        self.window().ok()?;
+        crate::platform::preferences::gnome_button_layout()
+    }
     /// Physical desktop pixels; retained across recreation. Unsupported on Wayland.
     pub fn set_position(&self, position: (i32, i32)) {
         self.send(move |slot| WakeEvent::Position(slot, position));

@@ -1,13 +1,15 @@
+use std::time::{Duration, Instant};
+
 use rune::raw_window_handle::RawWindowHandle;
 use rune::{Cursor, El, Phase, WindowHandle, WindowResizeDirection, el};
 
 use super::{CaptionLayout, State};
 
-mod settings;
+const LAYOUT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 pub(super) struct Frame {
     pub(super) decorated: bool,
-    settings: Option<settings::Watch>,
+    next_layout_poll: Option<Instant>,
 }
 
 impl Frame {
@@ -19,24 +21,40 @@ impl Frame {
             return None;
         }
         let decorated = window.is_decorated().unwrap_or(true);
-        let (settings, layout) = settings::open();
-        Some((
-            Self {
-                decorated,
-                settings,
-            },
-            layout,
-        ))
+        let layout = window.desktop_caption_button_layout();
+        let next_layout_poll = layout
+            .as_ref()
+            .map(|_| Instant::now() + LAYOUT_POLL_INTERVAL);
+        let frame = Self {
+            decorated,
+            next_layout_poll,
+        };
+        let layout = layout
+            .as_deref()
+            .map(CaptionLayout::from_desktop_order)
+            .unwrap_or_default();
+        Some((frame, layout))
     }
 
-    pub(super) fn poll_layout(&self, layout: &mut CaptionLayout) -> bool {
-        if let Some(next) = self.settings.as_ref().and_then(settings::Watch::latest)
-            && next != *layout
-        {
-            *layout = next;
-            return true;
+    pub(super) fn poll_layout(
+        &mut self,
+        window: &WindowHandle,
+        layout: &mut CaptionLayout,
+    ) -> bool {
+        let now = Instant::now();
+        if self.decorated || !self.next_layout_poll.is_some_and(|poll_at| now >= poll_at) {
+            return false;
         }
-        false
+        self.next_layout_poll = Some(now + LAYOUT_POLL_INTERVAL);
+        let Some(order) = window.desktop_caption_button_layout() else {
+            return false;
+        };
+        let next = CaptionLayout::from_desktop_order(&order);
+        if next == *layout {
+            return false;
+        }
+        *layout = next;
+        true
     }
 }
 

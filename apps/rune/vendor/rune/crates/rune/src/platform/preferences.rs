@@ -37,13 +37,43 @@ pub(crate) fn reduced_motion() -> bool {
     { return factor == 0.0; }
     // Optional GNOME GSettings, with schema lookup before constructing settings (missing
     // schemas otherwise abort GLib). No subprocess or required GNOME dependency.
-    // SAFETY: `gnome_animations` dynamically resolves GIO symbols, checks every pointer for null,
-    // and releases each GLib object before returning.
-    unsafe { gnome_animations().is_some_and(|enabled| !enabled) }
+    gnome_animations().is_some_and(|enabled| !enabled)
 }
 
 #[cfg(target_os = "linux")]
-unsafe fn gnome_animations() -> Option<bool> {
+fn gnome_animations() -> Option<bool> {
+    gnome_setting(c"org.gnome.desktop.interface", c"enable-animations", |gio, settings, key| {
+        // SAFETY: This GIO function reads the boolean key from a live GSettings object.
+        unsafe {
+            let get = gio.get::<unsafe extern "C" fn(*mut std::ffi::c_void, *const std::ffi::c_char) -> i32>(b"g_settings_get_boolean\0").ok()?;
+            Some(get(settings, key.as_ptr()) != 0)
+        }
+    })
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn gnome_button_layout() -> Option<String> {
+    use std::ffi::{CStr, c_char, c_void};
+    gnome_setting(c"org.gnome.desktop.wm.preferences", c"button-layout", |gio, settings, key| {
+        // SAFETY: GIO returns a NUL-terminated string owned by the caller, freed with g_free.
+        unsafe {
+            let get = gio.get::<unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_char>(b"g_settings_get_string\0").ok()?;
+            let free = gio.get::<unsafe extern "C" fn(*mut c_void)>(b"g_free\0").ok()?;
+            let value = get(settings, key.as_ptr());
+            if value.is_null() { return None; }
+            let layout = CStr::from_ptr(value).to_str().ok().map(str::to_owned);
+            free(value.cast());
+            layout
+        }
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn gnome_setting<T>(
+    schema_name: &std::ffi::CStr,
+    key: &std::ffi::CStr,
+    read: impl FnOnce(&libloading::Library, *mut std::ffi::c_void, &std::ffi::CStr) -> Option<T>,
+) -> Option<T> {
     use std::ffi::{c_char, c_void};
     type Ptr = *mut c_void;
     // SAFETY: signatures match GIO/GLib's public C API; every reference is released while
@@ -55,21 +85,20 @@ unsafe fn gnome_animations() -> Option<bool> {
         let lookup = gio.get::<unsafe extern "C" fn(Ptr, *const c_char, i32) -> Ptr>(b"g_settings_schema_source_lookup\0").ok()?;
         let has_key = gio.get::<unsafe extern "C" fn(Ptr, *const c_char) -> i32>(b"g_settings_schema_has_key\0").ok()?;
         let new = gio.get::<unsafe extern "C" fn(Ptr, Ptr, *const c_char) -> Ptr>(b"g_settings_new_full\0").ok()?;
-        let get = gio.get::<unsafe extern "C" fn(Ptr, *const c_char) -> i32>(b"g_settings_get_boolean\0").ok()?;
         let schema_unref = gio.get::<unsafe extern "C" fn(Ptr)>(b"g_settings_schema_unref\0").ok()?;
         let unref = gio.get::<unsafe extern "C" fn(Ptr)>(b"g_object_unref\0").ok()?;
         let source = default();
         if source.is_null() { return None; }
-        let schema = lookup(source, c"org.gnome.desktop.interface".as_ptr(), 1);
+        let schema = lookup(source, schema_name.as_ptr(), 1);
         if schema.is_null() { return None; }
-        if has_key(schema, c"enable-animations".as_ptr()) == 0 { schema_unref(schema); return None; }
+        if has_key(schema, key.as_ptr()) == 0 { schema_unref(schema); return None; }
         let settings = new(schema, std::ptr::null_mut(), std::ptr::null());
         schema_unref(schema);
         if settings.is_null() { return None; }
-        let enabled = get(settings, c"enable-animations".as_ptr()) != 0;
+        let value = read(gio, settings, key);
         unref(settings);
         // The static library stays loaded for GLib's retained backend callbacks.
-        Some(enabled)
+        value
     }
 }
 
