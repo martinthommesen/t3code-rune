@@ -6,7 +6,7 @@ use rune::{
     TextStyle, Tx, col, el, icon, row, text,
 };
 
-use super::super::{CRUMB, Layout, Load, Palette, State};
+use super::super::{CRUMB, Colors, Layout, Load, Palette, State};
 use super::{Bounds, PICTURE, menu};
 
 const BACK: &str = "expanded-image-back";
@@ -244,6 +244,7 @@ pub(in crate::ui) fn view(state: &State, layout: Layout, palette: Palette) -> Op
         })
         .radius(8.0)
         .clip_rounded(8.0)
+        .fill(Colors::new(palette.dark).background)
         .border(1.0, palette.line.alpha(0.7))
         .shadow(25.0, 50.0, Color::BLACK.alpha(0.25))
         .scroll(ScrollSpec {
@@ -300,6 +301,12 @@ pub(in crate::ui) fn view(state: &State, layout: Layout, palette: Palette) -> Op
     }
 
     let [popup_x, popup_y, popup_width, popup_height] = geometry.popup;
+    let caption_inset = if geometry.window[0] < 640.0 {
+        80.0
+    } else {
+        0.0
+    };
+    let caption_width = (geometry.maximum[0] - caption_inset).max(1.0);
     let popup = el()
         .key("expanded-image-dialog")
         .absolute(popup_x, popup_y)
@@ -313,21 +320,27 @@ pub(in crate::ui) fn view(state: &State, layout: Layout, palette: Palette) -> Op
                 .a11y_hidden()
                 .on_background_press_tx(State::close_expanded_image),
         )
-        .child(menu::target(
+        .child(
             col()
-                .absolute(x - popup_x, y - popup_y)
-                .w(width)
-                .gap(8.0)
+                .absolute(0.0, y - popup_y)
+                .w(popup_width)
                 .items_center()
-                .child(canvas)
-                .child(
-                    text(&preview.target.path)
-                        .font(CRUMB)
-                        .color(Color::WHITE.alpha(0.8))
-                        .truncate(),
-                ),
-            menu::Surface::Expanded,
-        ))
+                .child(menu::target(
+                    col()
+                        .max_w(geometry.maximum[0])
+                        .gap(8.0)
+                        .items_center()
+                        .child(canvas)
+                        .child(
+                            text(&preview.target.path)
+                                .max_w(caption_width)
+                                .font(CRUMB)
+                                .color(Color::WHITE.alpha(0.8))
+                                .truncate(),
+                        ),
+                    menu::Surface::Expanded,
+                )),
+        )
         .child(back(1.0, 1.0))
         .children(dialog.menu.map(|point| {
             menu::view(
