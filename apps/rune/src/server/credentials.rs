@@ -39,6 +39,7 @@ pub(super) struct Credentials(State);
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct Permissions {
     pub orchestration_operate: bool,
+    pub settings_write: bool,
     pub filesystem_read: bool,
     pub source_control_write: bool,
     pub terminal_read: bool,
@@ -50,6 +51,9 @@ impl Permissions {
         let mut scopes = vec!["orchestration:read"];
         if self.orchestration_operate {
             scopes.push("orchestration:operate");
+        }
+        if self.settings_write {
+            scopes.push("settings:write");
         }
         if self.filesystem_read {
             scopes.push("filesystem:read");
@@ -151,6 +155,7 @@ mod tests {
         let (mut credentials, pairing) = Credentials::new(now);
         let permissions = Permissions {
             orchestration_operate: true,
+            settings_write: true,
             filesystem_read: false,
             source_control_write: false,
             terminal_read: false,

@@ -6,8 +6,9 @@ use serde_json::{Value, json};
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 
-use super::{LocalOperations, RequestId, chunk, failure, success};
+use super::{LocalOperations, RequestId, SharedEnvironment, chunk, failure, success};
 use crate::server::project_clone::Snapshot as CloneSnapshot;
+use crate::server::server_config;
 use crate::server::terminal_rpc::{Subscription, observe};
 use crate::server::thread_launch::subscribe_worktree_setup;
 use crate::server::turn_worker::{CommandOutputSubscription, TurnQueue};
@@ -83,6 +84,59 @@ impl Streams {
             item_id,
             self.send.clone(),
         ));
+        self.workers.insert(id, (generation, worker));
+    }
+
+    pub(super) fn start_server_config(&mut self, id: RequestId, environment: SharedEnvironment) {
+        self.interrupt(&id);
+        self.next_generation += 1;
+        let generation = self.next_generation;
+        let request = id.clone();
+        let send = self.send.clone();
+        let local = environment
+            .local
+            .as_ref()
+            .expect("local config subscription");
+        let mut changes = local.settings.subscribe_changes();
+        let worker = tokio::spawn(async move {
+            let (frame, done) = match server_config::snapshot(&environment).await {
+                Ok(snapshot) => (chunk(request.clone(), snapshot), false),
+                Err(error) => (failure(request.clone(), error), true),
+            };
+            if send
+                .send(Update {
+                    id: request.clone(),
+                    generation,
+                    frame,
+                    done,
+                })
+                .await
+                .is_err()
+                || done
+            {
+                return;
+            }
+            while let Some(settings) = changes.recv().await {
+                let frame = chunk(
+                    request.clone(),
+                    json!({
+                        "version":1, "type":"settingsUpdated", "payload": {"settings": &*settings},
+                    }),
+                );
+                if send
+                    .send(Update {
+                        id: request.clone(),
+                        generation,
+                        frame,
+                        done: false,
+                    })
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
         self.workers.insert(id, (generation, worker));
     }
 

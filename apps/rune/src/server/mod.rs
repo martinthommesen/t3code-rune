@@ -462,6 +462,7 @@ async fn exchange(
     };
     let permissions = Permissions {
         orchestration_operate: allows("orchestration:operate"),
+        settings_write: allows("settings:write"),
         filesystem_read: allows("filesystem:read"),
         source_control_write: allows("source-control:write"),
         terminal_read: allows("terminal:read"),

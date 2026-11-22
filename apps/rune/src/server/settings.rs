@@ -2,14 +2,19 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use serde_json::{Map, Value};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 mod client;
+mod disk;
 mod jsonc;
+mod patch;
 mod providers;
 
 pub(crate) use jsonc::parse as parse_settings_json;
+pub(super) use patch::Patch;
 use providers::ProviderInstance;
 pub(super) use providers::{ClaudeInstance, CodexInstance, CodexInstanceError, EnvironmentValue};
 
@@ -18,6 +23,13 @@ const DEFAULTS: &str = include_str!("settings/defaults.json");
 #[derive(Clone)]
 pub(super) struct SettingsFile {
     path: PathBuf,
+    shared: Arc<Changes>,
+}
+
+#[derive(Default)]
+struct Changes {
+    writes: Mutex<()>,
+    subscribers: Mutex<Vec<UnboundedSender<Arc<Value>>>>,
 }
 
 pub(super) struct SettingsSnapshot {
@@ -47,7 +59,10 @@ impl SettingsFile {
     }
 
     pub(super) fn new(path: PathBuf) -> Self {
-        Self { path }
+        Self {
+            path,
+            shared: Arc::default(),
+        }
     }
 
     pub(super) fn read(&self) -> Result<SettingsSnapshot, SettingsError> {
@@ -58,6 +73,53 @@ impl SettingsFile {
             }
             Err(error) => Err(SettingsError(error)),
         }
+    }
+
+    pub(super) fn subscribe_changes(&self) -> UnboundedReceiver<Arc<Value>> {
+        let (send, receiver) = unbounded_channel();
+        let mut subscribers = self
+            .shared
+            .subscribers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        subscribers.retain(|sender| !sender.is_closed());
+        subscribers.push(send);
+        receiver
+    }
+
+    pub(super) fn update(&self, patch: Patch) -> Result<Value, Value> {
+        let _write = self
+            .shared
+            .writes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut stored =
+            disk::read(&self.path).map_err(|error| self.error("read-file", &error.to_string()))?;
+        patch.apply(&mut stored, &defaults());
+        let mut contents = serde_json::to_string_pretty(&stored)
+            .map_err(|error| self.error("normalize", &error.to_string()))?;
+        contents.push('\n');
+        let next = SettingsSnapshot::decode(&contents);
+        if !next.readable {
+            return Err(self.error("normalize", "Could not normalize environment settings."));
+        }
+        disk::write(&self.path, contents.as_bytes())
+            .map_err(|error| self.error("write-file", &error.to_string()))?;
+        let settings = next.for_client();
+        let changed = Arc::new(settings.clone());
+        self.shared
+            .subscribers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|subscriber| subscriber.send(Arc::clone(&changed)).is_ok());
+        Ok(settings)
+    }
+
+    pub(super) fn error(&self, operation: &str, cause: &str) -> Value {
+        serde_json::json!({
+            "_tag":"ServerSettingsError", "operation":operation,
+            "settingsPath":self.path.to_string_lossy(), "cause":cause,
+        })
     }
 }
 

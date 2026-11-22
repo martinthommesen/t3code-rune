@@ -211,16 +211,7 @@ pub(super) async fn serve(
                         },
                     ))
                 } else {
-                    let environment = Arc::clone(&environment);
-                    let request_id = id.clone();
-                    let task = operations.spawn(async move {
-                        let result = match server_config::snapshot(&environment).await {
-                            Ok(event) => chunk(id.clone(), event),
-                            Err(error) => failure(id.clone(), error),
-                        };
-                        (id, result)
-                    });
-                    operation_requests.insert(request_id, task);
+                    streams.start_server_config(id, Arc::clone(&environment));
                     continue;
                 }
             }
@@ -1152,6 +1143,7 @@ fn response(
                 Err(error) => failure(id, error),
             }
         }
+        "server.updateSettings" => update_settings(id, local, permissions, payload),
         "server.getSettings" if local.is_some() => {
             let settings = &local.expect("local operations are present").settings;
             match settings.read() {
@@ -1242,6 +1234,51 @@ fn browse(id: RequestId, allowed: bool, payload: Value) -> Value {
                 format!("Failed to encode response for RPC \"filesystem.browse\": {error}"),
             ),
         },
+        Err(error) => failure(id, error),
+    }
+}
+
+fn update_settings(
+    id: RequestId,
+    local: Option<&LocalOperations>,
+    permissions: Permissions,
+    payload: Value,
+) -> Value {
+    let patch = match super::settings::Patch::decode(&payload) {
+        Ok(patch) => patch,
+        Err(message) => return defect(id, message),
+    };
+    if let Some(required) = patch.required_permission(permissions.settings_write && local.is_some())
+    {
+        let scope = if required == "access:write" {
+            required
+        } else {
+            "orchestration:operate"
+        };
+        return failure(
+            id,
+            json!({
+                "_tag":"EnvironmentAuthorizationError",
+                "requiredScope":scope,
+                "requiredPermission":required,
+                "message":format!("The authenticated token is missing required scope: {required}."),
+            }),
+        );
+    }
+    let settings = &local
+        .expect("authorized settings write requires a local host")
+        .settings;
+    if let Some(unsupported) = patch.unsupported() {
+        return failure(
+            id,
+            settings.error(
+                "normalize",
+                &format!("The setting '{unsupported}' cannot be updated by this host."),
+            ),
+        );
+    }
+    match settings.update(patch) {
+        Ok(settings) => success(id, settings),
         Err(error) => failure(id, error),
     }
 }
