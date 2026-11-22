@@ -346,7 +346,7 @@ pub(super) fn view_trigger(
 }
 
 pub(in crate::ui) fn overlay(state: &State, palette: Palette, height: f32) -> Option<[El; 2]> {
-    if !state.sidebar_open || state.sidebar.picker != Some(ProjectPicker::Filter) {
+    if !state.sidebar_visibility.is_open() || state.sidebar.picker != Some(ProjectPicker::Filter) {
         return None;
     }
     let workspace = state.workspace.as_ref()?;

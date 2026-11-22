@@ -7,6 +7,7 @@ use rune::{
 
 use super::State;
 use super::navigation_history::{Destination, Direction};
+use super::sidebar_visibility::SidebarMode;
 
 pub(super) const WIDTH: f32 = 256.0;
 pub(super) const HEIGHT: f32 = if cfg!(target_os = "macos") {
@@ -17,12 +18,14 @@ pub(super) const HEIGHT: f32 = if cfg!(target_os = "macos") {
 const CONTROL_SIZE: f32 = 28.0;
 const WORDMARK_SIZE: f32 = 16.84375;
 const MIN_CHROME_WIDTH: f32 = 181.0;
+const MIN_WORKSPACE_WIDTH: f32 = 560.0;
 
 #[derive(Clone, Copy)]
 pub(super) struct Layout {
     leading: f32,
     height: f32,
     width: f32,
+    control_size: f32,
 }
 
 impl Layout {
@@ -35,11 +38,25 @@ impl Layout {
             },
             height: HEIGHT.max(insets.height),
             width: WIDTH.max(MIN_CHROME_WIDTH + caption_leading),
+            control_size: CONTROL_SIZE,
         }
     }
 
+    pub(super) fn fit(mut self, width: f32, mode: SidebarMode) -> Self {
+        if width < 640.0 {
+            self.control_size = 32.0;
+        }
+        self.width = match mode {
+            SidebarMode::Docked => self
+                .width
+                .min((width - MIN_WORKSPACE_WIDTH).max(MIN_CHROME_WIDTH)),
+            SidebarMode::Sheet => width - 12.0,
+        };
+        self
+    }
+
     pub(super) fn content_left(self) -> f32 {
-        self.leading + CONTROL_SIZE + 12.0
+        self.leading + self.control_size + 12.0
     }
 
     pub(super) fn height(self) -> f32 {
@@ -131,7 +148,14 @@ pub(super) fn surface_grain() -> Option<&'static Pixels> {
     }).as_ref()
 }
 
-pub(super) fn view(state: &State, layout: Layout, colors: Colors) -> El {
+pub(super) fn view(state: &State, layout: Layout, colors: Colors, mode: SidebarMode) -> El {
+    if mode == SidebarMode::Sheet {
+        return row()
+            .key("sidebar-titlebar")
+            .w_full()
+            .h(layout.height)
+            .child(toggle(true, layout, colors));
+    }
     let mut header = state.window_chrome.drag_region(
         row()
             .key("sidebar-titlebar")
@@ -184,18 +208,18 @@ pub(super) fn view(state: &State, layout: Layout, colors: Colors) -> El {
                 .child(history_button(state, Direction::Back, colors))
                 .child(history_button(state, Direction::Forward, colors)),
         )
-        .child(toggle(state, layout, colors))
+        .child(toggle(true, layout, colors))
 }
 
-pub(super) fn toggle(state: &State, layout: Layout, colors: Colors) -> El {
-    let glyph = if state.sidebar_open {
-        &CLOSE_SIDEBAR
-    } else {
-        &OPEN_SIDEBAR
-    };
+pub(super) fn toggle(open: bool, layout: Layout, colors: Colors) -> El {
+    let glyph = if open { &CLOSE_SIDEBAR } else { &OPEN_SIDEBAR };
     control("toggle-sidebar", "Toggle main sidebar", colors)
-        .absolute(layout.leading + 1.0, (layout.height - CONTROL_SIZE) / 2.0)
-        .expanded(state.sidebar_open)
+        .size(layout.control_size, layout.control_size)
+        .absolute(
+            layout.leading + 1.0,
+            (layout.height - layout.control_size) / 2.0,
+        )
+        .expanded(open)
         .focusable(true)
         .on_press_tx(toggle_from_button)
         .on_key(|state: &mut State, event, tx| {
@@ -236,10 +260,16 @@ fn toggle_from_button(state: &mut State, tx: &mut Tx) {
     tx.focus_when_shown("toggle-sidebar", tx.focus_visible());
 }
 
+pub(super) fn dismiss_sheet(state: &mut State, tx: &mut Tx) {
+    state.sidebar_visibility.close_if_sheet();
+    tx.focus_when_shown("toggle-sidebar", tx.focus_visible());
+}
+
 impl State {
     fn toggle_sidebar(&mut self) {
-        self.sidebar_open = !self.sidebar_open;
-        let _ = self.client_settings.set_sidebar_open(self.sidebar_open);
+        if let Some(open) = self.sidebar_visibility.toggle() {
+            let _ = self.client_settings.set_sidebar_open(open);
+        }
     }
 }
 

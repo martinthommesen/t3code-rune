@@ -143,7 +143,7 @@ pub(in crate::ui) fn key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bo
     }
     notice.held_key = None;
     let has_notice = !notice.threads.is_empty();
-    let editor_override = state.sidebar_open && notice.shortcut_claimed;
+    let editor_override = state.sidebar_visibility.is_open() && notice.shortcut_claimed;
     if !has_notice || !shortcut_available(state) {
         return false;
     }

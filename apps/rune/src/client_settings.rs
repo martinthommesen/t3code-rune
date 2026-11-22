@@ -167,11 +167,7 @@ impl ClientSettings {
         let target = resolve_file_target(path)?;
         let mut document = read_document(&target)?;
         let preferences = preference_object(&mut document)?;
-        if open {
-            preferences.shift_remove(SIDEBAR_OPEN);
-        } else {
-            preferences.insert(SIDEBAR_OPEN.into(), Value::Bool(false));
-        }
+        preferences.insert(SIDEBAR_OPEN.into(), Value::Bool(open));
         write_document(&target, &document)
     }
 

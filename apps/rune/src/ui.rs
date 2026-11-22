@@ -30,6 +30,8 @@ mod question;
 mod settings;
 mod sidebar;
 mod sidebar_header;
+mod sidebar_visibility;
+use sidebar_visibility::{SidebarMode, SidebarVisibility};
 mod terminal;
 mod thread_details;
 mod thread_error_banner;
@@ -290,7 +292,7 @@ struct DraftRefs {
 }
 
 struct State {
-    sidebar_open: bool,
+    sidebar_visibility: SidebarVisibility,
     sidebar: sidebar::SidebarState,
     thread_actions: sidebar::thread_actions::Panel,
     history: History,
@@ -336,7 +338,7 @@ struct State {
 impl Default for State {
     fn default() -> Self {
         Self {
-            sidebar_open: true,
+            sidebar_visibility: SidebarVisibility::default(),
             sidebar: sidebar::SidebarState::default(),
             thread_actions: sidebar::thread_actions::Panel::default(),
             history: History::default(),
@@ -445,6 +447,7 @@ impl State {
             .as_ref()
             .and_then(|workspace| workspace.thread(id))
         {
+            self.sidebar_visibility.close_if_sheet();
             self.navigate(Destination::Thread {
                 project: thread.project_id.clone(),
                 thread: id.into(),
@@ -1098,7 +1101,7 @@ impl State {
         changed |= self.poll_image_preview();
         changed |= file_preview::image_notice::poll(self, clock, tx);
         changed |= worktree_setup::poll(self, tx);
-        if self.sidebar_open
+        if self.sidebar_visibility.is_open()
             && self
                 .workspace
                 .as_ref()
@@ -1972,11 +1975,15 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
             .margin(5.0),
     );
     let chrome = cx.chrome_insets();
-    let chrome_layout = sidebar_header::Layout::new(chrome, state.window_chrome.leading_inset());
     let pane_size = cx.layout_size("detail-pane").unwrap_or([864.0, 740.0]);
     let [width, height] = cx.layout_size("t3-code-window").unwrap_or([1100.0, 780.0]);
+    let sidebar_mode = SidebarMode::for_width(width);
+    let chrome_layout = sidebar_header::Layout::new(chrome, state.window_chrome.leading_inset())
+        .fit(width, sidebar_mode);
+    let sidebar_docked =
+        sidebar_mode == SidebarMode::Docked && state.sidebar_visibility.open_in(sidebar_mode);
     let workspace_width = width
-        - if state.sidebar_open {
+        - if sidebar_docked {
             chrome_layout.width()
         } else {
             0.0
@@ -1995,7 +2002,7 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
         .map_or(0.0, |size| size[1]);
     let detail_layout = conversation::Layout {
         header_height: chrome_layout.height(),
-        header_left: if state.sidebar_open {
+        header_left: if sidebar_docked {
             20.0
         } else {
             chrome_layout.content_left()
@@ -2042,6 +2049,7 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
     let modal_open = modal.is_some() || palette_open || menu.is_some();
     let mut body = col()
         .key("t3-code-window")
+        .on_layout(|state: &mut State, [_, _, width, _]| state.sidebar_visibility.resize(width))
         .w_full()
         .h_full()
         .fill(palette.canvas)
@@ -2102,7 +2110,7 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
     {
         let left = if onboarding_open || state.workspace.is_none() {
             0.0
-        } else if state.sidebar_open {
+        } else if sidebar_docked {
             chrome_layout.width()
         } else {
             chrome_layout.content_left()
@@ -2245,7 +2253,11 @@ fn workspace_view(
     sidebar_height: f32,
     detail_layout: conversation::Layout,
 ) -> El {
-    let colors = sidebar_header::Colors::new(palette.dark);
+    let mode = SidebarMode::for_width(detail_layout.viewport[0]);
+    let mut colors = sidebar_header::Colors::new(palette.dark);
+    if mode == SidebarMode::Sheet && palette.dark {
+        colors.background = hex("#111111").expect("dark sidebar sheet color");
+    }
     let frame = row().w_full().h_full();
     let preview = browser_preview::view(state, detail_layout, palette).or_else(|| {
         file_preview::view(
@@ -2256,21 +2268,22 @@ fn workspace_view(
             palette,
         )
     });
-    if !state.sidebar_open {
+    if !state.sidebar_visibility.open_in(mode) {
         return frame
             .child(detail(state, workspace, palette, detail_layout))
             .children(preview)
-            .child(sidebar_header::toggle(state, layout, colors));
+            .child(sidebar_header::toggle(false, layout, colors));
     }
     let footer = sidebar_footer(state, workspace, palette, colors);
     let side = col()
+        .key("main-sidebar")
         .w(layout.width())
         .h_full()
         .min_h(0.0)
         .fill(colors.background)
         .border_sides([0.0, 1.0, 0.0, 0.0], colors.border)
         .border_layout()
-        .child(sidebar_header::view(state, layout, colors))
+        .child(sidebar_header::view(state, layout, colors, mode))
         .child(sidebar::view(
             state,
             workspace,
@@ -2280,10 +2293,25 @@ fn workspace_view(
             sidebar_height,
         ))
         .child(footer);
-    frame
-        .child(side)
-        .child(detail(state, workspace, palette, detail_layout))
-        .children(preview)
+    let workspace = detail(state, workspace, palette, detail_layout);
+    if mode == SidebarMode::Sheet {
+        return frame
+            .child(workspace)
+            .children(preview)
+            .child(
+                el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+                    .fill(palette.canvas.alpha(0.6))
+                    .backdrop_blur(4.0)
+                    .a11y_hidden(),
+            )
+            .child(
+                side.pin(Some(0.0), Some(0.0), None, Some(0.0))
+                    .role("dialog")
+                    .label("Threads")
+                    .modal_tx(true, sidebar_header::dismiss_sheet),
+            );
+    }
+    frame.child(side).child(workspace).children(preview)
 }
 
 fn sidebar_footer(
@@ -2662,9 +2690,9 @@ pub(crate) fn run(
         })
         .init(move || {
             let onboarding = onboarding::Onboarding::new(&client_settings);
-            let sidebar_open = client_settings.sidebar_open();
+            let sidebar_visibility = SidebarVisibility::new(client_settings.sidebar_open());
             let mut state = State {
-                sidebar_open,
+                sidebar_visibility,
                 client_settings,
                 local_environment,
                 onboarding,
