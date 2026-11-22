@@ -3,6 +3,11 @@ use rune::{Color, El, Icon, Key, ScrollSpec, TextStyle, Tx, col, el, icon, row, 
 use super::{Palette, State, error_text, sidebar_header};
 
 mod appearance;
+mod project;
+
+pub(super) use project::{
+    gear as project_settings_gear, poll as poll_project, settle as settle_project_edit,
+};
 
 const CONTROL: TextStyle = TextStyle::new(14.0, 500.0).lh(20.0);
 const SECTION: TextStyle = TextStyle::new(16.0, 600.0).lh(24.0);
@@ -38,11 +43,24 @@ static RESET: Icon = glyph!(
     r#"<path d="m9 14-5-5 5-5M4 9h10.5a5.5 5.5 0 1 1 0 11H11"/>"#
 );
 
-#[derive(Default)]
 pub(super) struct Panel {
     open: bool,
     error: Option<String>,
     page: Page,
+    project: Option<project::Form>,
+    return_focus: &'static str,
+}
+
+impl Default for Panel {
+    fn default() -> Self {
+        Self {
+            open: false,
+            error: None,
+            page: Page::General,
+            project: None,
+            return_focus: "open-client-settings",
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -50,6 +68,7 @@ enum Page {
     #[default]
     General,
     Appearance,
+    Projects,
 }
 
 impl Page {
@@ -57,6 +76,7 @@ impl Page {
         match self {
             Self::General => "General",
             Self::Appearance => "Appearance",
+            Self::Projects => "Projects",
         }
     }
 }
@@ -65,13 +85,15 @@ impl State {
     fn open_client_settings(&mut self, tx: &mut Tx) {
         self.settings.open = true;
         self.settings.page = Page::General;
+        self.settings.return_focus = "open-client-settings";
         tx.focus(DIALOG, false);
     }
 
     fn close_client_settings(&mut self, tx: &mut Tx) {
+        self.save_project_name();
         self.settings.open = false;
         self.settings.error = None;
-        tx.focus("open-client-settings", tx.focus_visible());
+        tx.focus(self.settings.return_focus, tx.focus_visible());
     }
 
     fn toggle_terminal_close_confirmation(&mut self, _: &mut Tx) {
@@ -92,6 +114,7 @@ impl State {
     }
 
     fn select_settings_page(&mut self, page: Page) {
+        self.save_project_name();
         self.settings.page = page;
         self.settings.error = None;
     }
@@ -135,6 +158,7 @@ pub(super) fn overlay(state: &State, palette: Palette, width: f32) -> Option<El>
     let content = match page {
         Page::General => general(state, palette, content_width, width < 640.0),
         Page::Appearance => appearance::page(state, palette, content_width),
+        Page::Projects => project::page(state, palette, content_width),
     };
     let dialog = row()
         .key(DIALOG)
@@ -198,6 +222,7 @@ fn navigation(active: Page, width: f32, colors: sidebar_header::Colors) -> El {
     for (page, glyph, key) in [
         (Page::General, &GENERAL, "settings-general"),
         (Page::Appearance, &APPEARANCE, "settings-appearance"),
+        (Page::Projects, &GEAR, "settings-projects"),
     ] {
         let selected = active == page;
         let ink = if selected {

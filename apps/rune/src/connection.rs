@@ -196,8 +196,9 @@ pub(crate) enum Event {
         command_id: String,
         result: Result<ProjectCreated, String>,
     },
-    ProjectPinSettled {
+    ProjectEditSettled {
         project_id: String,
+        kind: ProjectEditKind,
         result: Result<Box<Project>, String>,
     },
     ProjectClones(Vec<ProjectClone>),
@@ -273,9 +274,9 @@ enum Command {
         name: String,
     },
     StartScratchProject(String),
-    SetProjectPinned {
+    EditProject {
         project_id: String,
-        pinned: bool,
+        edit: ProjectEdit,
     },
     CloneProject {
         project_id: String,
@@ -301,6 +302,37 @@ pub(crate) struct Connection {
     next_terminal_attachment: Cell<u64>,
     terminal_selection: Arc<terminal::Selection>,
     _shutdown: oneshot::Sender<()>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum ProjectEditKind {
+    Title,
+    Pinned,
+    Archived,
+}
+
+pub(crate) enum ProjectEdit {
+    Title(String),
+    Pinned(bool),
+    Archived(bool),
+}
+
+impl ProjectEdit {
+    pub(crate) fn kind(&self) -> ProjectEditKind {
+        match self {
+            Self::Title(_) => ProjectEditKind::Title,
+            Self::Pinned(_) => ProjectEditKind::Pinned,
+            Self::Archived(_) => ProjectEditKind::Archived,
+        }
+    }
+
+    fn apply(self, payload: &mut Value) {
+        match self {
+            Self::Title(title) => payload["title"] = json!(title),
+            Self::Pinned(pinned) => payload["pinned"] = json!(pinned),
+            Self::Archived(archived) => payload["archived"] = json!(archived),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -374,10 +406,10 @@ impl Connection {
         let _ = self.commands.send(Command::StartScratchProject(command_id));
     }
 
-    pub(crate) fn set_project_pinned(&self, project_id: String, pinned: bool) {
+    pub(crate) fn edit_project(&self, project_id: String, edit: ProjectEdit) {
         let _ = self
             .commands
-            .send(Command::SetProjectPinned { project_id, pinned });
+            .send(Command::EditProject { project_id, edit });
     }
 
     pub(crate) fn load_project_favicons(&self, targets: Vec<FaviconTarget>) {
@@ -1041,7 +1073,7 @@ struct Session {
     pending_setup_cancels: HashMap<String, (String, Instant)>,
     pending_workspace_retries: HashMap<String, (WorkspaceRetry, Instant)>,
     pending_projects: HashMap<String, (String, Instant, ProjectCreation)>,
-    pending_project_pins: HashMap<String, (String, Instant)>,
+    pending_project_edits: HashMap<String, (String, ProjectEditKind, Instant)>,
     pending_folder: Option<(String, Uuid, Instant)>,
     pending_launches: HashMap<String, (LaunchStage, Instant)>,
     pending_git_refs: HashMap<String, GitRefsRequest>,
@@ -1151,7 +1183,7 @@ impl Session {
             pending_setup_cancels: HashMap::new(),
             pending_workspace_retries: HashMap::new(),
             pending_projects: HashMap::new(),
-            pending_project_pins: HashMap::new(),
+            pending_project_edits: HashMap::new(),
             pending_folder: None,
             pending_launches: HashMap::new(),
             pending_git_refs: HashMap::new(),
@@ -1648,24 +1680,24 @@ impl Session {
                         .await?;
                 }
             }
-            Command::SetProjectPinned { project_id, pinned } => {
+            Command::EditProject { project_id, edit } => {
+                let kind = edit.kind();
                 if !self.project_writes
-                    || !self.project_organization
-                    || self
-                        .shell
-                        .project(&project_id)
-                        .is_none_or(|project| project.is_archived())
+                    || kind != ProjectEditKind::Title && !self.project_organization
+                    || self.shell.project(&project_id).is_none()
                 {
-                    events.send(Event::ProjectPinSettled {
+                    events.send(Event::ProjectEditSettled {
                         project_id,
-                        result: Err("The project is no longer available for pinning.".into()),
+                        kind,
+                        result: Err("The project is no longer available for editing.".into()),
                     });
                 } else {
                     let request = self.allocate_id();
-                    let payload = json!({"type":"project.update", "projectId":project_id,
-                                         "commandId":Uuid::new_v4().to_string(), "pinned":pinned});
-                    self.pending_project_pins
-                        .insert(request.clone(), (project_id, Instant::now()));
+                    let mut payload = json!({"type": "project.update", "projectId": project_id,
+                                             "commandId": Uuid::new_v4().to_string()});
+                    edit.apply(&mut payload);
+                    self.pending_project_edits
+                        .insert(request.clone(), (project_id, kind, Instant::now()));
                     self.send_request(&request, "projects.mutate", payload)
                         .await?;
                 }
@@ -2347,17 +2379,23 @@ impl Session {
                     events.send(Event::ProjectAdded { command_id, result });
                     return Ok(());
                 }
-                if let Some((project_id, _)) = self.pending_project_pins.remove(&request_id) {
+                if let Some((project_id, kind, _)) = self.pending_project_edits.remove(&request_id)
+                {
                     let result = exit.into_result().and_then(|value| {
                         serde_json::from_value::<Project>(value)
                             .ok()
                             .filter(|project| project.id == project_id)
                             .map(Box::new)
                             .ok_or_else(|| {
-                                "The environment returned an invalid project pin result.".to_owned()
+                                "The environment returned an invalid project edit result."
+                                    .to_owned()
                             })
                     });
-                    events.send(Event::ProjectPinSettled { project_id, result });
+                    events.send(Event::ProjectEditSettled {
+                        project_id,
+                        kind,
+                        result,
+                    });
                     return Ok(());
                 }
                 if self
@@ -2574,10 +2612,11 @@ async fn run(
         for (_, (command_id, ..)) in session.pending_projects.drain() {
             events.send(Event::ProjectAdded { command_id, result: Err("Project creation could not be confirmed. Check the project list before retrying.".into()) });
         }
-        for (_, (project_id, _)) in session.pending_project_pins.drain() {
-            events.send(Event::ProjectPinSettled {
+        for (_, (project_id, kind, _)) in session.pending_project_edits.drain() {
+            events.send(Event::ProjectEditSettled {
                 project_id,
-                result: Err("The connection closed before confirming the project pin.".into()),
+                kind,
+                result: Err("The connection closed before confirming the project change.".into()),
             });
         }
         if let Some((_, browse_id, _)) = session.pending_folder.take() {
@@ -2667,10 +2706,10 @@ async fn run_socket(
                     events.send(Event::ProjectAdded { command_id: command_id.clone(), result: Err("Project creation could not be confirmed. Check the project list before retrying.".into()) });
                     false
                 });
-                session.pending_project_pins.retain(|_, (project_id, started)| {
+                session.pending_project_edits.retain(|_, (project_id, kind, started)| {
                     if started.elapsed() < REQUEST_TIMEOUT { return true; }
-                    events.send(Event::ProjectPinSettled { project_id: project_id.clone(),
-                        result: Err("The environment did not confirm the project pin in time.".into()) });
+                    events.send(Event::ProjectEditSettled { project_id: project_id.clone(), kind: *kind,
+                        result: Err("The environment did not confirm the project change in time.".into()) });
                     false
                 });
                 session.pending_project_clone_actions.retain(|_, started| {

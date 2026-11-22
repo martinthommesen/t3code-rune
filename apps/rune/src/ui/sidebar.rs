@@ -20,7 +20,7 @@ pub(super) mod project_badge;
 mod project_scope;
 mod provider_badge;
 
-pub(super) use project_scope::{overlay as project_scope_overlay, settle_project_pin};
+pub(super) use project_scope::overlay as project_scope_overlay;
 
 pub(super) fn most_recent_project(shell: &Shell) -> Option<&Project> {
     project_scope::ordered_projects(shell, false)
@@ -180,6 +180,14 @@ impl SidebarState {
 
     pub(super) fn enable_project_organization(&mut self) {
         self.scope.organize_projects = true;
+    }
+
+    pub(super) fn supports_project_organization(&self) -> bool {
+        self.scope.organize_projects
+    }
+
+    pub(super) fn settle_project_pin(&mut self, id: &str) -> bool {
+        self.scope.pending_pins.remove(id)
     }
 
     fn selected_project<'a>(&self, shell: &'a Shell) -> Option<&'a Project> {

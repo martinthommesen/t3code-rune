@@ -895,6 +895,7 @@ impl State {
         changed |= self.poll_project_browse();
         changed |= self.poll_question(clock);
         changed |= sidebar::poll_rename(self);
+        changed |= settings::poll_project(self);
         changed |= worktree_setup::poll(self, tx);
         if self.sidebar_open
             && self
@@ -990,9 +991,11 @@ impl State {
                     workspace.providers = Some(providers);
                 }
             }
-            Event::ProjectPinSettled { project_id, result } => {
-                sidebar::settle_project_pin(self, &project_id, result);
-            }
+            Event::ProjectEditSettled {
+                project_id,
+                kind,
+                result,
+            } => settings::settle_project_edit(self, &project_id, kind, result),
             Event::FolderBrowsed { browse_id, result } => self.folder_browsed(browse_id, result),
             Event::Thread { thread_id, entries } => {
                 conversation::command_row::entries_changed(self, &thread_id, &entries);
@@ -2159,6 +2162,7 @@ mod tests {
             projects: vec![Project {
                 id: "project".into(),
                 name: "Example".into(),
+                has_custom_title: false,
                 path: "/example".into(),
                 icon: None,
                 favicon_path: None,

@@ -8,7 +8,8 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 use super::{Colors, FILTER, Project, ProjectPicker, SEARCH, Shell, State, Workspace};
 use super::{control, normalized_search, project_badge};
-use crate::ui::Palette;
+use crate::connection::ProjectEdit;
+use crate::ui::{Palette, settings};
 
 const TRIGGER: &str = "project-filter";
 const SEARCH_FIELD: &str = "project-scope-search";
@@ -32,7 +33,7 @@ pub(super) struct ProjectScope {
     pub(super) selected: Vec<String>,
     pub(super) organize_projects: bool,
     order: Vec<String>,
-    pending_pins: HashSet<String>,
+    pub(super) pending_pins: HashSet<String>,
     hovered_pin: Option<String>,
     query: TextEdit,
     highlighted: Option<String>,
@@ -363,11 +364,21 @@ pub(in crate::ui) fn overlay(state: &State, palette: Palette, height: f32) -> Op
                     .grow(1.0)
                     .min_w(0.0),
             );
-        if let Choice::Project(project) = choice
-            && scope.organize_projects
-            && (highlighted || project.pinned_at.is_some())
-        {
-            option = option.child(pin_button(scope, project, muted));
+        if let Choice::Project(project) = choice {
+            if highlighted {
+                let id = project.id.clone();
+                option = option.child(settings::project_settings_gear(
+                    project,
+                    muted,
+                    move |state, tx| {
+                        close(state, tx, false);
+                        state.open_project_settings(&id, tx);
+                    },
+                ));
+            }
+            if scope.organize_projects && (highlighted || project.pinned_at.is_some()) {
+                option = option.child(pin_button(scope, project, muted));
+            }
         }
         list = list.child(option);
     }
@@ -516,35 +527,11 @@ fn toggle_pin(state: &mut State, id: &str, tx: &mut Tx) {
         && state.sidebar.scope.organize_projects
         && state.sidebar.scope.pending_pins.insert(id.to_owned())
     {
-        connection.set_project_pinned(id.to_owned(), project.pinned_at.is_none());
+        connection.edit_project(
+            id.to_owned(),
+            ProjectEdit::Pinned(project.pinned_at.is_none()),
+        );
         tx.focus(SEARCH_FIELD, false);
-    }
-}
-
-pub(in crate::ui) fn settle_project_pin(
-    state: &mut State,
-    project_id: &str,
-    result: Result<Box<Project>, String>,
-) {
-    state.sidebar.scope.pending_pins.remove(project_id);
-    match result {
-        Ok(updated) => {
-            if let Some(project) = state
-                .workspace
-                .as_mut()
-                .and_then(|workspace| workspace.shell.as_mut())
-                .and_then(|shell| {
-                    shell
-                        .projects
-                        .iter_mut()
-                        .find(|project| project.id == project_id)
-                })
-            {
-                project.pinned_at = updated.pinned_at;
-                project.updated_at = updated.updated_at;
-            }
-        }
-        Err(message) => state.project_notice = Some(message),
     }
 }
 

@@ -23,6 +23,8 @@ pub(crate) struct Project {
     pub(crate) id: String,
     #[serde(rename = "title")]
     pub(crate) name: String,
+    #[serde(rename = "hasCustomTitle", default)]
+    pub(crate) has_custom_title: bool,
     #[serde(rename = "workspaceRoot")]
     pub(crate) path: String,
     #[serde(rename = "projectIcon")]
