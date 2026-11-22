@@ -16,6 +16,7 @@ mod draft_model_picker;
 mod model_favorites;
 mod model_picker;
 mod resume;
+mod saved_reasoning;
 
 pub(super) use draft_model_picker::Picker as DraftModelPicker;
 pub(super) use model_favorites::Favorites as ModelFavorites;
@@ -242,17 +243,23 @@ fn surface(
                 && workspace.scratch_project.as_deref() != Some(*project) =>
         {
             draft_model_picker::Models::new(workspace, draft, project).map(|models| {
+                let target = draft_model_picker::Target::Draft((*project).to_owned());
                 let overlay = draft.model_picker.as_ref().map(|open| {
                     (
-                        draft_model_picker::dismissal(project, layout.viewport),
-                        models.popup(project, open, width, palette),
+                        draft_model_picker::dismissal(&target, layout.viewport),
+                        models.popup(&target, open, width, palette),
                     )
                 });
-                (models.trigger(project, overlay.is_some(), palette), overlay)
+                (models.trigger(&target, overlay.is_some(), palette), overlay)
             })
         }
         Target::Draft(_) => None,
         Target::Thread { .. } => thread.and_then(|thread| {
+            if let Some(controls) =
+                saved_reasoning::controls(workspace, thread, layout, width, palette)
+            {
+                return Some(controls);
+            }
             let model = claude_model(thread, native_claude_provider(workspace, thread)?)?;
             let target = model_picker::Target::Thread(thread.id.clone());
             let open = workspace
@@ -317,6 +324,7 @@ fn surface(
     let can_send = has_draft
         && !workspace.reconnecting
         && !draft.pending
+        && draft.pending_saved_reasoning.is_none()
         && !resuming
         && (editing_queue || (!unavailable && clone.is_none()))
         && workspace_ready;

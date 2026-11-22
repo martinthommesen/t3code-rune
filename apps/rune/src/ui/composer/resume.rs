@@ -147,6 +147,13 @@ impl State {
             return false;
         };
         let thread_id = &conversation.id;
+        if self
+            .drafts
+            .get(thread_id)
+            .is_some_and(|draft| draft.pending_saved_reasoning.is_some())
+        {
+            return false;
+        }
         let Some(run) = available(workspace, thread_id)
             .filter(|conversation| {
                 conversation.resume_pending.is_none() && conversation.queue_change_pending.is_none()

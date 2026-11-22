@@ -14,6 +14,7 @@ mod resume;
 mod runtime_approval;
 mod runtime_question;
 mod runtime_response;
+mod saved_reasoning;
 mod terminal;
 #[cfg(test)]
 mod tests;
@@ -202,6 +203,12 @@ pub(crate) enum Event {
         thread_id: String,
         stop: bool,
         queue_worktree: bool,
+        codex_reasoning: bool,
+    },
+    SavedReasoningSettled {
+        thread_id: String,
+        operation: Uuid,
+        result: Result<(), String>,
     },
     ThreadStopFailed {
         thread_id: String,
@@ -346,6 +353,7 @@ enum Command {
         thread_id: String,
         operation: Uuid,
     },
+    SetSavedReasoning(saved_reasoning::Edit),
     StopThread(String),
     RenameThread {
         thread_id: String,
@@ -1198,6 +1206,7 @@ struct ThreadSubscription {
     reported_questions: Option<Vec<PendingQuestion>>,
     reported_stop: Option<bool>,
     reported_queue_worktree: bool,
+    reported_codex_reasoning: bool,
     actions_request_id: Option<String>,
     actions_refresh_needed: bool,
     setup_request_id: Option<String>,
@@ -1273,6 +1282,7 @@ struct Session {
     pending_runtime_responses: HashMap<String, (RuntimeResponse, Instant)>,
     pending_stops: HashMap<String, (String, Instant)>,
     pending_title_edits: HashMap<String, (String, Instant)>,
+    pending_saved_reasoning: HashMap<String, saved_reasoning::Pending>,
     pending_setup_cancels: HashMap<String, (String, Instant)>,
     pending_workspace_retries: HashMap<String, (WorkspaceRetry, Instant)>,
     pending_projects: HashMap<String, (String, Instant, ProjectCreation)>,
@@ -1403,6 +1413,7 @@ impl Session {
             pending_runtime_responses: HashMap::new(),
             pending_stops: HashMap::new(),
             pending_title_edits: HashMap::new(),
+            pending_saved_reasoning: HashMap::new(),
             pending_setup_cancels: HashMap::new(),
             pending_workspace_retries: HashMap::new(),
             pending_projects: HashMap::new(),
@@ -1640,6 +1651,7 @@ impl Session {
             reported_questions: None,
             reported_stop: None,
             reported_queue_worktree: false,
+            reported_codex_reasoning: false,
             actions_request_id: None,
             actions_refresh_needed: false,
             setup_request_id: setup_request_id.clone(),
@@ -1849,6 +1861,7 @@ impl Session {
                 self.submit_archive_action(action, thread_id, operation, events)
                     .await?
             }
+            Command::SetSavedReasoning(edit) => self.set_saved_reasoning(edit, events).await?,
             Command::StopThread(thread_id) => {
                 let locally_available = self.thread.as_ref().is_some_and(|thread| {
                     thread.thread_id == thread_id && thread.reported_stop == Some(true)
@@ -2177,7 +2190,15 @@ impl Session {
                         && self.thread.as_ref().is_some_and(|thread| {
                             thread.thread_id == thread_id && thread.reported_queue_worktree
                         });
-                    let payload = prompt_payload(&thread_id, &prompt, queue, context.as_ref());
+                    let mut payload = prompt_payload(&thread_id, &prompt, queue, context.as_ref());
+                    if !queue
+                        && self.thread.as_ref().is_some_and(|thread| {
+                            thread.thread_id == thread_id && thread.reported_codex_reasoning
+                        })
+                        && let Some(selection) = self.shell.saved_codex_model(&thread_id)
+                    {
+                        payload["modelSelection"] = json!(selection);
+                    }
                     self.pending_prompts.insert(request_id.clone(), thread_id);
                     self.send_request(&request_id, "orchestration.dispatchCommand", payload)
                         .await?;
@@ -2526,6 +2547,7 @@ impl Session {
                                 .any(|thread| thread.providers.current_instance().is_some());
                         events.send(Event::Shell { projects, threads });
                     }
+                    self.finish_projected_saved_reasoning(events);
                 } else if self.project_clones_request_id.as_ref() == Some(&request_id) {
                     if let Some(clones) = values
                         .into_iter()
@@ -2716,6 +2738,10 @@ impl Session {
                     });
                     return Ok(());
                 }
+                if self.pending_saved_reasoning.contains_key(&request_id) {
+                    self.saved_reasoning_receipt(&request_id, exit.into_result(), events);
+                    return Ok(());
+                }
                 if let Some((thread_id, _)) = self.pending_title_edits.remove(&request_id) {
                     if let Err(message) = exit.into_result() {
                         events.send(Event::RequestError {
@@ -2806,15 +2832,19 @@ impl Session {
                     let actions = exit.into_result().unwrap_or(Value::Null);
                     let stop = actions["available"].as_bool().unwrap_or(false);
                     let queue_worktree = actions["queueWorktree"].as_bool().unwrap_or(false);
+                    let codex_reasoning = actions["codexReasoning"].as_bool().unwrap_or(false);
                     if thread.reported_stop != Some(stop)
                         || thread.reported_queue_worktree != queue_worktree
+                        || thread.reported_codex_reasoning != codex_reasoning
                     {
                         thread.reported_stop = Some(stop);
                         thread.reported_queue_worktree = queue_worktree;
+                        thread.reported_codex_reasoning = codex_reasoning;
                         events.send(Event::ThreadActions {
                             thread_id: thread.thread_id.clone(),
                             stop,
                             queue_worktree,
+                            codex_reasoning,
                         });
                     }
                     if std::mem::take(&mut thread.actions_refresh_needed) {
@@ -3131,6 +3161,11 @@ async fn run(
                 message: "Connection lost before confirmation. Check the conversation before sending again.".to_owned(),
             });
         }
+        for (_, pending) in session.pending_saved_reasoning.drain() {
+            events.send(pending.finish(Err(
+                "Could not confirm the model selection before the connection closed.".into(),
+            )));
+        }
         for (_, (thread_id, _)) in session.pending_title_edits.drain() {
             events.send(Event::RequestError {
                 thread_id,
@@ -3235,6 +3270,11 @@ async fn run_socket(
                 session.pending_setup_cancels.retain(|_, (thread_id, started)| {
                     if started.elapsed() < REQUEST_TIMEOUT { return true; }
                     events.send(Event::WorktreeSetupCancelSettled { thread_id: thread_id.clone(), result: Err("The environment did not confirm cancellation in time.".into()) });
+                    false
+                });
+                session.pending_saved_reasoning.retain(|_, pending| {
+                    if pending.started.elapsed() < REQUEST_TIMEOUT { return true; }
+                    events.send(pending.finish(Err("The environment did not confirm the model selection in time.".into())));
                     false
                 });
                 session.pending_title_edits.retain(|_, (thread_id, started)| {

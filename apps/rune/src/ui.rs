@@ -70,6 +70,7 @@ struct Conversation {
     approvals: approval::Approvals,
     stop_available: bool,
     queue_worktree_available: bool,
+    saved_reasoning_available: bool,
     stop_requested_at: Option<Instant>,
     worktree_setup: Option<Box<WorktreeSetup>>,
     worktree_cancel_pending: bool,
@@ -78,6 +79,7 @@ struct Conversation {
     worktree_background: worktree_setup::Disclosure,
     preparation_retries: worktree_setup::PendingRetries,
     model_picker: Option<TextEdit>,
+    saved_model_picker: Option<composer::DraftModelPicker>,
 }
 
 struct QueuedEdit {
@@ -228,6 +230,7 @@ struct Draft {
     model_policy: Option<crate::connection::DraftModelPolicy>,
     model_choice: Option<crate::connection::ModelSelection>,
     model_picker: Option<composer::DraftModelPicker>,
+    pending_saved_reasoning: Option<uuid::Uuid>,
     workspace_mode: WorkspaceMode,
     workspace_edited: bool,
     base_ref: Option<String>,
@@ -623,6 +626,7 @@ impl State {
                     approvals: approval::Approvals::default(),
                     stop_available: false,
                     queue_worktree_available: false,
+                    saved_reasoning_available: false,
                     stop_requested_at: None,
                     worktree_setup: None,
                     worktree_cancel_pending: false,
@@ -631,6 +635,7 @@ impl State {
                     worktree_background: worktree_setup::Disclosure::default(),
                     preparation_retries: worktree_setup::PendingRetries::default(),
                     model_picker: None,
+                    saved_model_picker: None,
                 })),
             }),
             Destination::NewThread(id) => {
@@ -1029,7 +1034,10 @@ impl State {
             return;
         };
         let draft = self.drafts.get_mut(id).expect("an open thread has a draft");
-        if draft.pending || draft.edit.text.trim().is_empty() {
+        if draft.pending
+            || draft.pending_saved_reasoning.is_some()
+            || draft.edit.text.trim().is_empty()
+        {
             return;
         }
         draft.pending = true;
@@ -1568,14 +1576,26 @@ impl State {
                 thread_id,
                 stop,
                 queue_worktree,
+                codex_reasoning,
             } => {
                 if let Some(conversation) = self.conversation_mut(&thread_id) {
                     conversation.stop_available = stop;
                     conversation.queue_worktree_available = queue_worktree;
+                    conversation.saved_reasoning_available = codex_reasoning;
+                    if !codex_reasoning {
+                        conversation.saved_model_picker = None;
+                    }
                     if !stop {
                         conversation.stop_requested_at = None;
                     }
                 }
+            }
+            Event::SavedReasoningSettled {
+                thread_id,
+                operation,
+                result,
+            } => {
+                self.settle_saved_reasoning(&thread_id, operation, result);
             }
             Event::ThreadStopFailed { thread_id, message } => {
                 if let Some(conversation) = self.conversation_mut(&thread_id) {

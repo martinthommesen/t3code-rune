@@ -6,6 +6,7 @@ pub(super) mod context_handoff;
 mod finish_effect;
 pub(super) mod interrupt_effect;
 mod manual_continuation;
+pub(super) mod model_selection;
 mod projection;
 pub(super) mod provider_session;
 pub(super) mod provider_turn;
@@ -159,6 +160,19 @@ struct ThreadProjection {
     snoozed_until: Option<String>,
 }
 
+impl ThreadProjection {
+    fn supports_root_turn(&self, thread_id: &str, workspace: &Path) -> bool {
+        self.worktree_path.is_none()
+            && self.forked_from.is_none()
+            && self.lineage.parent_thread_id.is_none()
+            && self.lineage.root_thread_id == thread_id
+            && self.history_origin.as_deref() != Some("v1_import")
+            && self.settled_override.is_none()
+            && self.snoozed_until.is_none()
+            && workspace.is_dir()
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ThreadLineage {
@@ -301,7 +315,6 @@ impl TurnCommands {
             .iter()
             .any(|value| value.trim().is_empty())
             || !attachments.is_empty()
-            || model_selection.is_some()
             || title_seed.is_some()
         {
             return Err(TurnCommandError::Unsupported(
@@ -326,17 +339,19 @@ impl TurnCommands {
             ));
         };
         let thread: ThreadProjection = serde_json::from_value(thread_payload.clone())?;
-        if thread.worktree_path.is_some()
-            || thread.forked_from.is_some()
-            || thread.lineage.parent_thread_id.is_some()
-            || thread.lineage.root_thread_id != thread_id
-            || thread.history_origin.as_deref() == Some("v1_import")
-            || thread.settled_override.is_some()
-            || thread.snoozed_until.is_some()
-            || !workspace_root.is_dir()
-        {
+        if !thread.supports_root_turn(&thread_id, &workspace_root) {
             return Err(TurnCommandError::Unsupported(
                 "This command requires a root-workspace thread with an existing workspace directory.",
+            ));
+        }
+        if let Some(requested) = &model_selection
+            && (requested != &thread.model_selection
+                || !model_selection::has_native_codex_thread(provider_thread.as_ref())
+                || !validate_model_selection(requested)
+                    .is_ok_and(|model| model.reasoning_effort.is_some()))
+        {
+            return Err(TurnCommandError::Unsupported(
+                "The prompt's model selection must match the saved Codex reasoning effort.",
             ));
         }
         let provider = match thread_payload["providerInstanceId"].as_str() {
@@ -509,7 +524,7 @@ struct IdleWorkspace {
 }
 
 fn idle_workspace(
-    transaction: &Transaction<'_>,
+    transaction: &Connection,
     thread_id: &str,
     claude_available: bool,
 ) -> Result<Option<IdleWorkspace>, TurnCommandError> {

@@ -8,8 +8,10 @@ use crate::connection::{
     WorkspaceMode,
 };
 
+use t3_rune::providers::codex::ReasoningEffort;
+
 use super::super::sidebar::provider_badge;
-use super::super::{Draft, Palette, State, Workspace};
+use super::super::{Draft, Palette, State, Thread, Workspace};
 use super::codex_effort::{self, EffortPicker};
 use super::model_favorites::{self, Favorites};
 use super::model_picker::{self, CHECK, Colors, DETAILS, LABEL, SEARCH};
@@ -18,6 +20,34 @@ const TRIGGER: &str = "draft-model-picker";
 const QUERY: &str = "draft-model-search";
 const EFFORT: &str = "draft-model-effort";
 const PROVIDERS: [DraftProvider; 2] = [DraftProvider::Codex, DraftProvider::Claude];
+
+#[derive(Clone)]
+pub(super) enum Target {
+    Draft(String),
+    Saved(String),
+}
+
+impl Target {
+    fn slot<'a>(&self, state: &'a mut State) -> Option<&'a mut Option<Picker>> {
+        match self {
+            Self::Draft(project) => {
+                Some(&mut state.new_thread_drafts.get_mut(project)?.model_picker)
+            }
+            Self::Saved(thread) => Some(&mut state.conversation_mut(thread)?.saved_model_picker),
+        }
+    }
+
+    fn picker<'a>(&self, state: &'a mut State) -> Option<&'a mut Picker> {
+        self.slot(state)?.as_mut()
+    }
+
+    pub(super) fn choose_reasoning(&self, state: &mut State, effort: ReasoningEffort) {
+        match self {
+            Self::Draft(project) => state.choose_codex_reasoning(project, effort),
+            Self::Saved(thread) => state.choose_saved_reasoning(thread, effort),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Tab {
@@ -97,7 +127,7 @@ pub(super) struct Models<'a> {
     selected: Option<Choice<'a>>,
     codex_effort: Option<EffortPicker>,
     favorites: &'a Favorites,
-    full_access: bool,
+    permissions: Option<&'static str>,
 }
 
 impl<'a> Models<'a> {
@@ -160,8 +190,41 @@ impl<'a> Models<'a> {
             codex_effort,
             choices,
             favorites: &workspace.model_favorites,
-            full_access: policy.full_access(),
+            permissions: policy.full_access().then_some("Full access"),
         })
+    }
+
+    pub(super) fn for_saved(workspace: &'a Workspace, thread: &'a Thread) -> Option<Self> {
+        let selection = thread.providers.codex_reasoning_model()?;
+        let metadata = workspace
+            .providers
+            .as_ref()?
+            .get(DraftProvider::Codex.instance_id())?;
+        if metadata.driver != "codex" || metadata.readiness() != ProviderReadiness::Ready {
+            return None;
+        }
+        let model = metadata.model(selection.model())?;
+        let selected = Choice {
+            provider: DraftProvider::Codex,
+            metadata,
+            model,
+        };
+        Some(Self {
+            choices: vec![selected],
+            selected: Some(selected),
+            codex_effort: Some(EffortPicker::for_model(
+                model,
+                selection.reasoning_effort(),
+            )?),
+            favorites: &workspace.model_favorites,
+            permissions: thread.providers.permissions_label(),
+        })
+    }
+
+    pub(super) fn supports_effort(&self, effort: ReasoningEffort) -> bool {
+        self.codex_effort
+            .as_ref()
+            .is_some_and(|picker| picker.supports(effort))
     }
 
     pub(super) fn has_selection(&self) -> bool {
@@ -169,12 +232,12 @@ impl<'a> Models<'a> {
     }
 
     pub(super) fn full_access(&self) -> bool {
-        self.full_access
+        self.permissions == Some("Full access")
     }
 
-    pub(super) fn trigger(&self, project: &str, open: bool, palette: Palette) -> El {
+    pub(super) fn trigger(&self, target: &Target, open: bool, palette: Palette) -> El {
         let color = Colors::new(palette.dark);
-        let project = project.to_owned();
+        let target = target.clone();
         let initial = self.selected.unwrap_or(self.choices[0]);
         let provider = initial.provider;
         let favorites = self.choices.iter().any(|choice| {
@@ -228,10 +291,10 @@ impl<'a> Models<'a> {
             .fill(color.control)
             .hover(color.hover)
             .on_press_tx(move |state: &mut State, tx| {
-                if let Some(draft) = state.new_thread_drafts.get_mut(&project)
-                    && draft.model_picker.take().is_none()
+                if let Some(picker) = target.slot(state)
+                    && picker.take().is_none()
                 {
-                    draft.model_picker = Some(Picker::new(provider, legacy, favorites));
+                    *picker = Some(Picker::new(provider, legacy, favorites));
                     tx.focus_when_shown(QUERY, false);
                 }
             });
@@ -249,10 +312,16 @@ impl<'a> Models<'a> {
         trigger
     }
 
-    pub(super) fn popup(&self, project: &str, picker: &Picker, lane: f32, palette: Palette) -> El {
+    pub(super) fn popup(
+        &self,
+        target: &Target,
+        picker: &Picker,
+        lane: f32,
+        palette: Palette,
+    ) -> El {
         let color = Colors::new(palette.dark);
-        let edit_project = project.to_owned();
-        let input_project = project.to_owned();
+        let edit_target = target.clone();
+        let input_target = target.clone();
         let needle = picker.query.text.trim().to_lowercase();
         let searching = !needle.is_empty();
         let expanded = match picker.tab {
@@ -295,11 +364,11 @@ impl<'a> Models<'a> {
                     continue;
                 }
             }
-            rows = rows.child(self.model_row(project, choice, shelf, palette, color));
+            rows = rows.child(self.model_row(target, choice, shelf, palette, color));
             results += 1;
         }
         if legacy {
-            let project = project.to_owned();
+            let target = target.clone();
             rows = rows.child(
                 row()
                     .w_full()
@@ -314,7 +383,7 @@ impl<'a> Models<'a> {
                     .focus_ring(1.0, -1.0, palette.accent)
                     .hover(color.hover)
                     .on_press_tx(move |state: &mut State, _| {
-                        if let Some(picker) = picker_mut(state, &project)
+                        if let Some(picker) = target.picker(state)
                             && let Tab::Provider(provider) = picker.tab
                         {
                             let index = provider_index(provider);
@@ -363,12 +432,10 @@ impl<'a> Models<'a> {
                             .single_line()
                             .placeholder("Search models...", color.muted)
                             .on_edit(edit_access(move |state: &mut State| {
-                                &mut picker_mut(state, &edit_project)
-                                    .expect("open model picker")
-                                    .query
+                                &mut edit_target.picker(state).expect("open model picker").query
                             }))
                             .on_input_key(move |state: &mut State, event, tx| {
-                                escape(state, &input_project, event, tx)
+                                escape(state, &input_target, event, tx)
                             }),
                     ),
             )
@@ -390,7 +457,7 @@ impl<'a> Models<'a> {
         let columns = width >= 420.0;
         let details = if let Some(effort) = &self.codex_effort {
             effort.view(
-                project,
+                target,
                 self.selected
                     .expect("Codex reasoning model")
                     .model
@@ -416,7 +483,7 @@ impl<'a> Models<'a> {
         };
         let mut body = row().w_full().min_h(0.0).grow(1.0);
         if !searching {
-            body = body.child(self.provider_tabs(project, picker, palette, color));
+            body = body.child(self.provider_tabs(target, picker, palette, color));
         }
         body = if columns {
             body.child(list)
@@ -424,17 +491,23 @@ impl<'a> Models<'a> {
         } else {
             body.child(col().grow(1.0).min_h(0.0).child(list).child(details))
         };
-        let project = project.to_owned();
+        let target = target.clone();
         let frame = model_picker::popup_frame("draft-model-popup", "Models", lane, palette, body)
-            .on_key(move |state: &mut State, event, tx| escape(state, &project, event, tx));
-        if self.full_access {
-            frame.child(model_picker::permissions_footer("Full access", color))
+            .on_key(move |state: &mut State, event, tx| escape(state, &target, event, tx));
+        if let Some(label) = self.permissions {
+            frame.child(model_picker::permissions_footer(label, color))
         } else {
             frame
         }
     }
 
-    fn provider_tabs(&self, project: &str, picker: &Picker, palette: Palette, color: Colors) -> El {
+    fn provider_tabs(
+        &self,
+        target: &Target,
+        picker: &Picker,
+        palette: Palette,
+        color: Colors,
+    ) -> El {
         let mut side = col()
             .w(44.0)
             .h_full()
@@ -443,7 +516,7 @@ impl<'a> Models<'a> {
             .gap(4.0)
             .border_sides([0.0, 1.0, 0.0, 0.0], color.line)
             .child(provider_tab(
-                project,
+                target,
                 Tab::Favorites,
                 "Favorites",
                 model_favorites::tab_icon(color),
@@ -461,7 +534,7 @@ impl<'a> Models<'a> {
             };
             let (name, _) = provider_badge::identity(choice.metadata, palette.dark, color.ink);
             side = side.child(provider_tab(
-                project,
+                target,
                 Tab::Provider(provider),
                 &name,
                 choice.mark(palette, color, 20.0),
@@ -474,7 +547,7 @@ impl<'a> Models<'a> {
 
     fn model_row(
         &self,
-        project: &str,
+        target: &Target,
         choice: Choice<'_>,
         shelf: bool,
         palette: Palette,
@@ -483,7 +556,8 @@ impl<'a> Models<'a> {
         let checked = self.selected.is_some_and(|selected| {
             choice.provider == selected.provider && choice.model.slug == selected.model.slug
         });
-        let project = project.to_owned();
+        let target = target.clone();
+        let current_effort = self.codex_effort.as_ref().and_then(EffortPicker::current);
         let provider = choice.provider;
         let slug = choice.model.slug.clone();
         let legacy = choice.model.is_legacy;
@@ -507,29 +581,34 @@ impl<'a> Models<'a> {
             .hover(color.hover)
             .hover_group()
             .on_press_tx(move |state: &mut State, tx| {
-                if !checked {
-                    state.choose_draft_model(&project, provider, &slug);
+                let selected = match &target {
+                    Target::Draft(project) => {
+                        if !checked {
+                            state.choose_draft_model(project, provider, &slug);
+                        }
+                        state
+                            .new_thread_drafts
+                            .get(project)
+                            .and_then(Draft::selected_model)
+                            .and_then(ModelSelection::reasoning_effort)
+                    }
+                    Target::Saved(_) => current_effort,
+                };
+                let Some(picker) = target.picker(state) else {
+                    return;
+                };
+                if picker.tab != Tab::Favorites {
+                    picker.tab = Tab::Provider(provider);
                 }
-                if let Some(draft) = state.new_thread_drafts.get_mut(&project) {
-                    let selected = draft
-                        .selected_model()
-                        .and_then(ModelSelection::reasoning_effort);
-                    let Some(picker) = &mut draft.model_picker else {
-                        return;
-                    };
-                    if picker.tab != Tab::Favorites {
-                        picker.tab = Tab::Provider(provider);
-                    }
-                    picker.expanded[provider_index(provider)] |= legacy;
-                    if provider == DraftProvider::Claude {
-                        tx.focus_when_shown(EFFORT, tx.focus_visible());
-                    } else if let Some(levels) = &codex_levels {
-                        let effort = selected
-                            .filter(|value| levels.options.contains(value))
-                            .or(levels.default)
-                            .unwrap_or(levels.options[0]);
-                        tx.focus_when_shown(codex_effort::key(effort), tx.focus_visible());
-                    }
+                picker.expanded[provider_index(provider)] |= legacy;
+                if provider == DraftProvider::Claude {
+                    tx.focus_when_shown(EFFORT, tx.focus_visible());
+                } else if let Some(levels) = &codex_levels {
+                    let effort = selected
+                        .filter(|value| levels.options.contains(value))
+                        .or(levels.default)
+                        .unwrap_or(levels.options[0]);
+                    tx.focus_when_shown(codex_effort::key(effort), tx.focus_visible());
                 }
             })
             .child(choice.mark(palette, color, 16.0))
@@ -548,14 +627,14 @@ impl<'a> Models<'a> {
 }
 
 fn provider_tab(
-    project: &str,
+    target: &Target,
     tab: Tab,
     label: &str,
     artwork: El,
     picker: &Picker,
     palette: Palette,
 ) -> El {
-    let project = project.to_owned();
+    let target = target.clone();
     let color = Colors::new(palette.dark);
     let selected = picker.tab == tab;
     el().key(format!("draft-model-provider-{}", tab.key()))
@@ -574,7 +653,7 @@ fn provider_tab(
         })
         .hover(color.hover)
         .on_press_tx(move |state: &mut State, tx| {
-            if let Some(picker) = picker_mut(state, &project) {
+            if let Some(picker) = target.picker(state) {
                 picker.tab = tab;
                 tx.scroll_to_instant("draft-model-rows", 0.0, 0.0);
                 tx.focus_when_shown(QUERY, tx.focus_visible());
@@ -583,36 +662,28 @@ fn provider_tab(
         .child(artwork)
 }
 
-fn picker_mut<'a>(state: &'a mut State, project: &str) -> Option<&'a mut Picker> {
-    state
-        .new_thread_drafts
-        .get_mut(project)?
-        .model_picker
-        .as_mut()
-}
-
-pub(super) fn dismissal(project: &str, viewport: [f32; 2]) -> El {
-    let project = project.to_owned();
+pub(super) fn dismissal(target: &Target, viewport: [f32; 2]) -> El {
+    let target = target.clone();
     el().key("draft-model-dismiss")
         .absolute(-viewport[0], -viewport[1])
         .size(2.0 * viewport[0], 2.0 * viewport[1])
         .paint_order(2)
         .a11y_hidden()
-        .on_background_press_tx(move |state: &mut State, tx| close(state, &project, tx))
+        .on_background_press_tx(move |state: &mut State, tx| close(state, &target, tx))
 }
 
-fn escape(state: &mut State, project: &str, event: &KeyEvent, tx: &mut Tx) -> bool {
+fn escape(state: &mut State, target: &Target, event: &KeyEvent, tx: &mut Tx) -> bool {
     if event.key == Key::Escape {
-        close(state, project, tx);
+        close(state, target, tx);
         true
     } else {
         false
     }
 }
 
-fn close(state: &mut State, project: &str, tx: &mut Tx) {
-    if let Some(draft) = state.new_thread_drafts.get_mut(project) {
-        draft.model_picker = None;
+fn close(state: &mut State, target: &Target, tx: &mut Tx) {
+    if let Some(picker) = target.slot(state) {
+        *picker = None;
     }
     tx.focus_when_shown(TRIGGER, tx.focus_visible());
 }

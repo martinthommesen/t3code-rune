@@ -4,6 +4,7 @@ mod subprocess {
     use std::os::unix::fs::PermissionsExt;
 
     use serde_json::{Value, json};
+    use t3_rune::providers::codex::ReasoningEffort;
 
     use super::super::*;
     use crate::server::turn_commands::tests::{COMMAND, Fixture, THREAD, command, command_payload};
@@ -799,7 +800,7 @@ set -eu
 
     #[tokio::test]
     async fn sends_a_second_prompt_to_the_same_loaded_codex_thread() {
-        verify_two_turn_conversation(false).await;
+        verify_two_turn_conversation(false, None).await;
     }
 
     #[tokio::test]
@@ -2264,15 +2265,34 @@ set -eu
 
     #[tokio::test]
     async fn resumes_the_same_saved_codex_thread_after_releasing_the_process() {
-        verify_two_turn_conversation(true).await;
+        verify_two_turn_conversation(true, None).await;
     }
 
-    async fn verify_two_turn_conversation(restart: bool) {
+    #[tokio::test]
+    async fn applies_saved_reasoning_effort_to_the_same_resumed_native_thread() {
+        verify_two_turn_conversation(true, Some(ReasoningEffort::Low)).await;
+    }
+
+    async fn verify_two_turn_conversation(restart: bool, changed_effort: Option<ReasoningEffort>) {
         let fixture = Fixture::new();
         let commands = fixture.commands();
         let (first_phase, second_phase) = resume_replay_frames();
         let first_text = replay_prompt(&first_phase);
         let second_text = replay_prompt(&second_phase);
+        if changed_effort.is_some() {
+            fixture
+                .connection()
+                .execute(
+                    "UPDATE orchestration_v2_projection_threads
+                 SET payload_json = json_set(payload_json, '$.modelSelection', json(?1))
+                 WHERE thread_id = ?2",
+                    rusqlite::params![
+                        reasoning_selection(ReasoningEffort::High).to_string(),
+                        THREAD
+                    ],
+                )
+                .unwrap();
+        }
         let mut first_payload = command_payload();
         first_payload["text"] = json!(first_text);
         let first = commands
@@ -2298,7 +2318,14 @@ set -eu
         first_script.push(char::from(10));
         let (changes, _) = broadcast::channel(32);
         let settings = settings_for_script(&fixture, &first_script);
-        let mut worker = TurnWorker::spawn(commands.clone(), settings, changes.clone());
+        if changed_effort.is_some() {
+            assert!(
+                !commands
+                    .can_change_codex_reasoning(THREAD, &settings.read().unwrap())
+                    .unwrap()
+            );
+        }
+        let mut worker = TurnWorker::spawn(commands.clone(), settings.clone(), changes.clone());
         worker.sender().wake();
         wait_for_run(&fixture, "completed").await;
         let connection = fixture.connection();
@@ -2311,6 +2338,9 @@ set -eu
             )
             .unwrap();
 
+        if let Some(effort) = changed_effort {
+            change_saved_reasoning(&commands, &settings, &connection, effort);
+        }
         if restart {
             worker.shutdown().await.unwrap();
             TurnWorker::recover_before_spawn(&commands, &changes).unwrap();
@@ -2340,6 +2370,15 @@ set -eu
         next["commandId"] = "follow-up".into();
         next["messageId"] = "message:follow-up".into();
         next["text"] = json!(second_text);
+        if let Some(effort) = changed_effort {
+            next["modelSelection"] = reasoning_selection(ReasoningEffort::High);
+            assert!(
+                commands
+                    .dispatch(serde_json::from_value(next.clone()).unwrap())
+                    .is_err()
+            );
+            next["modelSelection"] = reasoning_selection(effort);
+        }
         let next = commands
             .dispatch(serde_json::from_value(next).unwrap())
             .unwrap();
@@ -2410,6 +2449,16 @@ set -eu
         assert_eq!(wire_turns.len(), 2);
         assert_eq!(wire_turns[0]["params"]["input"][0]["text"], first_text);
         assert_eq!(wire_turns[1]["params"]["input"][0]["text"], second_text);
+        if let Some(effort) = changed_effort {
+            for (turn, expected) in wire_turns.iter().zip([ReasoningEffort::High, effort]) {
+                assert_eq!(turn["params"]["model"], ReasoningEffort::MODEL_ID);
+                assert_eq!(turn["params"]["effort"], expected.as_str());
+                assert_eq!(
+                    turn["params"]["collaborationMode"]["settings"]["reasoning_effort"],
+                    expected.as_str()
+                );
+            }
+        }
         assert!(
             wire_turns
                 .iter()
@@ -2429,6 +2478,56 @@ set -eu
                 .count(),
             usize::from(restart)
         );
+    }
+
+    fn reasoning_selection(effort: ReasoningEffort) -> Value {
+        json!({"instanceId":"codex","model":ReasoningEffort::MODEL_ID,"options":[
+            {"id":ReasoningEffort::OPTION_ID,"value":effort}
+        ]})
+    }
+
+    fn change_saved_reasoning(
+        commands: &TurnCommands,
+        settings: &SettingsFile,
+        connection: &rusqlite::Connection,
+        effort: ReasoningEffort,
+    ) {
+        let settings = settings.read().unwrap();
+        let selection = reasoning_selection(effort);
+        let input = json!({
+            "type":"thread.model-selection.set","commandId":"saved-reasoning",
+            "threadId":THREAD,"modelSelection":selection,
+        });
+        assert!(
+            commands
+                .can_change_codex_reasoning(THREAD, &settings)
+                .unwrap()
+        );
+        let (sequence, committed) = commands
+            .set_codex_reasoning(input.clone(), &settings)
+            .unwrap();
+        assert!(committed);
+        assert_eq!(
+            commands.set_codex_reasoning(input, &settings).unwrap(),
+            (sequence, false)
+        );
+        assert_eq!(connection.query_row(
+            "SELECT event.event_type, event.actor_kind, receipt.command_type, receipt.status,
+                    event.payload_json = thread.payload_json,
+                    json_extract(thread.payload_json, '$.modelSelection'),
+                    (SELECT COUNT(*) FROM orchestration_v2_effect_outbox WHERE command_id = event.command_id)
+             FROM orchestration_events AS event
+             JOIN orchestration_command_receipts AS receipt ON receipt.result_sequence = event.sequence
+             JOIN orchestration_v2_projection_threads AS thread ON thread.thread_id = event.stream_id
+             WHERE event.sequence = ?1",
+            [sequence],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?, row.get::<_, String>(3)?,
+                row.get::<_, bool>(4)?, row.get::<_, String>(5)?, row.get::<_, i64>(6)?)),
+        ).unwrap(), (
+            "thread.model-selection-updated".into(), "server".into(),
+            "thread.model-selection.set".into(), "accepted".into(), true, selection.to_string(), 0,
+        ));
     }
 
     fn resume_replay_frames() -> (Vec<Value>, Vec<Value>) {

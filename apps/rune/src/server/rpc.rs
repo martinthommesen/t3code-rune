@@ -1303,7 +1303,18 @@ fn response(
                 .is_some_and(|local| local.turns.can_stop_thread(thread_id).unwrap_or(false));
             let queue_worktree = permitted
                 .is_some_and(|local| local.turns.can_queue_worktree(thread_id).unwrap_or(false));
-            success(id, json!({"available":stop,"queueWorktree":queue_worktree}))
+            let codex_reasoning = permitted.is_some_and(|local| {
+                local.settings.read().is_ok_and(|settings| {
+                    local
+                        .turns
+                        .can_change_codex_reasoning(thread_id, &settings)
+                        .unwrap_or(false)
+                })
+            });
+            success(
+                id,
+                json!({"available":stop,"queueWorktree":queue_worktree,"codexReasoning":codex_reasoning}),
+            )
         }
         _ => failure(
             id,
@@ -1507,6 +1518,37 @@ fn dispatch_thread(
     }
     if matches!(command_type, "queued-run.edit" | "queued-run.cancel") {
         return queued_run::dispatch(local, id, &payload, &command_id, command_type);
+    }
+    if command_type == super::turn_commands::model_selection::COMMAND {
+        let thread_id = payload["threadId"].as_str().unwrap_or_default().to_owned();
+        let result = local
+            .settings
+            .read()
+            .map_err(|error| error.to_string())
+            .and_then(|settings| {
+                local
+                    .turns
+                    .set_codex_reasoning(payload, &settings)
+                    .map_err(|error| error.to_string())
+            });
+        return match result {
+            Ok((sequence, committed)) => {
+                if committed {
+                    let _ = local
+                        .projection_changes
+                        .send(ProjectionChange::Thread(thread_id));
+                }
+                success(id, json!({"sequence":sequence}))
+            }
+            Err(message) => failure(
+                id,
+                RpcError::OrchestrationV2DispatchCommandError {
+                    command_id: &command_id,
+                    command_type: super::turn_commands::model_selection::COMMAND,
+                    message: &message,
+                },
+            ),
+        };
     }
     if matches!(
         command_type,

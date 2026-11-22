@@ -174,6 +174,24 @@ impl ThreadProviders {
         selection.plain_model()
     }
 
+    pub(crate) fn codex_reasoning_model(&self) -> Option<&ModelSelection> {
+        let selection = self.model_selection.as_ref()?;
+        (self.current_instance() == Some("codex")
+            && selection.instance_id() == "codex"
+            && selection.model() == t3_rune::providers::codex::ReasoningEffort::MODEL_ID)
+            .then_some(selection)
+    }
+
+    pub(crate) fn permissions_label(&self) -> Option<&'static str> {
+        match self.runtime_mode.as_deref()? {
+            "approval-required" => Some("Supervised"),
+            "auto-accept-edits" => Some("Auto-accept edits"),
+            "auto" => Some("Auto"),
+            "full-access" => Some("Full access"),
+            _ => None,
+        }
+    }
+
     pub(crate) fn current_instance(&self) -> Option<&str> {
         let model = self
             .model_selection
@@ -346,6 +364,16 @@ pub(crate) struct Shell {
 }
 
 impl Shell {
+    pub(super) fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    pub(super) fn saved_codex_model(&self, thread_id: &str) -> Option<&ModelSelection> {
+        let row = self.threads.iter().find(|row| row.thread.id == thread_id)?;
+        let selection = row.thread.providers.codex_reasoning_model()?;
+        selection.reasoning_effort().map(|_| selection)
+    }
+
     pub(crate) fn apply(&mut self, value: Value) -> Result<bool, serde_json::Error> {
         let changed = match serde_json::from_value(value)? {
             ShellItem::Snapshot {

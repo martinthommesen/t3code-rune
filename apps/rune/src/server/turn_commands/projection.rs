@@ -10,7 +10,7 @@ pub(super) fn apply(
 ) -> rusqlite::Result<()> {
     let encoded = payload.to_string();
     match event_type {
-        "thread.metadata-updated" => {
+        "thread.metadata-updated" | "thread.model-selection-updated" => {
             transaction.execute(
                 "UPDATE orchestration_v2_projection_threads
                      SET updated_at = json_extract(?1, '$.updatedAt'), payload_json = ?1
