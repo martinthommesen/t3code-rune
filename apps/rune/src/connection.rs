@@ -1750,7 +1750,7 @@ impl Session {
                             && thread
                                 .reported_queue
                                 .iter()
-                                .any(|message| message.run_id == mutation.run_id())
+                                .any(|message| mutation.available(message))
                     });
                 if !available {
                     events.send(Event::QueueMutationSettled {

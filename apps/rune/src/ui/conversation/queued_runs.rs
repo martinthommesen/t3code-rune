@@ -1,4 +1,4 @@
-use rune::{El, Icon, TextEdit, Tx, col, el, icon, row, text};
+use rune::{El, Icon, TextEdit, TextStyle, Tx, col, el, icon, row, text};
 use uuid::Uuid;
 
 use super::{Colors, Conversation, SUMMARY_TEXT, State, Workspace};
@@ -6,6 +6,7 @@ use crate::connection::{QueueMutation, QueuedMessage};
 use crate::ui::{QueuedEdit, button};
 
 const VISIBLE_ROWS: usize = 3;
+const ACTION_TEXT: TextStyle = TextStyle::new(12.0, 500.0).lh(16.0);
 
 pub(super) fn view(
     conversation: &Conversation,
@@ -116,6 +117,12 @@ static REMOVE: Icon = Icon {
     body: r#"<path d="m18 6-12 12M6 6l12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>"#,
 };
 
+static ARROW_UP: Icon = Icon {
+    name: "queue-arrow-up",
+    view: 24.0,
+    body: r#"<path d="M12 19V5M5 12l7-7 7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+
 fn can_change(workspace: &Workspace, thread_id: &str) -> bool {
     workspace.native_stop
         && workspace.prompt_writes
@@ -134,9 +141,10 @@ fn controls(
     let id = conversation.id.clone();
     let run_id = queued.run_id.clone();
     let ready = conversation.queue_change_pending.is_none();
-    let actions = row().center_y().gap(4.0);
     if editing {
-        actions
+        row()
+            .center_y()
+            .gap(4.0)
             .child(
                 text("Editing in the composer")
                     .font(SUMMARY_TEXT)
@@ -154,6 +162,36 @@ fn controls(
                 },
             ))
     } else {
+        let mut actions = row().center_y().gap(2.0);
+        if queued.can_send_now {
+            let id = id.clone();
+            let run_id = run_id.clone();
+            actions = actions.child(
+                row()
+                    .key(format!("send-queue-{run_id}"))
+                    .role("button")
+                    .label("Send now")
+                    .help("Start a turn with this message")
+                    .size(87.0, 24.0)
+                    .center()
+                    .gap(4.0)
+                    .radius(6.0)
+                    .hover(colors.accent)
+                    .disabled(!ready)
+                    .focusable(ready)
+                    .focus_ring(2.0, -1.0, colors.fallbacks.accent)
+                    .on_press(move |state: &mut State| {
+                        state.mutate_queued_message(
+                            &id,
+                            QueueMutation::SendNow {
+                                run_id: run_id.clone(),
+                            },
+                        );
+                    })
+                    .child(icon(&ARROW_UP, 14.0).color(colors.muted).a11y_hidden())
+                    .child(text("Send now").font(ACTION_TEXT).color(colors.muted)),
+            );
+        }
         let edit = action(
             format!("edit-queue-{}", queued.run_id),
             "Edit queued message",
@@ -276,11 +314,10 @@ impl State {
         let editing = matches!(mutation, QueueMutation::Edit { .. });
         let Some(conversation) = self.conversation_mut(thread_id).filter(|conversation| {
             conversation.queue_change_pending.is_none()
-                && conversation.queued.iter().any(|queued| {
-                    queued.worktree_queue
-                        && queued.run_id == mutation.run_id()
-                        && (!editing || queued.text_editable)
-                })
+                && conversation
+                    .queued
+                    .iter()
+                    .any(|queued| mutation.available(queued))
         }) else {
             return;
         };
