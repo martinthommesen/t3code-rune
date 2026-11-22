@@ -317,7 +317,10 @@ impl Service {
         let Some(file) = not_found(fs::canonicalize(path))? else {
             return Ok(None);
         };
-        Ok((is_file(&file)? && !self.internal_path(&file)).then_some(file))
+        Ok(
+            (is_file(&file)? && !super::internal_paths::protects(&self.state_dir, &file))
+                .then_some(file),
+        )
     }
 
     fn workspace_file(&self, root: &Path, relative: &Path) -> io::Result<Option<PathBuf>> {
@@ -332,17 +335,6 @@ impl Service {
                 !relative.as_os_str().is_empty() && !relative.to_string_lossy().starts_with("..")
             })
         }))
-    }
-
-    fn internal_path(&self, file: &Path) -> bool {
-        let secrets = self.state_dir.join("secrets");
-        let secrets = fs::canonicalize(&secrets).unwrap_or(secrets);
-        file.starts_with(secrets)
-            || (file.parent() == Some(&self.state_dir)
-                && file
-                    .file_name()
-                    .is_some_and(|name| name.to_string_lossy().contains(".sqlite")))
-            || file.starts_with("/dev/fd")
     }
 }
 

@@ -4839,6 +4839,7 @@ dependencies = [
  "icu_collator",
  "icu_locale_core",
  "icu_properties",
+ "libc",
  "portable-pty",
  "regex-lite",
  "reqwest",

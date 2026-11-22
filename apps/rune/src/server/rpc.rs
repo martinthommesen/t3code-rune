@@ -261,6 +261,46 @@ pub(super) async fn serve(
                 }
             }
             ClientMessage::Request { id, tag, payload }
+                if tag == "projects.readFile" && local.is_some() =>
+            {
+                match super::workspace_file::Input::decode(&payload) {
+                    Err(message) => Ok(defect(id, message)),
+                    Ok(_) if !permissions.filesystem_read => Ok(failure(
+                        id,
+                        json!({
+                            "_tag": "EnvironmentAuthorizationError",
+                            "requiredScope": "orchestration:read",
+                            "requiredPermission": "filesystem:read",
+                            "message": "The authenticated token is missing required scope: filesystem:read."
+                        }),
+                    )),
+                    Ok(_) if operation_requests.contains_key(&id) => Ok(failure(
+                        id,
+                        RpcError::InvalidRequest {
+                            message: "Request ID is already in use.",
+                        },
+                    )),
+                    Ok(input) => {
+                        let settings = &local.as_ref().expect("local operations").settings;
+                        let state_dir = settings
+                            .path()
+                            .parent()
+                            .expect("local state directory")
+                            .to_owned();
+                        let request_id = id.clone();
+                        let task = operations.spawn(async move {
+                            let result = match super::workspace_file::read(input, state_dir).await {
+                                Ok(value) => success(id.clone(), value),
+                                Err(error) => failure(id.clone(), error),
+                            };
+                            (id, result)
+                        });
+                        operation_requests.insert(request_id, task);
+                        continue;
+                    }
+                }
+            }
+            ClientMessage::Request { id, tag, payload }
                 if tag == "orchestration.subscribeShell" =>
             {
                 let store = store.clone();

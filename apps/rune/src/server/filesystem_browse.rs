@@ -177,7 +177,7 @@ fn expand_home(path: &str) -> io::Result<PathBuf> {
     Ok(PathBuf::from(home))
 }
 
-fn absolute_path(path: PathBuf) -> io::Result<PathBuf> {
+pub(super) fn absolute_path(path: PathBuf) -> io::Result<PathBuf> {
     let source = if path.as_os_str().is_empty() {
         Path::new(".")
     } else {

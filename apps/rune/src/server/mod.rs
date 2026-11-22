@@ -4,6 +4,7 @@ mod credentials;
 mod environment_identity;
 mod filesystem_browse;
 mod git_checkpoint;
+mod internal_paths;
 mod launch_model;
 mod legacy_thread_shells;
 mod locale;
@@ -30,6 +31,7 @@ pub(crate) use turn_worker::{CommandColor, CommandPen, TerminalOutput};
 mod vcs_checkout;
 mod vcs_refs;
 mod vcs_status;
+mod workspace_file;
 mod workspace_search;
 
 pub(crate) use settings::parse_settings_json;
