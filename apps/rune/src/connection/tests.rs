@@ -35,6 +35,93 @@ async fn next_event(connection: &Connection, wake: &mut UnboundedReceiver<()>) -
 }
 
 #[tokio::test]
+async fn publishes_the_http_snapshot_before_replaying_the_socket() {
+    let router = Router::new()
+        .route(
+            "/.well-known/t3/environment",
+            get(|| async {
+                Json(json!({
+                    "environmentId": "snapshot-host",
+                    "label": "Snapshot fixture",
+                    "orchestrationProtocolVersion": 2,
+                    "capabilities": {"t3ShellHttp": true}
+                }))
+            }),
+        )
+        .route(
+            "/oauth/token",
+            post(|| async { Json(json!({"access_token": "snapshot-token"})) }),
+        )
+        .route(
+            "/api/auth/websocket-ticket/rpc",
+            post(|| async { Json(json!({"ticket": "snapshot-ticket"})) }),
+        )
+        .route(
+            "/api/orchestration/shell",
+            get(|headers: HeaderMap| async move {
+                assert_eq!(headers["authorization"], "Bearer snapshot-token");
+                assert_eq!(headers["x-t3-orchestration-protocol"], "2");
+                let mut frame = shell_snapshot(&Value::Null);
+                let mut snapshot = frame["values"][0]["snapshot"].take();
+                snapshot["projectIdentities"] = json!("snapshot-digest");
+                Json(snapshot)
+            }),
+        )
+        .route(
+            "/ws",
+            get(|ws: WebSocketUpgrade| async move {
+                ws.on_upgrade(|mut socket| async move {
+                    let request = read(&mut socket).await;
+                    assert_eq!(request["tag"], "orchestration.subscribeShell");
+                    assert_eq!(
+                        request["payload"],
+                        json!({
+                            "afterSequence": 1,
+                            "requestCompletionMarker": true,
+                            "knownProjectIdentities": "snapshot-digest",
+                        })
+                    );
+                    write(&mut socket, json!({
+                    "_tag": "Chunk",
+                    "requestId": request["id"],
+                    "values": [
+                        {"kind": "project.updated", "sequence": 2, "project": {
+                            "id": "project", "title": "Updated project", "workspaceRoot": "/project"
+                        }},
+                        {"kind": "synchronized"}
+                    ]
+                })).await;
+                    expect(&mut socket, "Ack", &request["id"]).await;
+                    while socket.recv().await.is_some() {}
+                })
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let (wake, mut wake_rx) = unbounded_channel();
+    let connection = Connection::start(
+        format!("http://{address}"),
+        "fixture pairing code".into(),
+        move || {
+            let _ = wake.send(());
+        },
+    );
+    assert!(matches!(
+        next_event(&connection, &mut wake_rx).await,
+        Event::Connected { .. }
+    ));
+    for name in ["Project", "Updated project"] {
+        assert!(matches!(
+            next_event(&connection, &mut wake_rx).await,
+            Event::Shell { projects, threads }
+                if projects[0].name == name && threads[0].title == "Thread"
+        ));
+    }
+    server.abort();
+}
+
+#[tokio::test]
 async fn pairs_reads_sends_launches_and_recovers_without_replaying_mutations() {
     let exchanges = Arc::new(AtomicUsize::new(0));
     let tickets = Arc::new(AtomicUsize::new(0));

@@ -586,6 +586,12 @@ struct Capabilities {
     worktree_setup: Option<bool>,
     #[serde(rename = "t3WorktreeQueue")]
     worktree_queue: Option<bool>,
+    #[serde(default, rename = "t3ShellHttp")]
+    shell_http: bool,
+    #[serde(rename = "shellThreadFamilies")]
+    shell_thread_families: Option<bool>,
+    #[serde(rename = "shellOlderSettled")]
+    shell_older_settled: Option<bool>,
     #[serde(rename = "t3CheckoutSwitch")]
     checkout_switch: Option<bool>,
     #[serde(rename = "t3ThreadStop")]
@@ -722,6 +728,35 @@ async fn pair(server_url: String, pairing_code: String) -> Result<Environment, S
 }
 
 impl Environment {
+    async fn bootstrap_shell(&self) -> Option<(Shell, Value)> {
+        let capabilities = &self.descriptor.capabilities;
+        if !capabilities.shell_http
+            && (capabilities.shell_thread_families.is_none()
+                || capabilities.shell_older_settled.is_none())
+        {
+            return None;
+        }
+        let snapshot: Value = response_json(
+            self.client
+                .get(endpoint(&self.url, "/api/orchestration/shell"))
+                .bearer_auth(&self.token.access_token)
+                .header("x-t3-orchestration-protocol", PROTOCOL_VERSION.to_string()),
+            "Could not load the environment shell",
+        )
+        .await
+        .ok()?;
+        let sequence = snapshot["snapshotSequence"].as_u64()?;
+        let mut payload = json!({"afterSequence":sequence,"requestCompletionMarker":true});
+        if let Some(digest) = snapshot["projectIdentities"].as_str() {
+            payload["knownProjectIdentities"] = json!(digest);
+        }
+        let mut shell = Shell::default();
+        shell
+            .apply(json!({"kind":"snapshot","snapshot":snapshot}))
+            .ok()?
+            .then_some((shell, payload))
+    }
+
     async fn socket(&self) -> Result<Socket, String> {
         let issue_ticket = |path| {
             self.client
@@ -888,6 +923,7 @@ struct Session {
     next_request_id: u64,
     shell: Shell,
     shell_request_id: String,
+    initial_shell: bool,
     archive: ArchiveState,
     providers_request_id: Option<String>,
     project_clones_request_id: Option<String>,
@@ -973,11 +1009,15 @@ impl Session {
             .prompt_writes
             .unwrap_or(!capabilities.read_only)
             && scope.is_none_or(can_operate);
+        let (socket, bootstrap) = tokio::join!(environment.socket(), environment.bootstrap_shell());
+        let initial_shell = bootstrap.is_some();
+        let (shell, shell_input) = bootstrap.unwrap_or_else(|| (Shell::default(), json!({})));
         let mut session = Self {
-            socket: environment.socket().await?,
+            socket: socket?,
             next_request_id: 0,
-            shell: Shell::default(),
+            shell,
             shell_request_id: String::new(),
+            initial_shell,
             archive: if capabilities
                 .archive_snapshots
                 .unwrap_or(!capabilities.read_only && scope.is_some())
@@ -1084,7 +1124,7 @@ impl Session {
         };
         let request_id = session.allocate_id();
         session
-            .send_request(&request_id, "orchestration.subscribeShell", json!({}))
+            .send_request(&request_id, "orchestration.subscribeShell", shell_input)
             .await
             .map_err(SessionStop::into_message)?;
         session.shell_request_id = request_id;
@@ -1109,6 +1149,43 @@ impl Session {
                 .map_err(SessionStop::into_message)?;
         }
         Ok(session)
+    }
+
+    async fn publish_initial_shell(
+        &mut self,
+        events: &EventSender<impl Fn()>,
+    ) -> Result<(), SessionStop> {
+        if !std::mem::take(&mut self.initial_shell) {
+            return Ok(());
+        }
+        let (projects, threads) = self.shell.view();
+        let needs_catalog = threads
+            .iter()
+            .any(|thread| thread.providers.current_instance().is_some());
+        events.send(Event::Shell { projects, threads });
+        if matches!(self.archive, ArchiveState::Needed) {
+            self.load_archive().await?;
+        }
+        if needs_catalog {
+            self.subscribe_provider_catalog().await?;
+        }
+        Ok(())
+    }
+
+    async fn subscribe_provider_catalog(&mut self) -> Result<(), SessionStop> {
+        let id = self.allocate_id();
+        self.send_request(
+            &id,
+            "subscribeServerConfig",
+            json!({
+                "workspaceSnapshotsOnDemand": true,
+                "providerCatalogsOnDemand": true,
+                "providerCatalogDigests": true,
+            }),
+        )
+        .await?;
+        self.providers_request_id = Some(id);
+        Ok(())
     }
 
     async fn send(&mut self, frame: Value) -> Result<(), SessionStop> {
@@ -1872,18 +1949,7 @@ impl Session {
                     self.load_archive().await?;
                 }
                 if subscribe_providers {
-                    let id = self.allocate_id();
-                    self.send_request(
-                        &id,
-                        "subscribeServerConfig",
-                        json!({
-                            "workspaceSnapshotsOnDemand": true,
-                            "providerCatalogsOnDemand": true,
-                            "providerCatalogDigests": true,
-                        }),
-                    )
-                    .await?;
-                    self.providers_request_id = Some(id);
+                    self.subscribe_provider_catalog().await?;
                 }
             }
             ServerFrame::Exit { request_id, exit } => {
@@ -2187,7 +2253,11 @@ async fn run(
     let mut attempt = 0;
     loop {
         let connected_at = Instant::now();
-        let reason = match run_socket(&mut session, &mut commands, events).await {
+        let disconnected = match session.publish_initial_shell(events).await {
+            Ok(()) => run_socket(&mut session, &mut commands, events).await,
+            Err(error) => Err(error),
+        };
+        let reason = match disconnected {
             Ok(()) => return Ok(()),
             Err(SessionStop::Protocol(message)) => {
                 session.unconfirm_runtime_responses(events);

@@ -111,3 +111,45 @@ fn identity(
 fn nonblank(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_owned())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn publishes_an_ssh_alias_after_cold_resolution() {
+        let fixture = tempfile::tempdir().unwrap();
+        let config = fixture.path().join("ssh-config");
+        std::fs::write(&config, "Host proof-forge\n    HostName github.com\n").unwrap();
+        let checkout = fixture.path().join("checkout");
+        std::fs::create_dir(&checkout).unwrap();
+        for arguments in [
+            &["init", "--quiet"][..],
+            &["remote", "add", "origin", "git@proof-forge:Team/Checkout.git"][..],
+        ] {
+            let status = std::process::Command::new("git")
+                .args(arguments)
+                .current_dir(&checkout)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+
+        let identities = Identities::isolated_ssh(config);
+        let mut changes = identities.subscribe();
+        let initial = identities.get_available(&checkout);
+        assert!(!initial.resolved && initial.identity.is_none());
+
+        let change = tokio::time::timeout(std::time::Duration::from_secs(10), changes.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(change.workspace_root, checkout);
+        let identity = change.identity.unwrap();
+        assert_eq!(identity.canonical_key, "github.com/team/checkout");
+        assert_eq!(identity.locator.remote_url, "git@proof-forge:Team/Checkout.git");
+        let warm = identities.get_available(&checkout);
+        assert!(warm.resolved);
+        assert_eq!(warm.identity, Some(identity));
+    }
+}
