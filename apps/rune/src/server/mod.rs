@@ -13,6 +13,7 @@ mod project_commands;
 mod project_favicon;
 mod repository_identity;
 mod rpc;
+mod scratch_project;
 mod settings;
 mod shell_http;
 mod store;

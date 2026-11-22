@@ -339,6 +339,7 @@ pub(super) async fn serve(
                 if matches!(
                     tag.as_str(),
                     "projects.createNew"
+                        | "projects.ensureScratch"
                         | "orchestration.launchThread"
                         | "t3.getDefaultCodexModel"
                         | "worktreeSetup.cancel"
@@ -373,6 +374,9 @@ pub(super) async fn serve(
                         let response = match tag.as_str() {
                             "projects.createNew" => {
                                 create_named_project(&local, id.clone(), payload).await
+                            }
+                            "projects.ensureScratch" => {
+                                ensure_scratch_project(&local, id.clone(), payload).await
                             }
                             "t3.getDefaultCodexModel" => {
                                 default_codex_model(&local, id.clone(), payload).await
@@ -411,7 +415,7 @@ pub(super) async fn serve(
                     ))
                 } else if matches!(
                     tag.as_str(),
-                    "projects.mutate" | "orchestration.dispatchCommand"
+                    "projects.mutate" | "projects.ensureScratch" | "orchestration.dispatchCommand"
                 ) {
                     Ok(failure(
                         id,
@@ -831,6 +835,26 @@ async fn create_named_project(local: &LocalOperations, id: RequestId, payload: V
                 "message":error.message(),
             }),
         ),
+    }
+}
+
+async fn ensure_scratch_project(local: &LocalOperations, id: RequestId, payload: Value) -> Value {
+    if !payload.is_object() && !payload.is_array() {
+        return defect(id, "Expected object | array".into());
+    }
+    let base = local
+        .named_projects_root
+        .parent()
+        .expect("managed projects root has a base directory");
+    match super::scratch_project::ensure(
+        local.projects.clone(),
+        base,
+        local.projection_changes.clone(),
+    )
+    .await
+    {
+        Ok(project) => success(id, json!({"projectId":project})),
+        Err(error) => failure(id, error.payload()),
     }
 }
 
