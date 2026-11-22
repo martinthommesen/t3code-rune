@@ -11,7 +11,7 @@ use super::projection::ProjectRow;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct ModelSelection {
+pub(crate) struct ModelSelection {
     #[serde(alias = "provider")]
     instance_id: String,
     model: String,
@@ -20,7 +20,7 @@ pub(super) struct ModelSelection {
 }
 
 impl ModelSelection {
-    pub(super) fn instance_id(&self) -> &str {
+    pub(crate) fn instance_id(&self) -> &str {
         &self.instance_id
     }
 
@@ -28,8 +28,20 @@ impl ModelSelection {
         !self.instance_id.trim().is_empty() && !self.model.trim().is_empty()
     }
 
-    pub(super) fn plain_model(&self) -> Option<&str> {
+    pub(crate) fn plain_model(&self) -> Option<&str> {
         self.options.is_none().then_some(self.model.as_str())
+    }
+
+    pub(crate) fn model(&self) -> &str {
+        &self.model
+    }
+
+    pub(crate) fn plain(provider: DraftProvider, model: &str) -> Self {
+        Self {
+            instance_id: provider.instance_id().to_owned(),
+            model: model.to_owned(),
+            options: None,
+        }
     }
 }
 
@@ -95,25 +107,29 @@ struct ModelPreferences {
 impl ServerSettings {
     fn project_model_available(&self, model: &ModelSelection, overrides: Option<&Value>) -> bool {
         let instance = self.provider_instances.get(&model.instance_id);
-        let enabled = overrides
-            .and_then(|project| project.get("providerInstances"))
-            .and_then(|instances| instances.get(&model.instance_id))
-            .and_then(|instance| instance.get("enabled"))
-            .and_then(Value::as_bool)
-            .unwrap_or_else(|| {
-                instance.map_or_else(
-                    || matches!(model.instance_id.as_str(), "codex" | "claudeAgent"),
-                    ProviderInstance::enabled,
-                )
-            });
         let hidden = self
             .provider_model_preferences
             .as_ref()
             .and_then(|preferences| preferences.get(&model.instance_id))
             .is_some_and(|preferences| preferences.hidden_models.contains(&model.model));
-        enabled
+        self.provider_enabled(&model.instance_id, overrides)
             && (!hidden
                 || instance.is_some_and(|instance| instance.defines_custom_model(&model.model)))
+    }
+
+    fn provider_enabled(&self, instance_id: &str, overrides: Option<&Value>) -> bool {
+        let instance = self.provider_instances.get(instance_id);
+        overrides
+            .and_then(|project| project.get("providerInstances"))
+            .and_then(|instances| instances.get(instance_id))
+            .and_then(|instance| instance.get("enabled"))
+            .and_then(Value::as_bool)
+            .unwrap_or_else(|| {
+                instance.map_or_else(
+                    || matches!(instance_id, "codex" | "claudeAgent"),
+                    ProviderInstance::enabled,
+                )
+            })
     }
 }
 
@@ -122,6 +138,7 @@ pub(super) struct Draft {
     pub(super) thread_id: String,
     pub(super) prompt: String,
     pub(super) workspace: Workspace,
+    pub(super) model: Option<ModelSelection>,
 }
 
 #[derive(Serialize)]
@@ -140,18 +157,62 @@ pub(crate) enum Workspace {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum DraftClaudeModel {
-    Sonnet46,
-    Unsupported,
+pub(crate) enum DraftProvider {
+    Codex,
+    Claude,
+}
+
+impl DraftProvider {
+    pub(crate) fn from_instance(instance: &str) -> Option<Self> {
+        match instance {
+            "codex" => Some(Self::Codex),
+            "claudeAgent" => Some(Self::Claude),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn instance_id(self) -> &'static str {
+        match self {
+            Self::Codex => "codex",
+            Self::Claude => "claudeAgent",
+        }
+    }
+}
+
+pub(crate) struct DraftModelPolicy {
+    pub(crate) default_model: Option<ModelSelection>,
+    runtime_mode: RuntimeMode,
+    codex: ProviderPolicy,
+    claude: ProviderPolicy,
+}
+
+struct ProviderPolicy {
+    enabled: bool,
+    hidden_models: Vec<String>,
+}
+
+impl DraftModelPolicy {
+    pub(crate) fn full_access(&self) -> bool {
+        matches!(self.runtime_mode, RuntimeMode::FullAccess)
+    }
+
+    pub(crate) fn allows(&self, provider: DraftProvider, model: &str) -> bool {
+        let policy = match provider {
+            DraftProvider::Codex => &self.codex,
+            DraftProvider::Claude if self.full_access() && model == "claude-sonnet-4-6" => {
+                &self.claude
+            }
+            DraftProvider::Claude => return false,
+        };
+        policy.enabled && !policy.hidden_models.iter().any(|hidden| hidden == model)
+    }
 }
 
 fn defaults(
-    config: &Value,
+    settings: &ServerSettings,
     project: &ProjectRow,
     project_id: &str,
 ) -> Result<(Option<ModelSelection>, RuntimeMode), String> {
-    let settings: ServerSettings = ServerSettings::deserialize(config)
-        .map_err(|_| "The environment returned invalid launch settings.".to_owned())?;
     let overrides = settings.project_settings_overrides.get(project_id);
     let project_model = match overrides.and_then(|fields| fields.get("defaultModelSelection")) {
         Some(value) => Some(
@@ -166,7 +227,7 @@ fn defaults(
     let model_selection = match project_model {
         Some(None) => None,
         Some(Some(model)) if settings.project_model_available(&model, overrides) => Some(model),
-        _ => settings.default_model_selection,
+        _ => settings.default_model_selection.clone(),
     }
     .filter(ModelSelection::is_valid);
     let runtime_mode = match overrides.and_then(|fields| fields.get("defaultRuntimeMode")) {
@@ -177,26 +238,77 @@ fn defaults(
     Ok((model_selection, runtime_mode))
 }
 
-pub(super) fn draft_claude_model(
+fn read_settings(config: &Value) -> Result<ServerSettings, String> {
+    ServerSettings::deserialize(config)
+        .map_err(|_| "The environment returned invalid launch settings.".to_owned())
+}
+
+pub(super) fn draft_model_policy(
     config: &Value,
     project: &ProjectRow,
     project_id: &str,
-) -> Option<DraftClaudeModel> {
-    let (model, runtime) = defaults(config, project, project_id).ok()?;
-    let model = model.filter(|model| model.instance_id() == "claudeAgent")?;
-    Some(
-        if model.plain_model() == Some("claude-sonnet-4-6")
-            && matches!(runtime, RuntimeMode::FullAccess)
-        {
-            DraftClaudeModel::Sonnet46
-        } else {
-            DraftClaudeModel::Unsupported
-        },
-    )
+) -> Option<DraftModelPolicy> {
+    let settings = read_settings(config).ok()?;
+    make_policy(&settings, project, project_id).ok()
+}
+
+fn make_policy(
+    settings: &ServerSettings,
+    project: &ProjectRow,
+    project_id: &str,
+) -> Result<DraftModelPolicy, String> {
+    let (default_model, runtime_mode) = defaults(settings, project, project_id)?;
+    let overrides = settings.project_settings_overrides.get(project_id);
+    let policy = |provider: DraftProvider| {
+        let id = provider.instance_id();
+        ProviderPolicy {
+            enabled: settings.provider_enabled(id, overrides),
+            hidden_models: settings
+                .provider_model_preferences
+                .as_ref()
+                .and_then(|preferences| preferences.get(id))
+                .map_or_else(Vec::new, |preferences| {
+                    preferences
+                        .hidden_models
+                        .iter()
+                        .filter(|slug| {
+                            settings
+                                .provider_instances
+                                .get(id)
+                                .is_none_or(|instance| !instance.defines_custom_model(slug))
+                        })
+                        .cloned()
+                        .collect()
+                }),
+        }
+    };
+    Ok(DraftModelPolicy {
+        default_model,
+        runtime_mode,
+        codex: policy(DraftProvider::Codex),
+        claude: policy(DraftProvider::Claude),
+    })
 }
 
 pub(super) fn payload(config: Value, project: &ProjectRow, draft: &Draft) -> Result<Value, String> {
-    let (model_selection, runtime_mode) = defaults(&config, project, &draft.project_id)?;
+    let settings = read_settings(&config)?;
+    let policy = make_policy(&settings, project, &draft.project_id)?;
+    let model_selection = match &draft.model {
+        Some(model) => {
+            let provider = DraftProvider::from_instance(model.instance_id());
+            if model.plain_model().is_none()
+                || !provider.is_some_and(|provider| policy.allows(provider, model.model()))
+                || (provider == Some(DraftProvider::Claude)
+                    && !matches!(draft.workspace, Workspace::Root))
+            {
+                return Err(
+                    "The selected model is unavailable for this project or workspace.".into(),
+                );
+            }
+            Some(model.clone())
+        }
+        None => policy.default_model,
+    };
     let title = initial_title(&draft.prompt);
 
     Ok(json!({
@@ -207,7 +319,7 @@ pub(super) fn payload(config: Value, project: &ProjectRow, draft: &Draft) -> Res
         "title": title,
         "generateTitle": true,
         "modelSelection": model_selection,
-        "runtimeMode": runtime_mode,
+        "runtimeMode": policy.runtime_mode,
         "interactionMode": "default",
         "workspaceStrategy": draft.workspace,
         "initialMessage": {

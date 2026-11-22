@@ -1,7 +1,7 @@
 use rune::color::hex;
 use rune::{Color, El, Icon, TextStyle, Tx, col, edit_access, el, icon, row, text, text_input};
 
-use crate::connection::{DraftClaudeModel, ProviderMetadata, ProviderModel, Thread, WorkspaceMode};
+use crate::connection::{DraftProvider, ProviderMetadata, ProviderModel, Thread};
 
 use super::conversation::{Layout, MAX_LANE};
 use super::draft_hero;
@@ -9,8 +9,11 @@ use super::project::clone_banner;
 use super::worktree_setup;
 use super::{Draft, Palette, Project, SMALL, State, Workspace, button, error_text};
 
+mod draft_model_picker;
 mod model_picker;
 mod resume;
+
+pub(super) use draft_model_picker::Picker as DraftModelPicker;
 
 const FONT: TextStyle = TextStyle::new(14.0, 400.0).lh(22.75);
 const PROVIDER_UNAVAILABLE: &str = "Enable a provider in Settings to send a message";
@@ -60,33 +63,25 @@ pub(super) fn draft_provider_unavailable(
     draft: &Draft,
     project: &str,
 ) -> bool {
-    if draft.claude_model.is_some() && native_root_claude_provider(workspace).is_some() {
-        return draft_claude_model(workspace, draft, project).is_none();
+    let claude_default = draft
+        .selected_model()
+        .is_some_and(|model| model.instance_id() == DraftProvider::Claude.instance_id())
+        && workspace.providers.as_ref().is_some_and(|providers| {
+            providers
+                .get(DraftProvider::Claude.instance_id())
+                .is_some_and(|provider| provider.native_root_launch)
+        });
+    if draft.model_choice.is_some() || claude_default {
+        return !draft_model_picker::Models::new(workspace, draft, project)
+            .is_some_and(|models| models.has_selection());
     }
     provider_unavailable(workspace, None)
 }
 
-fn native_root_claude_provider(workspace: &Workspace) -> Option<&ProviderMetadata> {
-    workspace
-        .providers
-        .as_ref()?
-        .get("claudeAgent")
-        .filter(|provider| provider.driver == "claudeAgent" && provider.native_root_launch)
-}
-
-pub(super) fn draft_claude_model<'a>(
-    workspace: &'a Workspace,
-    draft: &Draft,
-    project: &str,
-) -> Option<&'a ProviderModel> {
-    if matches!(draft.claude_model, Some(DraftClaudeModel::Sonnet46))
-        && draft.workspace_mode == WorkspaceMode::Local
-        && workspace.scratch_project.as_deref() != Some(project)
-    {
-        native_root_claude_provider(workspace)?.model("claude-sonnet-4-6")
-    } else {
-        None
-    }
+pub(super) fn draft_full_access(workspace: &Workspace, draft: &Draft, project: &str) -> bool {
+    draft.workspace_mode == super::WorkspaceMode::Local
+        && draft_model_picker::Models::new(workspace, draft, project)
+            .is_some_and(|models| models.full_access() && models.has_selection())
 }
 
 fn native_claude_provider<'a>(
@@ -216,16 +211,32 @@ fn surface(
             |thread| thread_provider_unavailable(workspace, thread),
         ),
     };
+    let starting_thread = matches!(&target, Target::Draft(_));
+    let gutter = if starting_thread && draft.worktree_launch.is_none() {
+        draft_hero::gutter(layout)
+    } else {
+        layout.timeline_gutter()
+    };
+    let width = (layout.pane_width - 2.0 * gutter).min(MAX_LANE);
     let picker = match &target {
-        Target::Draft(project) => draft_claude_model(workspace, draft, project).map(|model| {
-            (
-                model_picker::Target::Draft((*project).to_owned()),
-                model,
-                draft.model_picker.as_ref(),
-            )
-        }),
+        Target::Draft(project)
+            if draft.workspace_mode == super::WorkspaceMode::Local
+                && workspace.scratch_project.as_deref() != Some(*project) =>
+        {
+            draft_model_picker::Models::new(workspace, draft, project).map(|models| {
+                let overlay = draft.model_picker.as_ref().map(|open| {
+                    (
+                        draft_model_picker::dismissal(project, layout.viewport),
+                        models.popup(project, open, width, palette),
+                    )
+                });
+                (models.trigger(project, overlay.is_some(), palette), overlay)
+            })
+        }
+        Target::Draft(_) => None,
         Target::Thread { .. } => thread.and_then(|thread| {
             let model = claude_model(thread, native_claude_provider(workspace, thread)?)?;
+            let target = model_picker::Target::Thread(thread.id.clone());
             let open = workspace
                 .selection
                 .as_ref()
@@ -235,7 +246,16 @@ fn surface(
                     }
                     _ => None,
                 });
-            Some((model_picker::Target::Thread(thread.id.clone()), model, open))
+            let overlay = open.map(|query| {
+                (
+                    model_picker::dismissal(target.clone(), layout.viewport),
+                    model_picker::popup(target.clone(), model, query, width, palette),
+                )
+            });
+            Some((
+                model_picker::trigger(target, model, overlay.is_some(), palette),
+                overlay,
+            ))
         }),
     };
     let project_id = match &target {
@@ -272,7 +292,6 @@ fn surface(
         Target::Thread { id, .. } => resume::pending(workspace, id),
         Target::Draft(_) => false,
     };
-    let starting_thread = matches!(&target, Target::Draft(_));
     let workspace_ready = !starting_thread
         || (!draft.refs.switching
             && (draft.workspace_mode != super::WorkspaceMode::Worktree
@@ -283,12 +302,6 @@ fn surface(
         && !resuming
         && (editing_queue || (!unavailable && clone.is_none()))
         && workspace_ready;
-    let gutter = if starting_thread && draft.worktree_launch.is_none() {
-        draft_hero::gutter(layout)
-    } else {
-        layout.timeline_gutter()
-    };
-    let width = (layout.pane_width - 2.0 * gutter).min(MAX_LANE);
     let editor_width = (width - 34.0).max(1.0);
     let (_, height) = rune::text::measure(&draft.edit.text, &[], FONT, Some(editor_width));
     let mut editor = text_input(&draft.edit, FONT)
@@ -345,12 +358,12 @@ fn surface(
         );
     }
     footer = footer.child(el().grow(1.0));
-    if let Some((target, model, open)) = &picker {
-        footer = footer.child(
-            model_picker::trigger(target.clone(), model, open.is_some(), palette)
-                .mr(if width >= 420.0 { 36.0 } else { 0.0 }),
-        );
-    }
+    let overlay = if let Some((trigger, overlay)) = picker {
+        footer = footer.child(trigger.mr(if width >= 420.0 { 36.0 } else { 0.0 }));
+        overlay
+    } else {
+        None
+    };
     if unavailable && has_draft && !editing_queue {
         footer = footer.child(
             text("No provider available")
@@ -441,10 +454,8 @@ fn surface(
         form = form.child(error_text(error, palette));
     }
     card = card.child(footer);
-    if let Some((target, model, Some(query))) = picker {
-        card = card
-            .child(model_picker::dismissal(target.clone(), layout.viewport))
-            .child(model_picker::popup(target, model, query, width, palette));
+    if let Some((dismissal, popup)) = overlay {
+        card = card.child(dismissal).child(popup);
     }
     form.child(card)
 }

@@ -85,20 +85,13 @@ async fn default_model(
     let models = read_pages(&server).await;
     let _ = server.shutdown().await;
     let models = models?;
-    let models = models
-        .into_iter()
-        .filter(|model| !model.model.trim().is_empty() && !hidden.contains(&model.model))
-        .collect::<Vec<_>>();
-    let selected = PREFERRED_MODELS
+    let candidates = models
         .iter()
-        .find_map(|preferred| {
-            models
-                .iter()
-                .find(|model| model_family(&model.model) == *preferred)
-        })
-        .or_else(|| models.iter().find(|model| model.is_default))
-        .or_else(|| models.first());
-    Ok(selected.map_or_else(|| PREFERRED_MODELS[0].into(), |model| model.model.clone()))
+        .filter(|model| !model.model.trim().is_empty() && !hidden.contains(&model.model))
+        .map(|model| (model.model.as_str(), model.is_default));
+    Ok(preferred_codex_model(candidates)
+        .unwrap_or(PREFERRED_MODELS[0])
+        .to_owned())
 }
 
 pub(super) async fn read_pages(server: &CodexAppServer) -> Result<Vec<Model>, &'static str> {
@@ -122,6 +115,26 @@ pub(super) async fn read_pages(server: &CodexAppServer) -> Result<Vec<Model>, &'
         }
         params = json!({"cursor":cursor});
     }
+}
+
+pub(crate) fn preferred_codex_model<'a>(
+    models: impl Iterator<Item = (&'a str, bool)> + Clone,
+) -> Option<&'a str> {
+    PREFERRED_MODELS
+        .into_iter()
+        .find_map(|preferred| {
+            models
+                .clone()
+                .find(|(slug, _)| model_family(slug) == preferred)
+                .map(|(slug, _)| slug)
+        })
+        .or_else(|| {
+            models
+                .clone()
+                .find(|(_, is_default)| *is_default)
+                .map(|(slug, _)| slug)
+        })
+        .or_else(|| models.map(|(slug, _)| slug).next())
 }
 
 fn model_family(model: &str) -> &str {

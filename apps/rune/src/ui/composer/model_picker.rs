@@ -8,8 +8,8 @@ use crate::connection::ProviderModel;
 
 use super::super::{Palette, State};
 
-const LABEL: TextStyle = TextStyle::new(14.0, 400.0).lh(20.0);
-const DETAILS: TextStyle = TextStyle::new(12.0, 400.0).lh(17.0);
+pub(super) const LABEL: TextStyle = TextStyle::new(14.0, 400.0).lh(20.0);
+pub(super) const DETAILS: TextStyle = TextStyle::new(12.0, 400.0).lh(17.0);
 const TRIGGER: &str = "claude-model-picker";
 const QUERY: &str = "claude-model-search";
 const EFFORT: &str = "claude-model-effort";
@@ -20,13 +20,13 @@ static CLAUDE: Icon = Icon {
     body: include_str!("../sidebar/provider_badge/claude.svg"),
 };
 
-static SEARCH: Icon = Icon {
+pub(super) static SEARCH: Icon = Icon {
     name: "model-search",
     view: 24.0,
     body: r#"<circle cx="11" cy="11" r="8" fill="none" stroke="currentColor" stroke-width="2"/><path d="m21 21-4.35-4.35" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>"#,
 };
 
-static CHECK: Icon = Icon {
+pub(super) static CHECK: Icon = Icon {
     name: "model-check",
     view: 24.0,
     body: r#"<path d="m5 12 4 4 10-10" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>"#,
@@ -35,7 +35,6 @@ static CHECK: Icon = Icon {
 #[derive(Clone)]
 pub(super) enum Target {
     Thread(String),
-    Draft(String),
 }
 
 impl Target {
@@ -44,10 +43,6 @@ impl Target {
             Self::Thread(id) => state
                 .conversation_mut(id)
                 .map(|entry| &mut entry.model_picker),
-            Self::Draft(id) => state
-                .new_thread_drafts
-                .get_mut(id)
-                .map(|draft| &mut draft.model_picker),
         }
     }
 }
@@ -96,7 +91,7 @@ pub(super) fn popup(
     let edit_target = target.clone();
     let input_target = target.clone();
     let color = Colors::new(palette.dark);
-    let menu_width = 554.0_f32.min((lane - 16.0).max(220.0));
+    let menu_width = popup_width(lane);
     let columns = menu_width >= 420.0;
     let mut list = col().min_w(0.0).grow(1.0).gap(9.0).padding(10.0).child(
         row()
@@ -172,11 +167,97 @@ pub(super) fn popup(
                 .fill(color.control)
                 .child(claude(20.0)),
         );
+    let details = claude_details(
+        model,
+        if columns { 192.0 } else { menu_width - 45.0 },
+        palette,
+        EFFORT,
+        QUERY,
+    );
+    let body = if columns {
+        row()
+            .w_full()
+            .grow(1.0)
+            .child(side)
+            .child(list)
+            .child(details.border_sides([0.0, 0.0, 0.0, 1.0], color.line))
+    } else {
+        row()
+            .w_full()
+            .grow(1.0)
+            .child(side)
+            .child(col().grow(1.0).child(list).child(details))
+    };
+    popup_frame("claude-model-popup", "Claude models", lane, palette, body)
+        .on_key(move |state: &mut State, event, tx| escape(state, &target, event, tx))
+        .child(permissions_footer("Full access", color))
+}
+
+pub(super) fn popup_width(lane: f32) -> f32 {
+    554.0_f32.min((lane - 16.0).max(220.0))
+}
+
+pub(super) fn popup_frame(
+    key: &'static str,
+    name: &str,
+    lane: f32,
+    palette: Palette,
+    body: El,
+) -> El {
+    let color = Colors::new(palette.dark);
+    let width = popup_width(lane);
+    col()
+        .key(key)
+        .role("dialog")
+        .label(name)
+        .focus_group()
+        .w(width)
+        .h(if width >= 420.0 { 393.0 } else { 260.0 })
+        .on_background_press_tx(|_: &mut State, tx| tx.live_only())
+        .radius(8.0)
+        .fill(color.panel)
+        .border(1.0, color.line)
+        .border_layout()
+        .paint_order(3)
+        .shadow(4.0, 20.0, Color::BLACK.alpha(0.25))
+        .pin(
+            None,
+            None,
+            Some(8.0_f32.max((lane - width).min(84.0))),
+            Some(42.0),
+        )
+        .child(body)
+}
+
+pub(super) fn permissions_footer(label: &str, color: Colors) -> El {
+    row()
+        .w_full()
+        .h(44.0)
+        .px(15.0)
+        .center_y()
+        .border_sides([1.0, 0.0, 0.0, 0.0], color.line)
+        .child(el().grow(1.0))
+        .child(
+            text(label)
+                .label(format!("Permissions: {label}"))
+                .font(DETAILS)
+                .color(color.muted),
+        )
+}
+
+pub(super) fn claude_details(
+    model: &ProviderModel,
+    width: f32,
+    palette: Palette,
+    effort_key: &'static str,
+    query_key: &'static str,
+) -> El {
+    let color = Colors::new(palette.dark);
     let model_name = model.short_name.as_deref().unwrap_or(&model.name);
-    let details = col()
+    col()
         .gap(10.0)
         .padding(12.0)
-        .w(if columns { 192.0 } else { menu_width - 45.0 })
+        .w(width)
         .child(
             row()
                 .w_full()
@@ -187,17 +268,17 @@ pub(super) fn popup(
         )
         .child(
             row()
-                .key(EFFORT)
+                .key(effort_key)
                 .role("radio")
                 .label("High, Default")
                 .checked(true)
                 .focusable(true)
                 .focus_ring(1.0, -1.0, palette.accent)
-                .on_key(|_: &mut State, event, tx| {
+                .on_key(move |_: &mut State, event, tx| {
                     if event.key != Key::Left {
                         return false;
                     }
-                    tx.focus_when_shown(QUERY, tx.focus_visible());
+                    tx.focus_when_shown(query_key, tx.focus_visible());
                     true
                 })
                 .radius(5.0)
@@ -216,57 +297,6 @@ pub(super) fn popup(
                 .border_sides([1.0, 0.0, 0.0, 0.0], color.line)
                 .child(text("Context Window").font(DETAILS).color(color.muted))
                 .child(text("200k").font(LABEL).color(color.ink)),
-        );
-    let body = if columns {
-        row()
-            .w_full()
-            .grow(1.0)
-            .child(side)
-            .child(list)
-            .child(details.border_sides([0.0, 0.0, 0.0, 1.0], color.line))
-    } else {
-        row()
-            .w_full()
-            .grow(1.0)
-            .child(side)
-            .child(col().grow(1.0).child(list).child(details))
-    };
-    col()
-        .key("claude-model-popup")
-        .role("dialog")
-        .label("Claude models")
-        .focus_group()
-        .w(menu_width)
-        .h(if columns { 393.0 } else { 260.0 })
-        .on_background_press_tx(|_: &mut State, tx| tx.live_only())
-        .radius(8.0)
-        .fill(color.panel)
-        .border(1.0, color.line)
-        .border_layout()
-        .paint_order(3)
-        .shadow(4.0, 20.0, Color::BLACK.alpha(0.25))
-        .pin(
-            None,
-            None,
-            Some(8.0_f32.max((lane - menu_width).min(84.0))),
-            Some(42.0),
-        )
-        .on_key(move |state: &mut State, event, tx| escape(state, &target, event, tx))
-        .child(body)
-        .child(
-            row()
-                .w_full()
-                .h(44.0)
-                .px(15.0)
-                .center_y()
-                .border_sides([1.0, 0.0, 0.0, 0.0], color.line)
-                .child(el().grow(1.0))
-                .child(
-                    text("Full access")
-                        .label("Permissions: Full access")
-                        .font(DETAILS)
-                        .color(color.muted),
-                ),
         )
 }
 
@@ -294,24 +324,24 @@ fn close(state: &mut State, target: &Target, tx: &mut Tx) {
     tx.focus_when_shown(TRIGGER, tx.focus_visible());
 }
 
-fn claude(size: f32) -> El {
+pub(super) fn claude(size: f32) -> El {
     icon(&CLAUDE, size)
         .color(hex("#d97757").expect("Claude color"))
         .a11y_hidden()
 }
 
 #[derive(Clone, Copy)]
-struct Colors {
+pub(super) struct Colors {
     panel: Color,
-    line: Color,
-    control: Color,
-    hover: Color,
-    ink: Color,
-    muted: Color,
+    pub(super) line: Color,
+    pub(super) control: Color,
+    pub(super) hover: Color,
+    pub(super) ink: Color,
+    pub(super) muted: Color,
 }
 
 impl Colors {
-    fn new(dark: bool) -> Self {
+    pub(super) fn new(dark: bool) -> Self {
         let [panel, line, control, hover, ink, muted] = if dark {
             [
                 "#121212", "#292929", "#171717", "#222222", "#f1f1f1", "#a3a3a3",

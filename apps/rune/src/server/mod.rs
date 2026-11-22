@@ -8,6 +8,7 @@ mod filesystem_browse;
 mod git_checkpoint;
 mod internal_paths;
 mod launch_model;
+pub(crate) use launch_model::preferred_codex_model;
 mod legacy_thread_shells;
 mod locale;
 mod migrations;

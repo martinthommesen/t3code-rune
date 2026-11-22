@@ -198,6 +198,7 @@ async fn pairs_reads_sends_launches_and_recovers_without_replaying_mutations() {
         "project".into(),
         "  Launch test\nThis is a new thread.\n".into(),
         LaunchWorkspace::Root,
+        None,
     );
     assert!(matches!(
         next_event(&connection, &mut wake_rx).await,
@@ -209,6 +210,7 @@ async fn pairs_reads_sends_launches_and_recovers_without_replaying_mutations() {
         "project".into(),
         "Unconfirmed thread launch".into(),
         LaunchWorkspace::Root,
+        None,
     );
     assert!(matches!(
         next_event(&connection, &mut wake_rx).await,
@@ -341,6 +343,7 @@ fn launch_uses_legacy_project_model_only_until_settings_are_folded() {
         thread_id: "thread".into(),
         prompt: "Start a thread".into(),
         workspace: LaunchWorkspace::Root,
+        model: None,
     };
     let mut settings = json!({
         "defaultModelSelection": {"instanceId": "environment", "model": "environment-model"},
@@ -370,6 +373,7 @@ fn disabled_and_hidden_project_models_inherit_the_environment_default() {
         thread_id: "thread".into(),
         prompt: "Start a thread".into(),
         workspace: LaunchWorkspace::Root,
+        model: None,
     };
     let mut settings = json!({
         "defaultModelSelection": {"instanceId": "codex", "model": "fallback"},
@@ -394,25 +398,59 @@ fn disabled_and_hidden_project_models_inherit_the_environment_default() {
 }
 
 #[test]
-fn native_draft_claude_model_matches_the_launch_defaults() {
+fn draft_model_selection_uses_explicit_choice_and_effective_project_permissions() {
     let project = serde_json::from_value(json!({
         "id": "project", "title": "Project", "workspaceRoot": "/project"
     }))
     .unwrap();
     let mut settings = json!({
-        "defaultModelSelection": {"instanceId": "codex", "model": "default"},
+        "defaultModelSelection": {"instanceId": "codex", "model": "gpt-5.4"},
         "defaultRuntimeMode": "approval-required",
         "projectSettingsOverrides": {"project": {
-            "defaultModelSelection": {"instanceId": "claudeAgent", "model": "claude-sonnet-4-6"}
+            "defaultRuntimeMode": "full-access"
         }}
     });
-    let preview = |settings: &Value| launch::draft_claude_model(settings, &project, "project");
-    assert_eq!(preview(&settings), Some(DraftClaudeModel::Unsupported));
-    settings["projectSettingsOverrides"]["project"]["defaultRuntimeMode"] = json!("full-access");
-    assert_eq!(preview(&settings), Some(DraftClaudeModel::Sonnet46));
+    let mut draft = launch::Draft {
+        project_id: "project".into(),
+        thread_id: "thread".into(),
+        prompt: "Start a thread".into(),
+        workspace: LaunchWorkspace::Root,
+        model: None,
+    };
+    let payload = launch::payload(settings.clone(), &project, &draft).unwrap();
+    assert_eq!(
+        payload["modelSelection"],
+        json!({"instanceId": "codex", "model": "gpt-5.4"})
+    );
+    let preview = launch::draft_model_policy(&settings, &project, "project").unwrap();
+    assert_eq!(preview.default_model.unwrap().model(), "gpt-5.4");
+    draft.model = Some(ModelSelection::plain(
+        DraftProvider::Claude,
+        "claude-sonnet-4-6",
+    ));
+    let payload = launch::payload(settings.clone(), &project, &draft).unwrap();
+    assert_eq!(
+        payload["modelSelection"],
+        json!({"instanceId": "claudeAgent", "model": "claude-sonnet-4-6"})
+    );
+    assert_eq!(payload["runtimeMode"], "full-access");
+    draft.workspace = LaunchWorkspace::Worktree {
+        base_ref: "main".into(),
+        start_from_origin: false,
+    };
+    assert!(launch::payload(settings.clone(), &project, &draft).is_err());
+    draft.model = Some(ModelSelection::plain(DraftProvider::Codex, "gpt-5.5"));
+    assert_eq!(
+        launch::payload(settings.clone(), &project, &draft).unwrap()["modelSelection"],
+        json!({"instanceId": "codex", "model": "gpt-5.5"})
+    );
+    draft.workspace = LaunchWorkspace::Root;
+    draft.model = Some(ModelSelection::plain(DraftProvider::Claude, "claude-sonnet-4-6"));
     settings["projectSettingsOverrides"]["project"]["providerInstances"] =
         json!({"claudeAgent": {"enabled": false}});
-    assert_eq!(preview(&settings), None);
+    assert!(launch::payload(settings.clone(), &project, &draft).is_err());
+    settings["projectSettingsOverrides"]["project"] = json!({});
+    assert!(launch::payload(settings, &project, &draft).is_err());
 }
 
 async fn serve_restored_thread(mut socket: WebSocket) {

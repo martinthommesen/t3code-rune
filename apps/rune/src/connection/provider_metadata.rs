@@ -33,6 +33,10 @@ pub(crate) struct ProviderModel {
     pub(crate) name: String,
     #[serde(rename = "shortName")]
     pub(crate) short_name: Option<String>,
+    #[serde(default, rename = "isLegacy")]
+    pub(crate) is_legacy: bool,
+    #[serde(default, rename = "isDefault")]
+    pub(crate) is_default: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -83,6 +87,10 @@ impl ProviderMetadata {
             return None;
         }
         self.models.iter().find(|model| model.slug == slug)
+    }
+
+    pub(crate) fn models(&self) -> &[ProviderModel] {
+        &self.models
     }
 }
 

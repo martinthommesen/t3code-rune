@@ -48,7 +48,9 @@ pub(crate) use keybindings::{
     Binding, Condition as KeybindingCondition, Edit as KeybindingEdit, Keybindings,
     Rule as KeybindingRule, TERMINAL_TOGGLE,
 };
-pub(crate) use launch::{DraftClaudeModel, Workspace as LaunchWorkspace};
+pub(crate) use launch::{
+    DraftModelPolicy, DraftProvider, ModelSelection, Workspace as LaunchWorkspace,
+};
 pub(crate) use project_favicon::{FaviconBytes, FaviconTarget};
 pub(crate) use projection::WorkspaceFailure;
 pub(crate) use projection::{
@@ -244,9 +246,9 @@ pub(crate) enum Event {
         mode: WorkspaceMode,
         start_from_origin: bool,
     },
-    DraftClaudeDefault {
+    DraftModelSettings {
         project_id: String,
-        model: Option<DraftClaudeModel>,
+        policy: Option<DraftModelPolicy>,
     },
     WorktreeSetup {
         thread_id: String,
@@ -687,6 +689,7 @@ impl Connection {
         project_id: String,
         prompt: String,
         workspace: LaunchWorkspace,
+        model: Option<ModelSelection>,
     ) -> String {
         let thread_id = Uuid::new_v4().to_string();
         let _ = self.commands.send(Command::LaunchThread(launch::Draft {
@@ -694,6 +697,7 @@ impl Connection {
             thread_id: thread_id.clone(),
             prompt,
             workspace,
+            model,
         }));
         thread_id
     }
@@ -2397,9 +2401,9 @@ impl Session {
         };
         let settings = exit.into_result().unwrap_or(Value::Null);
         if self.native_model_discovery {
-            events.send(Event::DraftClaudeDefault {
+            events.send(Event::DraftModelSettings {
                 project_id: project_id.clone(),
-                model: launch::draft_claude_model(&settings, project, &project_id),
+                policy: launch::draft_model_policy(&settings, project, &project_id),
             });
         }
         let preferences = draft_defaults::Preferences::from_settings(

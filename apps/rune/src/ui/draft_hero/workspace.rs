@@ -121,7 +121,7 @@ pub(super) fn view(
     palette: Palette,
 ) -> El {
     let colors = Colors::new(palette);
-    let full_access = composer::draft_claude_model(workspace, draft, project_id).is_some();
+    let full_access = composer::draft_full_access(workspace, draft, project_id);
     let (mode_text, mode_icon, trigger_width) = mode_details(draft.workspace_mode);
     let available = workspace.worktree_launch
         && workspace.pending_clone(project_id).is_none()

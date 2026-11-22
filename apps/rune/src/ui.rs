@@ -221,8 +221,9 @@ struct Draft {
     edit: TextEdit,
     pending: bool,
     failure: Option<String>,
-    claude_model: Option<crate::connection::DraftClaudeModel>,
-    model_picker: Option<TextEdit>,
+    model_policy: Option<crate::connection::DraftModelPolicy>,
+    model_choice: Option<crate::connection::ModelSelection>,
+    model_picker: Option<composer::DraftModelPicker>,
     workspace_mode: WorkspaceMode,
     workspace_edited: bool,
     base_ref: Option<String>,
@@ -231,6 +232,14 @@ struct Draft {
     start_from_origin_changed: bool,
     refs: DraftRefs,
     worktree_launch: Option<worktree_setup::DraftLaunch>,
+}
+
+impl Draft {
+    fn selected_model(&self) -> Option<&crate::connection::ModelSelection> {
+        self.model_choice
+            .as_ref()
+            .or_else(|| self.model_policy.as_ref()?.default_model.as_ref())
+    }
 }
 
 #[derive(Default)]
@@ -771,7 +780,12 @@ impl State {
         draft.model_picker = None;
         let prompt = draft.edit.text.clone();
         let preparing_worktree = matches!(&workspace, LaunchWorkspace::Worktree { .. });
-        let thread_id = connection.launch_thread(id.clone(), prompt.clone(), workspace);
+        let thread_id = connection.launch_thread(
+            id.clone(),
+            prompt.clone(),
+            workspace,
+            draft.model_choice.clone(),
+        );
         if preparing_worktree {
             connection.observe_draft_worktree(Some(thread_id.clone()));
             draft.worktree_launch = Some(worktree_setup::DraftLaunch::new(thread_id, prompt));
@@ -1376,10 +1390,10 @@ impl State {
                     }
                 }
             }
-            Event::DraftClaudeDefault { project_id, model } => {
+            Event::DraftModelSettings { project_id, policy } => {
                 if let Some(draft) = self.new_thread_drafts.get_mut(&project_id) {
-                    draft.claude_model = model;
-                    if !matches!(model, Some(crate::connection::DraftClaudeModel::Sonnet46)) {
+                    draft.model_policy = policy;
+                    if draft.model_policy.is_none() {
                         draft.model_picker = None;
                     }
                 }
