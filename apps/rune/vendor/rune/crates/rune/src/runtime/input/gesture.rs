@@ -233,6 +233,11 @@ impl RuntimeCore {
             if middle { self.autoscroll_down(x, y); }
             return;
         };
+        self.hold_button(i, x, y, button, link);
+    }
+
+    /// Start a non-primary button's capture after the hit target has been chosen.
+    pub(in crate::runtime) fn hold_button(&mut self, i: usize, x: f32, y: f32, button: PointerButton, link: Option<usize>) {
         let n = &self.tree.nodes[i];
         let r = n.target;
         let [lx, ly] = self.to_local(i, x, y);

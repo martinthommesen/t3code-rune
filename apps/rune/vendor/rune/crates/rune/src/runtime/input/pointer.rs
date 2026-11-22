@@ -417,7 +417,9 @@ impl RuntimeCore {
         // A button the element didn't opt in to is the middle button's click on a link or on
         // `on_middle_press`: neither its `on_press` nor its `on_drag` hears it.
         let opted = self.takes_button(i, button);
-        let (has_drag, has_press, has_double) = (self.drags_with(i, button), opted && n.handlers.on_press.is_some(), n.handlers.on_double_press.is_some());
+        let has_drag = self.drags_with(i, button);
+        let has_press = opted && button != crate::PointerButton::Secondary && n.handlers.on_press.is_some();
+        let has_double = n.handlers.on_double_press.is_some();
         let middle_press = !opted && link.is_none() && n.handlers.on_middle_press.is_some();
         if has_drag {
             let (dx, dy) = (x - at.0, y - at.1);

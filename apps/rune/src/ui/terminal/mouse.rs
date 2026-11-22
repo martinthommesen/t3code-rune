@@ -30,10 +30,16 @@ pub(super) fn capture(modes: TermMode, mods: Mods) -> bool {
 }
 
 impl State {
+    pub(super) fn terminal_mouse_captured(&mut self, attachment: u64, mods: Mods) -> bool {
+        self.terminal_attachment_mut(attachment)
+            .is_some_and(|pane| capture(*pane.screen.term.mode(), mods))
+    }
+
     pub(super) fn terminal_pointer_drag(&mut self, attachment: u64, drag: &Drag, tx: &mut Tx) {
         let button = match tx.button() {
             PointerButton::Primary => 0,
             PointerButton::Middle => 1,
+            PointerButton::Secondary => 2,
             _ => return,
         };
         let primary_paste = self.terminal_primary_paste;
@@ -54,7 +60,7 @@ impl State {
         let Some(button) = tracking else {
             if tx.button() == PointerButton::Primary {
                 self.drag_terminal_selection(attachment, drag, tx);
-            } else if drag.phase == Phase::Down {
+            } else if tx.button() == PointerButton::Middle && drag.phase == Phase::Down {
                 let selected = primary_paste
                     .then(|| super::selection::selected_text(pane))
                     .flatten();

@@ -34,8 +34,22 @@ impl RuntimeCore {
 
     /// Capture a secondary gesture without activating primary actions or text selection.
     pub fn secondary_down(&mut self, x: f32, y: f32) {
+        if !self.secondary_menu_down(x, y) || self.pointer.press.is_held() { return; }
+        let hit = self.hit.top_hit(|id, r| self.hit_contains(id, r, x, y))
+            .and_then(|id| self.tree.node_index.get(&id).copied());
+        let button = crate::PointerButton::Secondary;
+        if let Some(i) = std::iter::successors(hit, |&i| self.tree.nodes[i].parent)
+            .take_while(|&i| !self.subtree_exiting(i) && self.allowed(i))
+            .find(|&i| self.drags_with(i, button))
+        {
+            self.hold_button(i, x, y, button, None);
+        }
+    }
+
+    /// Prepare the context menu gesture, including when touch synthesizes a long press.
+    pub(in crate::runtime) fn secondary_menu_down(&mut self, x: f32, y: f32) -> bool {
         self.pointer.pos = Some((x, y));
-        if self.pointer.autoscroll_press(crate::PointerButton::Secondary) { return; }
+        if self.pointer.autoscroll_press(crate::PointerButton::Secondary) { return false; }
         self.tint_down(x, y, crate::PointerButton::Secondary);
         self.release_hover_hold();
         self.kbd.focus.step(focus_machine::FocusEvent::Pointed);
@@ -55,6 +69,7 @@ impl RuntimeCore {
         {
             self.frame.queue.push(Action::FocusControl(self.tree.nodes[c].path.clone()));
         }
+        true
     }
 
     /// A middle or secondary press at (x, y), with no primary press held: what a primary press
@@ -107,6 +122,9 @@ impl RuntimeCore {
         self.pointer.pos = Some((x, y));
         self.pointer.release_tint(crate::PointerButton::Secondary);
         if self.pointer.autoscroll_release(crate::PointerButton::Secondary) { return; }
+        if self.pointer.press.held().is_some_and(|held| held.button == crate::PointerButton::Secondary) {
+            self.release_capture(app, x, y);
+        }
         self.secondary_region_up(x, y);
         let (path, down_link, left) = match self.pointer.take_secondary() {
             capture::Secondary::Held { path, link, left } => (Some(path), link, left),

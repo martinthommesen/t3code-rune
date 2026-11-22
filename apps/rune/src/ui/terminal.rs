@@ -921,12 +921,14 @@ fn viewport(terminal: &Pane, active: bool, palette: Palette) -> El {
         .focusable(active)
         .no_focus_ring()
         .on_secondary_press(move |state: &mut State, point, tx| {
-            state.open_terminal_menu(attachment, point, tx);
+            if !state.terminal_mouse_captured(attachment, tx.mods()) {
+                state.open_terminal_menu(attachment, point, tx);
+            }
         })
         .on_drag(move |state: &mut State, drag, tx| {
             state.terminal_pointer_drag(attachment, drag, tx)
         })
-        .pointer_buttons([rune::PointerButton::Middle])
+        .pointer_buttons([rune::PointerButton::Middle, rune::PointerButton::Secondary])
         .on_pointer_move_local(move |state: &mut State, event, tx| {
             state.terminal_pointer_move(attachment, event, tx)
         })

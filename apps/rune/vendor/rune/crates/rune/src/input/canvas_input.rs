@@ -91,7 +91,7 @@ impl RotateEvent {
 }
 
 /// A mouse button. Only `Primary` reaches `on_press` and `on_drag` unless an element opts in to
-/// others with [`El::pointer_buttons`]; `Secondary` always goes to `on_secondary_press`.
+/// others with [`El::pointer_buttons`]. Secondary also follows context-menu routing.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum PointerButton {
@@ -106,10 +106,11 @@ pub enum PointerButton {
 }
 
 impl PointerButton {
-    /// Its bit in [`CanvasInput::buttons`]; none for the primary and secondary buttons.
+    /// Its bit in [`CanvasInput::buttons`]; every element already accepts the primary button.
     pub(crate) fn bit(self) -> u8 {
         match self {
-            Self::Primary | Self::Secondary => 0,
+            Self::Primary => 0,
+            Self::Secondary => 16,
             Self::Middle => 1,
             Self::Back => 2,
             Self::Forward => 4,
@@ -189,7 +190,8 @@ impl El {
 
     /// Mouse buttons besides the primary that press and drag this element: its `on_press` and
     /// `on_drag` hear them too, and [`Tx::button`] says which. A middle-button drag pans a
-    /// canvas this way. The secondary button keeps opening `on_secondary_press`.
+    /// canvas this way. The secondary button can drive `on_drag` and keeps opening
+    /// `on_secondary_press` when released over its context-menu target.
     pub fn pointer_buttons(mut self, buttons: impl IntoIterator<Item = PointerButton>) -> Self {
         let bits = buttons.into_iter().fold(0, |bits, b| bits | b.bit());
         self.canvas_input().buttons |= bits;
