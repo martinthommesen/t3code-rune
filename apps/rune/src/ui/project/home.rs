@@ -26,18 +26,16 @@ fn comparison_path(path: &str) -> Cow<'_, str> {
     let path = path.trim_matches(|character: char| {
         character == '\u{feff}' || (character.is_whitespace() && character != '\u{85}')
     });
-    let bare_or_root_drive = |path: &str| match path.as_bytes() {
-        [letter, b':'] | [letter, b':', b'/' | b'\\'] => letter.is_ascii_alphabetic(),
-        _ => false,
-    };
+    let drive_root =
+        matches!(path.as_bytes(), [letter, b':', b'/' | b'\\'] if letter.is_ascii_alphabetic());
     let trimmed = if path.starts_with('/') {
         path.trim_end_matches('/')
     } else {
         path.trim_end_matches(['/', '\\'])
     };
-    let normalized = if trimmed.is_empty() || bare_or_root_drive(path) {
+    let normalized = if trimmed.is_empty() || drive_root {
         Cow::Borrowed(path)
-    } else if bare_or_root_drive(trimmed) {
+    } else if matches!(trimmed.as_bytes(), [letter, b':'] if letter.is_ascii_alphabetic()) {
         Cow::Owned(format!("{trimmed}\\"))
     } else {
         Cow::Borrowed(trimmed)
