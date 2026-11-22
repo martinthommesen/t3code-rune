@@ -1376,6 +1376,7 @@ impl State {
         let Some(workspace) = &mut self.workspace else {
             return;
         };
+        self.sidebar.update_project_scope(&shell.projects);
         if let Some(project) = &mut workspace.selection {
             let project_present = shell.projects.iter().any(|entry| entry.id == project.id);
             if let ProjectView::Conversation(conversation) = &project.view
@@ -1621,6 +1622,8 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
         body = body.child(dialog);
     } else if let Some(form) = &state.add_project {
         body = body.child(project::dialog(form, palette));
+    } else if let Some(overlays) = sidebar::project_scope_overlay(state, palette, pane_size[1]) {
+        body = body.children(overlays);
     } else if let Some(overlays) = worktree_setup::overlay(state, palette, width) {
         body = body.children(overlays);
     }
@@ -2110,6 +2113,10 @@ mod tests {
                 path: "/example".into(),
                 icon: None,
                 favicon_path: None,
+                created_at: None,
+                updated_at: None,
+                pinned_at: None,
+                archived_at: None,
             }],
             threads: vec![Thread {
                 id: thread_id.into(),
@@ -2117,6 +2124,7 @@ mod tests {
                 project_id: "project".into(),
                 status: "idle".into(),
                 updated_at: None,
+                created_at: None,
                 activity: Default::default(),
                 providers: Default::default(),
                 worktree_path: None,

@@ -17,7 +17,10 @@ use super::sidebar_header::{self, Colors, Layout};
 use super::{Project, ProjectView, Shell, State, Thread, Workspace};
 
 pub(super) mod project_badge;
+mod project_scope;
 mod provider_badge;
+
+pub(super) use project_scope::overlay as project_scope_overlay;
 
 const SMALL: TextStyle = TextStyle::new(12.0, 400.0).lh(16.0);
 const TITLE: TextStyle = TextStyle::new(14.0, 500.0).lh(20.0);
@@ -66,7 +69,7 @@ enum ProjectPicker {
 #[derive(Default)]
 pub(super) struct SidebarState {
     search: TextEdit,
-    project: Option<String>,
+    scope: project_scope::ProjectScope,
     picker: Option<ProjectPicker>,
     now_minute: i64,
     rename: Option<Rename>,
@@ -152,14 +155,31 @@ impl SidebarState {
         changed
     }
 
-    fn scope<'a>(&self, shell: &'a Shell) -> Option<&'a Project> {
-        let selected = self.project.as_deref()?;
-        shell.projects.iter().find(|project| project.id == selected)
+    pub(super) fn update_project_scope(&mut self, projects: &[Project]) {
+        self.scope.selected.retain(|id| {
+            projects
+                .iter()
+                .any(|project| &project.id == id && project.archived_at.is_none())
+        });
+        if projects.iter().all(|project| project.archived_at.is_some())
+            && self.picker == Some(ProjectPicker::Filter)
+        {
+            self.picker = None;
+        }
+    }
+
+    fn selected_project<'a>(&self, shell: &'a Shell) -> Option<&'a Project> {
+        let [selected] = self.scope.selected.as_slice() else {
+            return None;
+        };
+        shell
+            .projects
+            .iter()
+            .find(|project| &project.id == selected)
     }
 
     fn threads<'a>(&self, shell: &'a Shell) -> Vec<(&'a Project, &'a Thread)> {
         let query = normalized_search(self.search.text.trim());
-        let scope = self.scope(shell).map(|project| project.id.as_str());
         let projects: std::collections::HashMap<_, _> = shell
             .projects
             .iter()
@@ -168,7 +188,7 @@ impl SidebarState {
         let mut threads: Vec<_> = shell
             .threads
             .iter()
-            .filter(|thread| scope.is_none_or(|project| project == thread.project_id))
+            .filter(|thread| self.scope.matches(&thread.project_id))
             .filter_map(|thread| {
                 projects
                     .get(thread.project_id.as_str())
@@ -239,31 +259,25 @@ pub(super) fn view(
                 .role("status"),
         );
     };
-    let scope = state.sidebar.scope(shell);
     let list = thread_list(state, workspace, shell, colors, dark);
     sidebar = sidebar
-        .child(toolbar(state, workspace, shell, scope, colors, dark))
+        .child(toolbar(state, workspace, shell, colors, dark))
         .child(list);
-    if let Some(picker) = state
-        .sidebar
-        .picker
-        .filter(|picker| *picker != ProjectPicker::Draft)
-    {
+    if state.sidebar.picker == Some(ProjectPicker::NewThread) {
         sidebar = sidebar.child(project_picker(
-            workspace, shell, picker, scope, colors, dark, false,
+            workspace,
+            shell,
+            ProjectPicker::NewThread,
+            None,
+            colors,
+            dark,
+            false,
         ));
     }
     sidebar
 }
 
-fn toolbar(
-    state: &State,
-    workspace: &Workspace,
-    shell: &Shell,
-    scope: Option<&Project>,
-    colors: Colors,
-    dark: bool,
-) -> El {
+fn toolbar(state: &State, workspace: &Workspace, shell: &Shell, colors: Colors, dark: bool) -> El {
     let icon_color =
         hex(if dark { "#8b8b8b" } else { "#85868e" }).expect("static sidebar icon color");
     let mut search = row()
@@ -311,27 +325,14 @@ fn toolbar(
         .center_y()
         .child(search);
     let mut actions = row().center_y();
-    if !shell.projects.is_empty() {
-        actions = actions.child(
-            control("project-filter", "Filter threads by project", colors)
-                .expanded(state.sidebar.picker == Some(ProjectPicker::Filter))
-                .on_press_tx(|state: &mut State, tx| {
-                    state.sidebar.picker = if state.sidebar.picker == Some(ProjectPicker::Filter) {
-                        None
-                    } else {
-                        let key = state.sidebar.project.as_ref().map_or_else(
-                            || "all-projects".into(),
-                            |project| format!("project-option-{project}"),
-                        );
-                        tx.focus_when_shown(key, tx.focus_visible());
-                        Some(ProjectPicker::Filter)
-                    };
-                })
-                .child(scope.map_or_else(
-                    || icon(&FILTER, 16.0).color(icon_color).a11y_hidden(),
-                    |project| project_badge::view(project, &workspace.favicons, dark),
-                )),
-        );
+    if shell
+        .projects
+        .iter()
+        .any(|project| project.archived_at.is_none())
+    {
+        actions = actions.child(project_scope::view_trigger(
+            state, workspace, shell, colors, dark, icon_color,
+        ));
     }
     if workspace.project_writes {
         actions = actions.child(
@@ -402,7 +403,7 @@ fn start_new_thread(state: &mut State, tx: &mut Tx) {
     };
     if let Some(project) = state
         .sidebar
-        .scope(shell)
+        .selected_project(shell)
         .or_else(|| (shell.projects.len() == 1).then(|| &shell.projects[0]))
     {
         state.navigate(Destination::NewThread(project.id.clone()));
@@ -503,23 +504,6 @@ fn project_picker(
     can_add: bool,
 ) -> El {
     let mut items = col().w_full().padding(4.0);
-    if picker == ProjectPicker::Filter {
-        items = items.child(
-            project_option(
-                "all-projects".into(),
-                "All projects",
-                scope.is_none(),
-                None,
-                colors,
-            )
-            .on_press_tx(|state: &mut State, tx| {
-                state.sidebar.project = None;
-                state.sidebar.picker = None;
-                tx.scroll_to_instant("threads", 0.0, 0.0);
-                tx.focus("project-filter", tx.focus_visible());
-            }),
-        );
-    }
     for project in &shell.projects {
         let id = project.id.clone();
         items = items.child(
@@ -530,16 +514,12 @@ fn project_picker(
                 Some(project_badge::view(project, &workspace.favicons, dark)),
                 colors,
             )
-            .on_press_tx(move |state: &mut State, tx| {
+            .on_press(move |state: &mut State| {
                 state.sidebar.picker = None;
-                match picker {
-                    ProjectPicker::NewThread => state.navigate(Destination::NewThread(id.clone())),
-                    ProjectPicker::Draft => change_draft_project(state, &id),
-                    ProjectPicker::Filter => {
-                        state.sidebar.project = Some(id.clone());
-                        tx.scroll_to_instant("threads", 0.0, 0.0);
-                        tx.focus("project-filter", tx.focus_visible());
-                    }
+                if picker == ProjectPicker::Draft {
+                    change_draft_project(state, &id);
+                } else {
+                    state.navigate(Destination::NewThread(id.clone()));
                 }
             }),
         );
@@ -578,9 +558,9 @@ fn project_picker(
                 state.sidebar.picker = None;
                 tx.focus(
                     match picker {
-                        ProjectPicker::Filter => "project-filter",
                         ProjectPicker::NewThread => "new-thread",
                         ProjectPicker::Draft => "draft-project-selector",
+                        ProjectPicker::Filter => unreachable!("scope has its own popup"),
                     },
                     tx.focus_visible(),
                 );
@@ -670,12 +650,11 @@ fn thread_list(
                 }),
         );
     if state.sidebar.search.text.trim().is_empty() {
-        let scope = state.sidebar.scope(shell);
         rows = rows.children(
             shell
                 .projects
                 .iter()
-                .filter(|project| scope.is_none_or(|scope| scope.id == project.id))
+                .filter(|project| state.sidebar.scope.matches(&project.id))
                 .filter(|project| !projects.contains(project.id.as_str()))
                 .map(|project| {
                     let id = project.id.clone();

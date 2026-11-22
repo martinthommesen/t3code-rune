@@ -27,6 +27,14 @@ pub(crate) struct Project {
     pub(crate) icon: Option<ProjectIcon>,
     #[serde(rename = "faviconPath")]
     pub(crate) favicon_path: Option<String>,
+    #[serde(rename = "createdAt")]
+    pub(crate) created_at: Option<String>,
+    #[serde(rename = "updatedAt")]
+    pub(crate) updated_at: Option<String>,
+    #[serde(rename = "pinnedAt")]
+    pub(crate) pinned_at: Option<String>,
+    #[serde(rename = "archivedAt")]
+    pub(crate) archived_at: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -53,11 +61,14 @@ pub(super) struct ProjectRow {
     #[serde(flatten)]
     project: Project,
     pub(super) default_model_selection: Option<ModelSelection>,
-    pub(super) archived_at: Option<String>,
     repository_identity: Option<Value>,
 }
 
 impl ProjectRow {
+    pub(super) fn is_archived(&self) -> bool {
+        self.project.archived_at.is_some()
+    }
+
     fn retain_repository_identity(&mut self, previous: Option<&Self>) {
         if self.repository_identity.is_none()
             && let Some(previous) = previous.filter(|row| row.project.path == self.project.path)
@@ -78,6 +89,8 @@ pub(crate) struct Thread {
     pub(crate) status: String,
     #[serde(rename = "updatedAt")]
     pub(crate) updated_at: Option<String>,
+    #[serde(rename = "createdAt")]
+    pub(crate) created_at: Option<String>,
     #[serde(flatten)]
     pub(crate) activity: ThreadActivity,
     #[serde(flatten)]
@@ -92,9 +105,17 @@ pub(crate) struct Thread {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ThreadActivity {
     latest_user_message_at: Option<String>,
+    #[serde(default, deserialize_with = "present_timestamp")]
+    latest_user_authored_message_at: Option<Option<String>>,
     latest_run_requested_at: Option<String>,
     latest_run_started_at: Option<String>,
     latest_run_completed_at: Option<String>,
+}
+
+fn present_timestamp<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Option<String>>, D::Error> {
+    Option::<String>::deserialize(deserializer).map(Some)
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
@@ -156,6 +177,21 @@ impl Thread {
         .filter_map(parse)
         .max()
         .or_else(|| self.updated_at.as_deref().and_then(parse))
+    }
+
+    pub(crate) fn latest_user_activity(&self) -> Option<OffsetDateTime> {
+        let candidates = match &self.activity.latest_user_authored_message_at {
+            Some(timestamp) => [timestamp, &self.created_at, &self.updated_at],
+            None => [
+                &self.activity.latest_user_message_at,
+                &self.updated_at,
+                &self.created_at,
+            ],
+        };
+        candidates
+            .into_iter()
+            .filter_map(Option::as_deref)
+            .find_map(|value| OffsetDateTime::parse(value, &Rfc3339).ok())
     }
 }
 

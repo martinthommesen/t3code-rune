@@ -1836,7 +1836,7 @@ impl Session {
     fn launch_project(&self, project_id: &str) -> Result<&projection::ProjectRow, &'static str> {
         self.shell
             .project(project_id)
-            .filter(|project| project.archived_at.is_none())
+            .filter(|project| !project.is_archived())
             .ok_or("The project is no longer available for new threads.")
     }
 
