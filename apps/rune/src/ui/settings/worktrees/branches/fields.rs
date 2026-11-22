@@ -3,8 +3,10 @@ use uuid::Uuid;
 
 use crate::connection::BranchTextField;
 
-use super::super::super::{CONTROL, DESCRIPTION, Palette, RESET, State, icon_button};
+use super::super::super::{CONTROL, DESCRIPTION, Page, Palette, RESET, State, icon_button};
 use super::workspace::{self, BranchTextView};
+
+mod textarea;
 
 const FIELD_TEXT: TextStyle = TextStyle::new(14.0, 400.0).lh(20.0);
 
@@ -58,6 +60,7 @@ struct Editor {
     draft: TextEdit,
     edited: bool,
     pending: Option<Uuid>,
+    resize: textarea::Resize,
 }
 
 impl FieldsPanel {
@@ -96,6 +99,7 @@ impl Editor {
     fn replace_draft(&mut self, value: String) {
         self.draft.replace_text(&value);
         self.edited = false;
+        self.resize = textarea::Resize::default();
     }
 
     fn pending(&mut self, operation: Uuid, value: String) {
@@ -105,6 +109,17 @@ impl Editor {
 }
 
 pub(in crate::ui) fn poll(state: &mut State, tx: &mut Tx) -> bool {
+    let instructions = BranchTextField::Instructions;
+    if !state.settings.open
+        || state.settings.page != Page::Worktrees
+        || state
+            .settings
+            .workspace
+            .branch_naming_view(state)
+            .is_none_or(|naming| naming.mode != instructions.mode())
+    {
+        state.settings.branch_fields.editor(instructions).resize = textarea::Resize::default();
+    }
     let mut changed = false;
     for field in BranchTextField::ALL {
         changed |= poll_field(state, tx, field);
@@ -163,7 +178,7 @@ pub(super) fn view(
         .focus_ring(1.0, 1.0, palette.accent);
     input = match field {
         BranchTextField::Prefix => input.single_line().h(30.0),
-        BranchTextField::Instructions => input.py(4.0).h(90.0).w_full(),
+        BranchTextField::Instructions => input.py(4.0),
     };
     if setting.writable {
         input = input
@@ -253,7 +268,12 @@ pub(super) fn view(
             .child(heading)
             .child(input.w(232.0)),
         BranchTextField::Prefix => col().gap(12.0).child(heading).child(input.w_full()),
-        BranchTextField::Instructions => col().gap(12.0).child(heading).child(input),
+        BranchTextField::Instructions => col().gap(12.0).child(heading).child(textarea::view(
+            state,
+            input,
+            palette,
+            setting.writable,
+        )),
     };
     Some(
         row.key(labels.row)

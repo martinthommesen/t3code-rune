@@ -33,16 +33,18 @@ pub(super) fn section(state: &State, palette: Palette, width: f32) -> El {
     let writable = setting.as_ref().is_some_and(|setting| setting.writable);
     let mode = setting.as_ref().map(|setting| setting.mode);
     let value = mode.map_or("Unavailable", label);
+    let custom = mode == Some(BranchNamingMode::Custom);
+    let trigger_width = if custom { 168.0 } else { WIDTH };
     let mut trigger = row()
         .key(TRIGGER)
         .role("combobox")
         .label(LABEL)
         .a11y_value(value)
         .expanded(panel.branch_naming_highlighted.is_some())
-        .size(WIDTH, 28.0)
-        .min_w(WIDTH)
+        .size(trigger_width, 28.0)
+        .min_w(trigger_width)
         .px(9.0)
-        .gap(6.0)
+        .gap(if custom { 4.0 } else { 6.0 })
         .items_center()
         .radius(8.0)
         .fill(surface(palette, "#fcfcfc", "#171717"))
