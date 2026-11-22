@@ -1,5 +1,6 @@
 pub(in crate::server) mod citation_search;
 mod legacy_cutover;
+mod legacy_pre38;
 mod legacy_pre52;
 mod legacy_pull_requests;
 mod legacy_settlement;
@@ -15,7 +16,8 @@ use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
 };
 
-const MINIMUM_HEAD: i64 = 38;
+const MINIMUM_HEAD: i64 = 30;
+const PIN_ORDER_HEAD: i64 = 38;
 const TITLE_STATE_HEAD: i64 = 52;
 
 struct Migration {
@@ -161,7 +163,29 @@ pub(super) fn migrate(path: &Path) -> Result<(), MigrationError> {
 }
 
 fn migrations() -> impl Iterator<Item = &'static Migration> {
-    legacy_pre52::MIGRATIONS.iter().chain(sql::MIGRATIONS)
+    legacy_pre38::MIGRATIONS
+        .iter()
+        .chain(legacy_pre52::MIGRATIONS)
+        .chain(sql::MIGRATIONS)
+}
+
+fn add_column(
+    db: &Transaction<'_>,
+    table: &'static str,
+    column: &'static str,
+    definition: &'static str,
+) -> rusqlite::Result<()> {
+    let exists: bool = db.query_row(
+        "SELECT EXISTS (SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2)",
+        params![table, column],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        db.execute_batch(&format!(
+            "ALTER TABLE {table} ADD COLUMN {column} {definition}"
+        ))?;
+    }
+    Ok(())
 }
 
 fn preview_id(database: &Connection) -> rusqlite::Result<Option<i64>> {
@@ -259,6 +283,8 @@ fn validated_head(database: &Connection) -> Result<i64, MigrationError> {
 
     let required = if head >= TITLE_STATE_HEAD {
         TITLE_STATE_HEAD
+    } else if head >= PIN_ORDER_HEAD {
+        PIN_ORDER_HEAD
     } else {
         MINIMUM_HEAD
     };

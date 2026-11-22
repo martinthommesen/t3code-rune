@@ -1,7 +1,7 @@
 use rusqlite::{Transaction, params, types::ValueRef};
 use serde_json::Value;
 
-use super::{Migration, legacy_pull_requests};
+use super::{Migration, add_column, legacy_pull_requests};
 
 pub(super) const MIGRATIONS: &[Migration] = &[
     Migration::scripted(39, "ProjectionProjectsDefaultThreadEnvMode", |db| {
@@ -57,25 +57,6 @@ pub(super) const MIGRATIONS: &[Migration] = &[
         "ALTER TABLE projection_threads ADD COLUMN title_state_json TEXT",
     ),
 ];
-
-fn add_column(
-    db: &Transaction<'_>,
-    table: &'static str,
-    column: &'static str,
-    definition: &'static str,
-) -> rusqlite::Result<()> {
-    let exists: bool = db.query_row(
-        "SELECT EXISTS (SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2)",
-        params![table, column],
-        |row| row.get(0),
-    )?;
-    if !exists {
-        db.execute_batch(&format!(
-            "ALTER TABLE {table} ADD COLUMN {column} {definition}"
-        ))?;
-    }
-    Ok(())
-}
 
 fn migrate_50(db: &Transaction<'_>) -> rusqlite::Result<()> {
     db.execute_batch(
