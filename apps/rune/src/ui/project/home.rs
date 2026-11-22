@@ -4,11 +4,12 @@ use rune::color::{hex, oklch};
 use rune::{Color, El, Icon, TextStyle, Tx, col, icon, row, text};
 use uuid::Uuid;
 
+use super::ProjectDestination;
 use crate::ui::{Destination, Palette, Project, State, Workspace, conversation::Layout};
 
 pub(in crate::ui) struct ScratchRequest {
     pub(super) command_id: String,
-    pub(super) draft_origin: Option<String>,
+    pub(super) destination: ProjectDestination,
 }
 
 impl Workspace {
@@ -199,6 +200,14 @@ fn action(
 
 impl State {
     pub(in crate::ui) fn start_scratch_project(&mut self, _: &mut Tx) {
+        self.request_scratch_project(false);
+    }
+
+    pub(in crate::ui) fn start_scratch_from_new_thread_picker(&mut self) {
+        self.request_scratch_project(true);
+    }
+
+    fn request_scratch_project(&mut self, new_thread: bool) {
         if self.scratch_request.is_some() {
             return;
         }
@@ -210,10 +219,17 @@ impl State {
         }) else {
             return;
         };
-        let draft_origin = match workspace.destination() {
-            Destination::Home => None,
-            Destination::NewThread(project) => Some(project),
-            _ => return,
+        let destination = if new_thread {
+            let Some(origin) = self.history_destination() else {
+                return;
+            };
+            ProjectDestination::NewThread(origin)
+        } else {
+            match workspace.destination() {
+                Destination::Home => ProjectDestination::Draft,
+                Destination::NewThread(project) => ProjectDestination::MoveDraft(project),
+                _ => return,
+            }
         };
         let Some(connection) = &self.connection else {
             return;
@@ -223,7 +239,7 @@ impl State {
         self.project_notice = None;
         self.scratch_request = Some(ScratchRequest {
             command_id,
-            draft_origin,
+            destination,
         });
     }
 }

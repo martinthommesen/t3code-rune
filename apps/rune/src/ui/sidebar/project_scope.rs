@@ -82,7 +82,7 @@ impl Choice<'_> {
     }
 }
 
-pub(super) fn ordered_projects(shell: &Shell, pinned_first: bool) -> Vec<&Project> {
+pub(in crate::ui) fn ordered_projects(shell: &Shell, pinned_first: bool) -> Vec<&Project> {
     let mut activity = HashMap::<&str, Option<OffsetDateTime>>::new();
     for thread in shell.threads.iter().filter(|thread| !thread.archived) {
         let latest = thread.latest_user_activity();

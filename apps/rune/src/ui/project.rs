@@ -24,8 +24,14 @@ pub(super) struct AddProject {
 
 pub(super) struct AddedProject {
     id: String,
-    open_draft: bool,
-    draft_origin: Option<String>,
+    destination: ProjectDestination,
+}
+
+enum ProjectDestination {
+    Project,
+    Draft,
+    MoveDraft(String),
+    NewThread(super::Destination),
 }
 
 #[derive(Clone, Copy, Default)]
@@ -374,6 +380,7 @@ impl State {
         &mut self,
         command_id: &str,
         result: Result<ProjectCreated, String>,
+        tx: &mut Tx,
     ) {
         if self
             .scratch_request
@@ -391,10 +398,9 @@ impl State {
                     }
                     self.added_project = Some(AddedProject {
                         id: project.project_id,
-                        open_draft: true,
-                        draft_origin: pending.draft_origin,
+                        destination: pending.destination,
                     });
-                    self.select_added_project();
+                    self.select_added_project(tx);
                 }
                 Err(message) => self.project_notice = Some(message),
             }
@@ -409,15 +415,18 @@ impl State {
         };
         match result {
             Ok(project) => {
-                let open_draft = matches!(form.step, ProjectStep::GitDestination);
+                let destination = if matches!(form.step, ProjectStep::GitDestination) {
+                    ProjectDestination::Draft
+                } else {
+                    ProjectDestination::Project
+                };
                 self.add_project = None;
                 self.project_notice = project.commit_error;
                 self.added_project = Some(AddedProject {
                     id: project.project_id,
-                    open_draft,
-                    draft_origin: None,
+                    destination,
                 });
-                self.select_added_project();
+                self.select_added_project(tx);
             }
             Err(error) => {
                 form.pending = None;
@@ -426,7 +435,7 @@ impl State {
         }
     }
 
-    pub(super) fn select_added_project(&mut self) {
+    pub(super) fn select_added_project(&mut self, tx: &mut Tx) {
         let Some(added) = &self.added_project else {
             return;
         };
@@ -440,24 +449,32 @@ impl State {
                 .added_project
                 .take()
                 .expect("a project selection is pending");
-            if let Some(origin) = added.draft_origin {
-                if self.workspace.as_ref().is_some_and(|workspace| {
-                    workspace.destination() == super::Destination::NewThread(origin)
-                }) {
-                    super::sidebar::change_draft_project(self, &added.id);
+            match added.destination {
+                ProjectDestination::Project => self.select_project(&added.id),
+                ProjectDestination::Draft => {
+                    let destination = super::Destination::NewThread(added.id.clone());
+                    if self
+                        .workspace
+                        .as_ref()
+                        .is_some_and(|workspace| workspace.can_visit(&destination))
+                    {
+                        self.navigate(destination);
+                    } else {
+                        self.select_project(&added.id);
+                    }
                 }
-                return;
-            }
-            let destination = super::Destination::NewThread(added.id.clone());
-            if added.open_draft
-                && self
-                    .workspace
-                    .as_ref()
-                    .is_some_and(|workspace| workspace.can_visit(&destination))
-            {
-                self.navigate(destination);
-            } else {
-                self.select_project(&added.id);
+                ProjectDestination::MoveDraft(origin) => {
+                    if self.workspace.as_ref().is_some_and(|workspace| {
+                        workspace.destination() == super::Destination::NewThread(origin)
+                    }) {
+                        super::sidebar::change_draft_project(self, &added.id);
+                    }
+                }
+                ProjectDestination::NewThread(origin) => {
+                    if self.history_destination().as_ref() == Some(&origin) {
+                        self.open_fresh_project_draft(&added.id, tx);
+                    }
+                }
             }
         }
     }

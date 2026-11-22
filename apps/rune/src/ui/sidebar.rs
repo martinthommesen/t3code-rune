@@ -17,7 +17,7 @@ use super::sidebar_header::{self, Colors, Layout};
 use super::{Project, ProjectView, Shell, State, Thread, Workspace};
 
 pub(super) mod project_badge;
-mod project_scope;
+pub(super) mod project_scope;
 pub(super) mod provider_badge;
 
 pub(super) use project_scope::overlay as project_scope_overlay;
@@ -243,7 +243,7 @@ fn relative_time(timestamp: OffsetDateTime, now_minute: i64) -> String {
     }
 }
 
-fn normalized_search(text: &str) -> String {
+pub(super) fn normalized_search(text: &str) -> String {
     text.nfkd()
         .filter(|glyph| !unicode_normalization::char::is_combining_mark(*glyph))
         .flat_map(char::to_lowercase)
@@ -472,6 +472,10 @@ pub(super) fn draft_picker_open(state: &State) -> bool {
     state.sidebar.picker == Some(ProjectPicker::Draft)
 }
 
+pub(super) fn close_project_picker(state: &mut State) {
+    state.sidebar.picker = None;
+}
+
 pub(super) fn close_draft_project_picker(sidebar: &mut SidebarState) {
     if sidebar.picker == Some(ProjectPicker::Draft) {
         sidebar.picker = None;
@@ -532,7 +536,7 @@ pub(super) fn change_draft_project(state: &mut State, target: &str) {
             target.to_owned(),
             super::Draft {
                 edit: draft.edit,
-                ..super::Draft::default()
+                ..super::Draft::new_thread()
             },
         );
     }

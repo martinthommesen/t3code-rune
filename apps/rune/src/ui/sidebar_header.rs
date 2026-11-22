@@ -264,17 +264,27 @@ pub(super) fn shortcut(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool
         || state.onboarding.is_active()
         || state.settings.is_open()
         || state.add_project.is_some()
+        || state.new_thread_picker.is_some()
         || state.terminal_close_confirmation_open()
     {
         return false;
     }
     let terminal_focus = tx.focused() == Some(super::terminal::INPUT_KEY);
     let control = mods.ctrl || (!cfg!(target_os = "macos") && mods.cmd);
-    if !(control && terminal_focus) && state.resolve_shortcut(event, tx) == Some("sidebar.toggle") {
-        if !tx.key_repeat() {
-            state.toggle_sidebar();
+    match state.resolve_shortcut(event, tx) {
+        Some("sidebar.toggle") if !(control && terminal_focus) => {
+            if !tx.key_repeat() {
+                state.toggle_sidebar();
+            }
+            return true;
         }
-        return true;
+        Some("chat.new") if !terminal_focus => {
+            if !tx.key_repeat() {
+                state.start_new_thread_shortcut(tx);
+            }
+            return true;
+        }
+        _ => {}
     }
     if terminal_focus
         || mods.shift

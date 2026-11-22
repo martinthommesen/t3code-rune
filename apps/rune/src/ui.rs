@@ -19,6 +19,7 @@ mod conversation;
 mod draft_hero;
 mod file_preview;
 mod navigation_history;
+mod new_thread;
 mod onboarding;
 mod project;
 mod project_favicons;
@@ -211,7 +212,7 @@ impl Workspace {
             Destination::Thread { project, thread } => self
                 .thread(thread)
                 .is_some_and(|entry| entry.project_id == *project),
-            Destination::NewThread(_) => self.launch_writes,
+            Destination::NewThread(_) | Destination::Draft { .. } => self.launch_writes,
             Destination::Home | Destination::Project(_) => true,
         }
     }
@@ -219,6 +220,7 @@ impl Workspace {
 
 #[derive(Default)]
 struct Draft {
+    navigation_id: uuid::Uuid,
     edit: TextEdit,
     terminal_excerpts: Vec<crate::composer_context::TerminalExcerpt>,
     pending: bool,
@@ -294,6 +296,8 @@ struct State {
     draft_environment: Option<String>,
     drafts: HashMap<String, Draft>,
     new_thread_drafts: HashMap<String, Draft>,
+    parked_thread_drafts: HashMap<uuid::Uuid, (String, Draft)>,
+    new_thread_picker: Option<new_thread::Picker>,
     questions: HashMap<String, question::Questions>,
     question_auto_advance: Option<question::AutoAdvance>,
     draft_workspace_popup: Option<draft_hero::WorkspacePopup>,
@@ -334,6 +338,8 @@ impl Default for State {
             draft_environment: None,
             drafts: HashMap::new(),
             new_thread_drafts: HashMap::new(),
+            parked_thread_drafts: HashMap::new(),
+            new_thread_picker: None,
             questions: HashMap::new(),
             question_auto_advance: None,
             draft_workspace_popup: None,
@@ -389,6 +395,8 @@ impl State {
         self.draft_environment = None;
         self.drafts.clear();
         self.new_thread_drafts.clear();
+        self.parked_thread_drafts.clear();
+        self.new_thread_picker = None;
         self.questions.clear();
         self.question_auto_advance = None;
         self.add_project = None;
@@ -438,35 +446,70 @@ impl State {
         }
     }
 
+    fn history_destination(&self) -> Option<Destination> {
+        let destination = self.workspace.as_ref()?.destination();
+        if let Destination::NewThread(project) = &destination
+            && let Some(draft) = self.new_thread_drafts.get(project)
+        {
+            return Some(Destination::Draft {
+                project: project.clone(),
+                id: draft.navigation_id,
+            });
+        }
+        Some(destination)
+    }
+
+    fn can_visit_history(&self, destination: &Destination) -> bool {
+        self.workspace
+            .as_ref()
+            .is_some_and(|workspace| workspace.can_visit(destination))
+            && match destination {
+                Destination::Draft { project, id } => {
+                    self.new_thread_drafts
+                        .get(project)
+                        .is_some_and(|draft| draft.navigation_id == *id)
+                        || (self
+                            .parked_thread_drafts
+                            .get(id)
+                            .is_some_and(|(stored, _)| stored == project)
+                            && self
+                                .new_thread_drafts
+                                .get(project)
+                                .is_none_or(Draft::can_park))
+                }
+                _ => true,
+            }
+    }
+
     fn can_go(&self, direction: Direction) -> bool {
-        self.workspace.as_ref().is_some_and(|workspace| {
-            let current = workspace.destination();
+        self.history_destination().is_some_and(|current| {
             self.history.available(direction, |destination| {
-                *destination != current && workspace.can_visit(destination)
+                *destination != current && self.can_visit_history(destination)
             })
         })
     }
 
     fn go(&mut self, direction: Direction) {
-        let Some(workspace) = &self.workspace else {
+        let Some(current) = self.history_destination() else {
             return;
         };
-        if let Some(destination) =
-            self.history
-                .go(direction, workspace.destination(), |destination| {
-                    workspace.can_visit(destination)
-                })
-        {
+        let mut history = std::mem::take(&mut self.history);
+        let destination = history.go(direction, current, |destination| {
+            self.can_visit_history(destination)
+        });
+        self.history = history;
+        if let Some(destination) = destination {
             self.show_destination(destination);
         }
     }
 
     fn navigate(&mut self, destination: Destination) {
-        let Some(previous) = self.workspace.as_ref().map(Workspace::destination) else {
+        let Some(previous) = self.history_destination() else {
             return;
         };
-        let changed = previous != destination;
-        if self.show_destination(destination) && changed {
+        if self.show_destination(destination)
+            && self.history_destination().as_ref() != Some(&previous)
+        {
             self.history.record(previous);
         }
     }
@@ -476,13 +519,14 @@ impl State {
             Destination::Home => self.home_draft().unwrap_or(Destination::Home),
             destination => destination,
         };
-        let Some(workspace) = &mut self.workspace else {
+        let Some(workspace) = &self.workspace else {
             return false;
         };
-        if !workspace.can_visit(&destination) {
+        if !self.can_visit_history(&destination) {
             return false;
         }
-        if workspace.destination() == destination
+        if (workspace.destination() == destination
+            || self.history_destination().as_ref() == Some(&destination))
             && !matches!(
                 workspace.selection.as_ref().map(|project| &project.view),
                 Some(ProjectView::Conversation(conversation))
@@ -491,6 +535,24 @@ impl State {
         {
             return false;
         }
+        let destination = match destination {
+            Destination::Draft { project, id } => {
+                if let Some((_, draft)) = self.parked_thread_drafts.remove(&id)
+                    && let Some(mut previous) =
+                        self.new_thread_drafts.insert(project.clone(), draft)
+                {
+                    previous.refs.loading = false;
+                    previous.refs.refresh_again = false;
+                    self.parked_thread_drafts
+                        .insert(previous.navigation_id, (project.clone(), previous));
+                }
+                Destination::NewThread(project)
+            }
+            destination => destination,
+        };
+        let Some(workspace) = &mut self.workspace else {
+            return false;
+        };
         let has_thread = matches!(
             workspace.selection.as_ref().map(|project| &project.view),
             Some(ProjectView::Conversation(_))
@@ -572,12 +634,15 @@ impl State {
                 })),
             }),
             Destination::NewThread(id) => {
-                self.new_thread_drafts.entry(id.clone()).or_default();
+                self.new_thread_drafts
+                    .entry(id.clone())
+                    .or_insert_with(Draft::new_thread);
                 Some(ProjectSelection {
                     id,
                     view: ProjectView::NewThread,
                 })
             }
+            Destination::Draft { .. } => unreachable!("draft destination resolved above"),
         };
         if let Some(project_id) = new_draft {
             if workspace.worktree_launch
@@ -1038,6 +1103,8 @@ impl State {
                     self.reset_keybindings_panel();
                     self.drafts.clear();
                     self.new_thread_drafts.clear();
+                    self.parked_thread_drafts.clear();
+                    self.new_thread_picker = None;
                     self.questions.clear();
                     self.question_auto_advance = None;
                     self.terminal_tabs.clear();
@@ -1073,7 +1140,7 @@ impl State {
             }
             Event::Shell { projects, threads } => {
                 self.update_shell(Shell { projects, threads });
-                self.select_added_project();
+                self.select_added_project(tx);
                 if self
                     .workspace
                     .as_ref()
@@ -1352,7 +1419,9 @@ impl State {
                 }
                 self.observe_selected_draft_worktree();
             }
-            Event::ProjectAdded { command_id, result } => self.project_added(&command_id, result),
+            Event::ProjectAdded { command_id, result } => {
+                self.project_added(&command_id, result, tx)
+            }
             Event::GitRefs { project_id, result } => {
                 let remote = self
                     .workspace
@@ -1606,6 +1675,7 @@ impl State {
                 self.workspace = None;
                 self.question_auto_advance = None;
                 self.connection_error = Some(reason);
+                self.new_thread_picker = None;
                 self.add_project = None;
                 self.added_project = None;
                 self.scratch_request = None;
@@ -1844,6 +1914,7 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
         state
             .terminal_close_dialog(palette)
             .or_else(|| settings::overlay(state, palette, width, height, cx))
+            .or_else(|| new_thread::overlay(state, palette, width, height))
             .or_else(|| file_preview::expanded(state, detail_layout, palette))
     };
     let modal_open = modal.is_some();

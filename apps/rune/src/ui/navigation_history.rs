@@ -4,15 +4,17 @@ pub(super) enum Destination {
     Project(String),
     Thread { project: String, thread: String },
     NewThread(String),
+    Draft { project: String, id: uuid::Uuid },
 }
 
 impl Destination {
     pub(super) fn project(&self) -> Option<&str> {
         match self {
             Self::Home => None,
-            Self::Project(project) | Self::Thread { project, .. } | Self::NewThread(project) => {
-                Some(project)
-            }
+            Self::Project(project)
+            | Self::Thread { project, .. }
+            | Self::NewThread(project)
+            | Self::Draft { project, .. } => Some(project),
         }
     }
 }
