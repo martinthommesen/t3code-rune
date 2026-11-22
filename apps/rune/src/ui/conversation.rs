@@ -60,6 +60,7 @@ pub(super) struct Layout {
     pub(super) pane_width: f32,
     pub(super) file_preview_width: f32,
     pub(super) viewport: [f32; 2],
+    pub(super) terminal_composer_height: f32,
 }
 
 impl Layout {

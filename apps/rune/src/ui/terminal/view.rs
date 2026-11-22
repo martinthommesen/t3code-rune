@@ -1,5 +1,5 @@
 use rune::color::hex;
-use rune::{Color, El, Icon, Key, ScrollSpec, TextStyle, Tx, col, el, icon, row, text};
+use rune::{Color, Cursor, El, Icon, Key, ScrollSpec, TextStyle, Tx, col, el, icon, row, text};
 
 use super::super::{Palette, State, button};
 use super::{
@@ -56,6 +56,7 @@ pub(super) fn drawer(
     terminal: &Pane,
     peers: &[Pane],
     tabs: Option<&Tabs>,
+    [height, maximum]: [f32; 2],
     palette: Palette,
     enabled: bool,
 ) -> El {
@@ -78,7 +79,7 @@ pub(super) fn drawer(
     let mut drawer = row()
         .key("terminal-drawer")
         .w_full()
-        .h(280.0)
+        .h(height)
         .border_sides([1.0, 0.0, 0.0, 0.0], palette.line)
         .role("region")
         .label(
@@ -161,7 +162,15 @@ pub(super) fn drawer(
                 .pin(None, Some(8.0), Some(8.0), None),
         );
     }
-    drawer
+    drawer.child(
+        el().key("terminal-drawer-resize")
+            .pin(Some(0.0), Some(1.0), Some(0.0), None)
+            .h(6.0)
+            .cursor(Cursor::ResizeRow)
+            .on_drag(move |state: &mut State, drag, _| {
+                state.resize_terminal_drawer(drag, height, maximum);
+            }),
+    )
 }
 
 fn pane_group(panes: &[&Pane], active: u64, direction: SplitDirection, palette: Palette) -> El {

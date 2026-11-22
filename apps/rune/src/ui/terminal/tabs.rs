@@ -2,15 +2,12 @@ use std::collections::{HashMap, HashSet};
 
 use uuid::Uuid;
 
+use crate::client_settings::{SavedTerminalGroup, SavedTerminalLayout};
 use crate::connection::TerminalTarget;
 
-pub(super) const MAX_TERMINALS_PER_GROUP: usize = 4;
+pub(super) use crate::client_settings::SplitDirection;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum SplitDirection {
-    Horizontal,
-    Vertical,
-}
+pub(super) const MAX_TERMINALS_PER_GROUP: usize = 4;
 
 pub(super) struct Group {
     pub(super) id: String,
@@ -51,6 +48,35 @@ impl TabsByThread {
 
     pub(super) fn get_mut(&mut self, thread_id: &str) -> Option<&mut Tabs> {
         self.layouts.get_mut(thread_id)
+    }
+
+    pub(super) fn restore(&mut self, thread_id: &str, layout: &SavedTerminalLayout) {
+        if !self.layouts.contains_key(thread_id) && !layout.terminal_ids.is_empty() {
+            let tabs = Tabs::from_saved(layout);
+            if !tabs.entries.is_empty() {
+                self.layouts.insert(thread_id.to_owned(), tabs);
+            }
+        }
+    }
+
+    pub(super) fn snapshot(&self, thread_id: &str, open: bool) -> SavedTerminalLayout {
+        let Some(tabs) = self.layouts.get(thread_id) else {
+            return SavedTerminalLayout::default();
+        };
+        SavedTerminalLayout {
+            terminal_open: open,
+            terminal_ids: tabs.entries.iter().map(|tab| tab.id.clone()).collect(),
+            active_terminal_id: tabs.selected().id.clone(),
+            terminal_groups: tabs
+                .groups
+                .iter()
+                .map(|group| SavedTerminalGroup {
+                    id: group.id.clone(),
+                    terminal_ids: group.members.clone(),
+                    split_direction: group.direction,
+                })
+                .collect(),
+        }
     }
 
     pub(super) fn ensure(&mut self, thread_id: &str) -> &mut Tabs {
@@ -162,6 +188,59 @@ impl Tabs {
             groups: Vec::new(),
             active: 0,
         }
+    }
+
+    fn from_saved(layout: &SavedTerminalLayout) -> Self {
+        let mut tabs = Self::empty();
+        let mut known: HashSet<String> = HashSet::new();
+        for id in layout
+            .terminal_ids
+            .iter()
+            .map(|id| id.trim())
+            .filter(|id| !id.is_empty())
+        {
+            if known.insert(id.to_owned()) {
+                tabs.entries.push(Tab {
+                    id: id.to_owned(),
+                    resume: true,
+                    observed_label: None,
+                });
+            }
+        }
+        let mut group_ids = HashSet::new();
+        let mut assigned = HashSet::new();
+        for group in &layout.terminal_groups {
+            let members: Vec<_> = group
+                .terminal_ids
+                .iter()
+                .map(|id| id.trim())
+                .filter(|id| known.contains(*id) && assigned.insert(id.to_string()))
+                .map(str::to_owned)
+                .collect();
+            if let Some(first) = members.first() {
+                let label = group.id.trim();
+                let preferred = if label.is_empty() {
+                    first.as_str()
+                } else {
+                    label
+                };
+                let id = unique_group_id(preferred, &mut group_ids);
+                tabs.groups.push(Group {
+                    id,
+                    members,
+                    direction: group.split_direction,
+                });
+            }
+        }
+        for tab in &tabs.entries {
+            if !assigned.contains(&tab.id) {
+                let mut group = Group::single(&tab.id);
+                group.id = unique_group_id(&tab.id, &mut group_ids);
+                tabs.groups.push(group);
+            }
+        }
+        tabs.select(layout.active_terminal_id.trim());
+        tabs
     }
 
     pub(super) fn active_group(&self) -> Option<&Group> {
@@ -303,6 +382,16 @@ impl Tab {
     }
 }
 
+fn unique_group_id(id: &str, used: &mut HashSet<String>) -> String {
+    if used.insert(id.to_owned()) {
+        return id.to_owned();
+    }
+    (2..)
+        .map(|index| format!("{id}-{index}"))
+        .find(|candidate| used.insert(candidate.clone()))
+        .expect("one available terminal group identifier")
+}
+
 fn terminal_number(id: &str) -> Option<usize> {
     let id = id.to_ascii_lowercase();
     let body = id
@@ -326,6 +415,46 @@ mod tests {
             thread_id: thread_id.to_owned(),
             terminal_id: terminal_id.to_owned(),
         }
+    }
+
+    #[test]
+    fn restored_layout_keeps_group_direction_and_active_terminal() {
+        let saved = SavedTerminalLayout {
+            terminal_open: true,
+            terminal_ids: vec![
+                "term-1".into(),
+                " term-1 ".into(),
+                "term-2".into(),
+                "term-3".into(),
+            ],
+            active_terminal_id: "term-2".into(),
+            terminal_groups: vec![
+                SavedTerminalGroup {
+                    id: "original".into(),
+                    terminal_ids: vec!["term-1".into(), "missing".into(), "term-2".into()],
+                    split_direction: SplitDirection::Vertical,
+                },
+                SavedTerminalGroup {
+                    id: "original".into(),
+                    terminal_ids: vec!["term-2".into(), "term-3".into()],
+                    split_direction: SplitDirection::Horizontal,
+                },
+            ],
+        };
+        let mut tabs = TabsByThread::default();
+        tabs.restore("thread", &saved);
+        let restored = tabs.snapshot("thread", true);
+        assert_eq!(restored.terminal_ids.len(), 3);
+        assert_eq!(restored.active_terminal_id, "term-2");
+        assert_eq!(
+            restored.terminal_groups[0].terminal_ids,
+            ["term-1", "term-2"]
+        );
+        assert_eq!(
+            restored.terminal_groups[0].split_direction,
+            SplitDirection::Vertical
+        );
+        assert_eq!(restored.terminal_groups[1].id, "original-2");
     }
 
     #[test]

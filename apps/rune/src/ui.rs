@@ -930,6 +930,7 @@ impl State {
             self.apply_event(event, tx);
             changed = true;
         }
+        changed |= self.restore_terminal_for_selection(tx);
         if let Some(workspace) = &mut self.workspace {
             changed |= workspace.favicons.poll();
         }
@@ -1728,6 +1729,11 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
     } else {
         0.0
     };
+    let terminal_composer_height = state
+        .terminal
+        .as_ref()
+        .and_then(|terminal| cx.layout_size(&format!("composer-{}", terminal.thread_id)))
+        .map_or(0.0, |size| size[1]);
     let detail_layout = conversation::Layout {
         header_height: chrome_layout.height(),
         header_left: if state.sidebar_open {
@@ -1738,6 +1744,7 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
         native_trailing: chrome.trailing.max(state.window_chrome.trailing_inset()),
         pane_width: workspace_width - file_preview_width,
         file_preview_width,
+        terminal_composer_height,
         viewport: [width, height],
     };
     let setup = onboarding::view(state, palette.dark, width, height, chrome_layout.height());
@@ -2207,7 +2214,7 @@ fn detail(
             .as_ref()
             .filter(|terminal| terminal.thread_id == conversation.id)
     {
-        pane = pane.child(state.terminal_view(terminal, palette));
+        pane = pane.child(state.terminal_view(terminal, layout, palette));
     }
     pane.children(error_banner).children(details)
 }

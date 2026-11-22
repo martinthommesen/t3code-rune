@@ -9,22 +9,30 @@ use crate::server::parse_settings_json;
 
 mod appearance;
 mod chromium;
+mod terminal;
 
 pub(crate) use appearance::AppearanceMode;
 use appearance::AppearancePreference;
+pub(crate) use terminal::{SavedTerminalGroup, SavedTerminalLayout, SplitDirection};
 
 const FILE_NAME: &str = "client-settings.json";
+const TERMINAL_LAYOUTS: &str = "terminalLayouts";
+const TERMINAL_HEIGHTS: &str = "terminalDrawerHeights";
 const TERMINAL_CONFIRMATION: &str = "confirmTerminalClose";
 const THREAD_DETAILS_CLOSED: &str = "threadDetailsInlineClosed";
 const ONBOARDING_COMPLETED: &str = "onboardingCompletedAt";
 const SIDEBAR_OPEN: &str = "chat_thread_sidebar_open";
 const MAX_SYMLINK_HOPS: usize = 40;
 
+type TerminalHeights = BTreeMap<String, BTreeMap<String, u32>>;
+
 type ClosedThreadDetails = BTreeMap<String, BTreeSet<String>>;
 
 pub(crate) struct ClientSettings {
     path: Option<PathBuf>,
     confirm_terminal_close: bool,
+    terminal_heights: TerminalHeights,
+    terminal_layouts: terminal::Layouts,
     closed_thread_details: ClosedThreadDetails,
     appearance: AppearancePreference,
 }
@@ -34,6 +42,8 @@ impl Default for ClientSettings {
         Self {
             path: None,
             confirm_terminal_close: true,
+            terminal_heights: TerminalHeights::new(),
+            terminal_layouts: terminal::Layouts::new(),
             closed_thread_details: ClosedThreadDetails::new(),
             appearance: AppearancePreference::default(),
         }
@@ -48,6 +58,14 @@ impl ClientSettings {
             .as_ref()
             .and_then(|document| terminal_confirmation(document).ok())
             .unwrap_or(true);
+        let terminal_heights = document
+            .as_ref()
+            .and_then(|document| terminal_heights(document).ok())
+            .unwrap_or_default();
+        let terminal_layouts = document
+            .as_ref()
+            .and_then(|document| terminal_layouts(document).ok())
+            .unwrap_or_default();
         let closed_thread_details = document
             .as_ref()
             .and_then(|document| closed_thread_details(document).ok())
@@ -55,6 +73,8 @@ impl ClientSettings {
         Self {
             path: Some(path),
             confirm_terminal_close,
+            terminal_heights,
+            terminal_layouts,
             closed_thread_details,
             appearance: AppearancePreference::at_state_dir(state_dir),
         }
@@ -114,6 +134,75 @@ impl ClientSettings {
         preference_object(&mut document)?
             .insert(ONBOARDING_COMPLETED.to_owned(), Value::String(timestamp));
         write_document(&target, &document)
+    }
+
+    pub(crate) fn terminal_layout(
+        &self,
+        environment: &str,
+        thread: &str,
+    ) -> Option<&SavedTerminalLayout> {
+        self.terminal_layouts.get(environment)?.get(thread)
+    }
+
+    pub(crate) fn set_terminal_layout(
+        &mut self,
+        environment: &str,
+        thread: &str,
+        layout: SavedTerminalLayout,
+    ) -> io::Result<()> {
+        if self.terminal_layout(environment, thread) == Some(&layout) {
+            return Ok(());
+        }
+        let update = |layouts: &mut terminal::Layouts| {
+            layouts
+                .entry(environment.to_owned())
+                .or_default()
+                .insert(thread.to_owned(), layout);
+        };
+        if let Some(path) = &self.path {
+            let target = resolve_file_target(path)?;
+            let mut document = read_document(&target)?;
+            let mut layouts = terminal_layouts(&document)?;
+            update(&mut layouts);
+            preference_object(&mut document)?
+                .insert(TERMINAL_LAYOUTS.into(), serde_json::to_value(&layouts)?);
+            write_document(&target, &document)?;
+            self.terminal_layouts = layouts;
+        } else {
+            update(&mut self.terminal_layouts);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn terminal_height(&self, environment: &str, thread: &str) -> Option<u32> {
+        self.terminal_heights.get(environment)?.get(thread).copied()
+    }
+
+    pub(crate) fn set_terminal_height(
+        &mut self,
+        environment: &str,
+        thread: &str,
+        height: u32,
+    ) -> io::Result<()> {
+        let add_height = |heights: &mut TerminalHeights| {
+            heights
+                .entry(environment.to_owned())
+                .or_default()
+                .insert(thread.to_owned(), height);
+        };
+        if let Some(path) = &self.path {
+            let target = resolve_file_target(path)?;
+            let mut document = read_document(&target)?;
+            let mut heights = terminal_heights(&document)?;
+            add_height(&mut heights);
+            preference_object(&mut document)?
+                .insert(TERMINAL_HEIGHTS.into(), serde_json::to_value(&heights)?);
+            write_document(&target, &document)?;
+            self.terminal_heights = heights;
+        } else {
+            add_height(&mut self.terminal_heights);
+        }
+        Ok(())
     }
 
     pub(crate) fn confirm_terminal_close(&self) -> bool {
@@ -218,6 +307,30 @@ fn onboarding_completion(document: &Map<String, Value>) -> io::Result<bool> {
         Some(Value::String(_)) => Ok(true),
         Some(_) => Err(invalid_document()),
     }
+}
+
+fn terminal_layouts(document: &Map<String, Value>) -> io::Result<terminal::Layouts> {
+    let preferences = match document.get("settings") {
+        Some(value) => value.as_object().ok_or_else(invalid_document)?,
+        None => document,
+    };
+    preferences
+        .get(TERMINAL_LAYOUTS)
+        .map(|layout| serde_json::from_value(layout.clone()).map_err(io::Error::from))
+        .transpose()
+        .map(Option::unwrap_or_default)
+}
+
+fn terminal_heights(document: &Map<String, Value>) -> io::Result<TerminalHeights> {
+    let preferences = match document.get("settings") {
+        Some(value) => value.as_object().ok_or_else(invalid_document)?,
+        None => document,
+    };
+    preferences
+        .get(TERMINAL_HEIGHTS)
+        .map(|height| serde_json::from_value(height.clone()).map_err(io::Error::from))
+        .transpose()
+        .map(Option::unwrap_or_default)
 }
 
 fn terminal_confirmation(document: &Map<String, Value>) -> io::Result<bool> {

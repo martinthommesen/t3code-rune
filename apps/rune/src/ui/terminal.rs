@@ -1,10 +1,10 @@
-use rune::{Color, El, Key, KeyEvent, Span, TextStyle, Tx, col, el, text};
+use rune::{Color, Drag, El, Family, Key, KeyEvent, Phase, Span, TextStyle, Tx, col, el, text};
 
 use crate::connection::{
     TerminalAttach, TerminalSnapshot, TerminalStatus, TerminalTarget, TerminalUpdate,
 };
 
-use super::{Palette, ProjectSelection, ProjectView, SMALL, State};
+use super::{Palette, ProjectSelection, ProjectView, SMALL, State, conversation::Layout};
 
 mod control;
 mod tabs;
@@ -16,9 +16,19 @@ pub(super) use tabs::TabsByThread;
 
 const DEFAULT_COLS: u16 = 80;
 const DEFAULT_ROWS: u16 = 16;
-const LINE_HEIGHT: f32 = 16.0;
-const FONT: TextStyle = TextStyle::new(13.0, 400.0).lh(LINE_HEIGHT).mono();
-const CELL_WIDTH: f32 = 7.8;
+const DEFAULT_DRAWER_HEIGHT: f32 = 280.0;
+const MIN_DRAWER_HEIGHT: f32 = 180.0;
+const LINE_HEIGHT: f32 = 18.0;
+const CELL_WIDTH: f32 = 7.801_269_5;
+const CELL_PADDING: f32 = 4.0;
+const TERMINAL_FONT: Family = if cfg!(target_os = "linux") {
+    Family::Named("Liberation Mono, DejaVu Sans Mono")
+} else {
+    Family::SystemMono
+};
+const FONT: TextStyle = TextStyle::new(13.0, 400.0)
+    .lh(LINE_HEIGHT)
+    .family(TERMINAL_FONT);
 pub(super) const INPUT_KEY: &str = "terminal-input";
 
 pub(super) struct Pane {
@@ -34,6 +44,7 @@ pub(super) struct Pane {
     message: Option<String>,
     received_snapshot: bool,
     close_prompt: Option<ClosePrompt>,
+    resize_preview: Option<f32>,
 }
 
 struct ClosePrompt {
@@ -61,6 +72,7 @@ impl Pane {
             message: None,
             received_snapshot: false,
             close_prompt: None,
+            resize_preview: None,
         }
     }
 
@@ -202,11 +214,53 @@ impl State {
     }
 
     pub(super) fn toggle_terminal(&mut self, tx: &mut Tx) {
-        if self.terminal.is_some() {
+        if let Some(terminal) = &self.terminal {
+            let thread_id = terminal.thread_id.clone();
             self.detach_terminal_pane();
+            self.persist_terminal_layout(&thread_id, false);
             return;
         }
-        self.attach_selected_terminal(tx);
+        self.attach_selected_terminal(tx, true);
+    }
+
+    pub(super) fn restore_terminal_for_selection(&mut self, tx: &mut Tx) -> bool {
+        if self.terminal.is_some() {
+            return false;
+        }
+        let should_restore = self.workspace.as_ref().is_some_and(|workspace| {
+            let Some(ProjectView::Conversation(conversation)) = workspace
+                .selection
+                .as_ref()
+                .map(|selection| &selection.view)
+            else {
+                return false;
+            };
+            matches!(conversation.transcript, super::Transcript::Loaded(_))
+                && self
+                    .draft_environment
+                    .as_deref()
+                    .is_some_and(|environment| {
+                        self.client_settings
+                            .terminal_layout(environment, &conversation.id)
+                            .is_some_and(|layout| layout.terminal_open)
+                    })
+        });
+        if should_restore {
+            self.attach_selected_terminal(tx, false);
+        }
+        self.terminal.is_some()
+    }
+
+    fn persist_terminal_layout(&mut self, thread_id: &str, open: bool) {
+        if let Some(environment) = self.draft_environment.as_deref()
+            && let Err(error) = self.client_settings.set_terminal_layout(
+                environment,
+                thread_id,
+                self.terminal_tabs.snapshot(thread_id, open),
+            )
+        {
+            self.project_notice = Some(format!("Could not save terminal layout. {error}"));
+        }
     }
 
     pub(super) fn open_worktree_setup_terminal(
@@ -243,12 +297,22 @@ impl State {
             thread_id: thread_id.to_owned(),
             terminal_id: terminal_id.to_owned(),
         };
-        if self.terminal_tabs.select_observed(&target, &script.name) {
-            self.attach_selected_terminal(tx);
+        let label = script.name.clone();
+        self.restore_terminal_tabs(thread_id);
+        if self.terminal_tabs.select_observed(&target, &label) {
+            self.attach_selected_terminal(tx, true);
         }
     }
 
-    fn attach_selected_terminal(&mut self, tx: &mut Tx) {
+    fn restore_terminal_tabs(&mut self, thread_id: &str) {
+        if let Some(environment) = self.draft_environment.as_deref()
+            && let Some(layout) = self.client_settings.terminal_layout(environment, thread_id)
+        {
+            self.terminal_tabs.restore(thread_id, layout);
+        }
+    }
+
+    fn attach_selected_terminal(&mut self, tx: &mut Tx, focus: bool) {
         let Some(workspace) = self
             .workspace
             .as_ref()
@@ -278,8 +342,9 @@ impl State {
             return;
         }
         let thread_id = thread.id.clone();
-        let worktree = thread.worktree_path.as_ref();
-        let cwd = worktree.unwrap_or(&project.path);
+        let worktree = thread.worktree_path.clone();
+        let cwd = worktree.as_ref().unwrap_or(&project.path).clone();
+        self.restore_terminal_tabs(&thread_id);
         let tabs = self.terminal_tabs.ensure(&thread_id);
         let Some(group) = tabs.active_group() else {
             return;
@@ -295,7 +360,7 @@ impl State {
                     terminal_id: tab.id.clone(),
                 },
                 cwd: tab.observed_label.is_none().then(|| cwd.clone()),
-                worktree_path: worktree.cloned(),
+                worktree_path: worktree.clone(),
                 cols: DEFAULT_COLS,
                 rows: DEFAULT_ROWS,
                 resume: tab.resume,
@@ -335,7 +400,10 @@ impl State {
         if let Some(index) = visible.iter().position(|pane| pane.terminal_id == selected) {
             self.terminal = Some(visible.swap_remove(index));
             self.terminal_peers = visible;
-            tx.focus_when_shown(INPUT_KEY, false);
+            if focus {
+                tx.focus_when_shown(INPUT_KEY, false);
+            }
+            self.persist_terminal_layout(&thread_id, true);
         }
     }
 
@@ -385,7 +453,7 @@ impl State {
         if let Some(pane) = &self.terminal
             && self.terminal_tabs.append(&pane.thread_id)
         {
-            self.attach_selected_terminal(tx);
+            self.attach_selected_terminal(tx, true);
         }
     }
 
@@ -394,7 +462,7 @@ impl State {
             && let Some(pane) = &self.terminal
             && self.terminal_tabs.split(&pane.thread_id, direction)
         {
-            self.attach_selected_terminal(tx);
+            self.attach_selected_terminal(tx, true);
         }
     }
 
@@ -415,7 +483,7 @@ impl State {
             && let Some(tabs) = self.terminal_tabs.get_mut(&pane.thread_id)
         {
             if tabs.select(id) {
-                self.attach_selected_terminal(tx);
+                self.attach_selected_terminal(tx, true);
             } else if pane.terminal_id == id {
                 tx.focus(INPUT_KEY, false);
             }
@@ -483,9 +551,10 @@ impl State {
                 pane.focused = false;
             }
             if self.terminal_tabs.get(&thread_id).is_some() {
-                self.attach_selected_terminal(tx);
+                self.attach_selected_terminal(tx, true);
             } else {
                 self.detach_terminal_pane();
+                self.persist_terminal_layout(&thread_id, false);
             }
         }
     }
@@ -515,26 +584,80 @@ impl State {
         Some(view::close_dialog(&prompt.label, palette))
     }
 
-    pub(super) fn terminal_view(&self, terminal: &Pane, palette: Palette) -> El {
+    pub(super) fn terminal_view(&self, terminal: &Pane, layout: Layout, palette: Palette) -> El {
+        let window_height = layout.viewport[1];
+        let conversation_budget =
+            (window_height - layout.header_height - layout.terminal_composer_height).max(0.0);
+        let maximum = (window_height * 0.75)
+            .floor()
+            .max(MIN_DRAWER_HEIGHT)
+            .min(conversation_budget);
+        let stored = self
+            .draft_environment
+            .as_deref()
+            .and_then(|environment| {
+                self.client_settings
+                    .terminal_height(environment, &terminal.thread_id)
+            })
+            .map_or(DEFAULT_DRAWER_HEIGHT, |height| height as f32);
+        let height = terminal
+            .resize_preview
+            .unwrap_or(stored)
+            .max(MIN_DRAWER_HEIGHT)
+            .min(maximum);
         view::drawer(
             terminal,
             &self.terminal_peers,
             self.terminal_tabs.get(&terminal.thread_id),
+            [height, maximum],
             palette,
             self.terminal_tab_actions_enabled(),
         )
+    }
+
+    fn resize_terminal_drawer(&mut self, drag: &mut Drag, height: f32, maximum: f32) {
+        let Some(terminal) = &mut self.terminal else {
+            return;
+        };
+        match drag.phase {
+            Phase::Down => drag.data = height,
+            Phase::Move => {
+                terminal.resize_preview = Some(
+                    (drag.data - drag.dy)
+                        .round()
+                        .max(MIN_DRAWER_HEIGHT)
+                        .min(maximum),
+                );
+            }
+            Phase::Up => {
+                let Some(new_height) = terminal.resize_preview.take() else {
+                    return;
+                };
+                if drag.cancelled() || new_height == drag.data {
+                    return;
+                }
+                if let Some(environment) = self.draft_environment.as_deref()
+                    && let Err(error) = self.client_settings.set_terminal_height(
+                        environment,
+                        &terminal.thread_id,
+                        new_height as u32,
+                    )
+                {
+                    self.project_notice = Some(format!("Could not save terminal height. {error}"));
+                }
+            }
+        }
     }
 
     fn resize_terminal_pane(&mut self, attachment: u64, [_, _, width, height]: [f32; 4]) {
         let Some(terminal) = self.terminal_attachment_mut(attachment) else {
             return;
         };
-        if width <= 8.0 || height <= LINE_HEIGHT {
-            return;
-        }
+        let content_width = width - 2.0 * CELL_PADDING;
+        let content_height = height - 2.0 * CELL_PADDING;
         let grid = (
-            ((width - 8.0) / CELL_WIDTH).clamp(2.0, 500.0) as u16,
-            (height / LINE_HEIGHT).clamp(2.0, 64.0) as u16,
+            (content_width / CELL_WIDTH).clamp(1.0, 500.0) as u16,
+            (content_height / LINE_HEIGHT).clamp(1.0, 64.0) as u16,
         );
         if grid != terminal.requested_grid {
             terminal.requested_grid = grid;
@@ -706,7 +829,7 @@ fn viewport(terminal: &Pane, active: bool, palette: Palette) -> El {
         .grow(1.0)
         .min_w(0.0)
         .min_h(0.0)
-        .px(4.0)
+        .padding(CELL_PADDING)
         .on_background_press_tx(move |state: &mut State, tx| {
             state.activate_terminal_attachment(attachment, tx)
         })
