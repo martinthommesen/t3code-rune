@@ -9,7 +9,8 @@ use rune::{col, el, row, text, text_input};
 use crate::client_settings::ClientSettings;
 use crate::connection::{
     Connection, ConversationEntry, Event, GitRef, LaunchWorkspace, Message, Project,
-    ProviderCatalog, Thread, ThreadAction, WorktreeSetup, worktree_setup::Phase as SetupPhase,
+    ProviderCatalog, QueueMutation, QueuedMessage, Thread, ThreadAction, WorktreeSetup,
+    worktree_setup::Phase as SetupPhase,
 };
 
 mod approval;
@@ -50,6 +51,10 @@ struct Conversation {
     id: String,
     transcript: Transcript,
     expanded_messages: HashSet<String>,
+    queued: Vec<QueuedMessage>,
+    show_all_queued: bool,
+    queue_change_pending: Option<uuid::Uuid>,
+    queued_edit: Option<QueuedEdit>,
     expanded_todo_lists: HashSet<String>,
     expanded_work_runs: HashSet<String>,
     approvals: approval::Approvals,
@@ -61,6 +66,12 @@ struct Conversation {
     worktree_details_open: bool,
     worktree_elapsed_second: Option<i64>,
     worktree_background: worktree_setup::Disclosure,
+}
+
+struct QueuedEdit {
+    run_id: String,
+    draft: TextEdit,
+    failure: Option<String>,
 }
 
 enum ProjectView {
@@ -98,6 +109,16 @@ struct Workspace {
 }
 
 impl Workspace {
+    fn editing_queued_message(&self, thread_id: &str) -> bool {
+        self.selection.as_ref().is_some_and(|selection| {
+            matches!(
+                &selection.view,
+                ProjectView::Conversation(conversation)
+                    if conversation.id == thread_id && conversation.queued_edit.is_some()
+            )
+        })
+    }
+
     fn queue_worktree_message(&self, thread_id: &str) -> bool {
         !self.reconnecting
             && self.selection.as_ref().is_some_and(|selection| {
@@ -397,6 +418,17 @@ impl State {
             workspace.selection.as_ref().map(|project| &project.view),
             Some(ProjectView::Conversation(_))
         );
+        if let Some(ProjectView::Conversation(conversation)) = workspace
+            .selection
+            .as_mut()
+            .map(|project| &mut project.view)
+            && let Some(edit) = conversation.queued_edit.take()
+            && let Some(draft) = self.drafts.get_mut(&conversation.id)
+        {
+            draft.edit = edit.draft;
+            draft.failure = edit.failure;
+            draft.pending = false;
+        }
         self.question_auto_advance = None;
         sidebar::close_draft_project_picker(&mut self.sidebar);
         self.draft_workspace_popup = None;
@@ -437,6 +469,10 @@ impl State {
                     id: thread,
                     transcript: Transcript::Loading,
                     expanded_messages: HashSet::new(),
+                    queued: Vec::new(),
+                    show_all_queued: false,
+                    queue_change_pending: None,
+                    queued_edit: None,
                     expanded_todo_lists: HashSet::new(),
                     expanded_work_runs: HashSet::new(),
                     approvals: approval::Approvals::default(),
@@ -733,6 +769,15 @@ impl State {
         let Some(thread) = workspace.thread(id).filter(|thread| !thread.archived) else {
             return;
         };
+        if let Some(editing) = &conversation.queued_edit {
+            let id = id.to_owned();
+            let action = QueueMutation::Edit {
+                run_id: editing.run_id.clone(),
+                text: self.drafts[&id].edit.text.clone(),
+            };
+            self.mutate_queued_message(&id, action);
+            return;
+        }
         if workspace.pending_clone(&thread.project_id).is_some()
             || composer::provider_unavailable(workspace, thread.providers.current_instance())
         {
@@ -841,6 +886,53 @@ impl State {
                         tx.scroll_to_bottom(format!("transcript-{thread_id}"));
                     }
                     conversation.transcript = Transcript::Loaded(entries);
+                }
+            }
+            Event::QueuedMessages {
+                thread_id,
+                messages,
+            } => {
+                if let Some(conversation) = self.conversation_mut(&thread_id) {
+                    conversation.queued = messages;
+                    if conversation.queue_change_pending.is_none()
+                        && let Some(edit) = &conversation.queued_edit
+                        && !conversation
+                            .queued
+                            .iter()
+                            .any(|queued| queued.run_id == edit.run_id)
+                    {
+                        self.end_queued_edit(&thread_id);
+                    }
+                }
+            }
+            Event::QueueMutationSettled {
+                thread_id,
+                mutation,
+                operation,
+                result,
+            } => {
+                let Some(conversation) = self
+                    .conversation_mut(&thread_id)
+                    .filter(|conversation| conversation.queue_change_pending == Some(operation))
+                else {
+                    return;
+                };
+                conversation.queue_change_pending = None;
+                match result {
+                    Ok(()) if matches!(mutation, QueueMutation::Edit { .. }) => {
+                        self.end_queued_edit(&thread_id);
+                    }
+                    Ok(()) => (),
+                    Err(message) => {
+                        if matches!(mutation, QueueMutation::Edit { .. })
+                            && let Some(draft) = self.drafts.get_mut(&thread_id)
+                        {
+                            draft.pending = false;
+                            draft.failure = Some(message);
+                        } else {
+                            self.project_notice = Some(message);
+                        }
+                    }
                 }
             }
             Event::ThreadApprovals {
@@ -1624,6 +1716,7 @@ fn detail(
             let transcript = if entries.is_empty()
                 && conversation.approvals.is_empty()
                 && conversation.worktree_setup.is_none()
+                && conversation.queued.is_empty()
             {
                 placeholder("No messages yet", "", palette)
             } else {

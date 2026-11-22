@@ -1,3 +1,4 @@
+mod queue;
 mod transcript;
 
 use std::collections::{HashMap, HashSet};
@@ -9,6 +10,7 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use super::launch::ModelSelection;
 use super::runtime_approval::{ApprovalDetails, ApprovalProjection, RuntimeRequest};
 use super::runtime_question::{QuestionDetails, QuestionProjection};
+pub(crate) use queue::QueuedMessage;
 pub(crate) use transcript::{ConversationEntry, TodoListEntry, TodoStepStatus};
 use transcript::{TimelineRun, Transcript};
 
@@ -616,18 +618,25 @@ enum ThreadItem {
 pub(crate) struct Conversation {
     sequence: u64,
     transcript: Transcript,
+    queued: Vec<QueuedMessage>,
     pub(super) approvals: ApprovalProjection,
     pub(super) questions: QuestionProjection,
 }
 
 impl Conversation {
     pub(crate) fn apply(&mut self, value: Value) -> Result<bool, serde_json::Error> {
+        let queued = (value["kind"] == "snapshot"
+            && value["snapshotSequence"]
+                .as_u64()
+                .is_some_and(|sequence| sequence >= self.sequence))
+        .then(|| queue::snapshot(&value["projection"]));
         let changed = match serde_json::from_value(value)? {
             ThreadItem::Snapshot {
                 snapshot_sequence,
                 mut projection,
             } if snapshot_sequence >= self.sequence => {
                 self.sequence = snapshot_sequence;
+                self.queued = queued.unwrap_or_default();
                 (self.approvals, self.questions) = projection.take_runtime_requests();
                 let runs = std::mem::take(&mut projection.runs);
                 self.transcript.replace(projection.visible_entries(), runs);
@@ -673,6 +682,10 @@ impl Conversation {
 
     pub(crate) fn entries(&self) -> Vec<ConversationEntry> {
         self.transcript.entries()
+    }
+
+    pub(crate) fn queued(&self) -> &[QueuedMessage] {
+        &self.queued
     }
 
     #[cfg(test)]

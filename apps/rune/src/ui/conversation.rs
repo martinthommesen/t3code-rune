@@ -43,6 +43,7 @@ static COPY: Icon = glyph!(
     r#"<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>"#
 );
 
+mod queued_runs;
 mod todo_list;
 
 #[derive(Clone, Copy)]
@@ -295,6 +296,12 @@ pub(super) fn transcript(
                     &conversation.approvals,
                     colors.fallbacks,
                     workspace.reconnecting,
+                ))
+                .children(queued_runs::view(
+                    conversation,
+                    workspace,
+                    bubble_width,
+                    colors,
                 )),
         )
 }

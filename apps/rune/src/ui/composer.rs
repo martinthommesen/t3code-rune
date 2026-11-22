@@ -21,6 +21,12 @@ static QUEUE: Icon = Icon {
     body: r#"<path d="M11 12H3m13-6H3m13 12H3m15-9v6m-3-3h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
 
+static CHECK: Icon = Icon {
+    name: "composer-update-queue",
+    view: 24.0,
+    body: r#"<path d="m20 6-11 11-5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+
 static STOP: Icon = Icon {
     name: "composer-stop",
     view: 12.0,
@@ -138,6 +144,8 @@ fn surface(
     };
     let clone = project_id.and_then(|id| workspace.pending_clone(id));
     let has_draft = !draft.edit.text.trim().is_empty();
+    let editing_queue =
+        matches!(&target, Target::Thread { id, .. } if workspace.editing_queued_message(id));
     let queue =
         matches!(&target, Target::Thread { id, .. } if workspace.queue_worktree_message(id));
     let stop = match &target {
@@ -154,8 +162,7 @@ fn surface(
     let can_send = has_draft
         && !workspace.reconnecting
         && !draft.pending
-        && !unavailable
-        && clone.is_none()
+        && (editing_queue || (!unavailable && clone.is_none()))
         && workspace_ready;
     let gutter = if starting_thread {
         draft_hero::gutter(layout)
@@ -219,7 +226,7 @@ fn surface(
         );
     }
     footer = footer.child(el().grow(1.0));
-    if unavailable && has_draft {
+    if unavailable && has_draft && !editing_queue {
         footer = footer.child(
             text("No provider available")
                 .font(SMALL)
@@ -230,25 +237,37 @@ fn surface(
     }
     let (submit_key, idle, pending) = if starting_thread {
         ("start-thread", "Start thread", "Starting…")
+    } else if editing_queue {
+        ("send", "Update queued message", "Updating…")
     } else if queue {
         ("send", "Queue message", "Queuing…")
     } else {
         ("send", "Send", "Sending…")
     };
     let label = if draft.pending { pending } else { idle };
+    let (symbol, symbol_size) = if editing_queue {
+        (&CHECK, 16.0)
+    } else if queue {
+        (&QUEUE, 16.0)
+    } else {
+        (&SEND_UP, 14.0)
+    };
+    let help = if editing_queue {
+        label
+    } else {
+        clone
+            .map(clone_banner::send_block_reason)
+            .unwrap_or(if unavailable {
+                PROVIDER_UNAVAILABLE
+            } else {
+                label
+            })
+    };
     let send = el()
         .key(submit_key)
         .role("button")
         .label(label)
-        .help(
-            clone
-                .map(clone_banner::send_block_reason)
-                .unwrap_or(if unavailable {
-                    PROVIDER_UNAVAILABLE
-                } else {
-                    label
-                }),
-        )
+        .help(help)
         .size(32.0, 32.0)
         .center()
         .radius(16.0)
@@ -262,18 +281,15 @@ fn surface(
         .focus_ring(2.0, 1.0, palette.accent)
         .on_press_tx(submit)
         .child(
-            icon(
-                if queue { &QUEUE } else { &SEND_UP },
-                if queue { 16.0 } else { 14.0 },
-            )
-            .color(if can_send {
-                palette.on_accent
-            } else {
-                colors.muted
-            })
-            .a11y_hidden(),
+            icon(symbol, symbol_size)
+                .color(if can_send {
+                    palette.on_accent
+                } else {
+                    colors.muted
+                })
+                .a11y_hidden(),
         );
-    if has_draft || stop.is_none() {
+    if has_draft || editing_queue || stop.is_none() {
         footer = footer.child(send);
     }
     if let Some((thread_id, pending)) = stop.filter(|(_, pending)| !has_draft || *pending) {

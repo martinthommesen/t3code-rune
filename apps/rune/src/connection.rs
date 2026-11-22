@@ -2,6 +2,7 @@ mod browse;
 mod launch;
 mod projection;
 mod provider_metadata;
+mod queue_mutation;
 mod runtime_approval;
 mod runtime_question;
 mod runtime_response;
@@ -33,9 +34,11 @@ pub(crate) use browse::FolderListing;
 pub(crate) use launch::Workspace as LaunchWorkspace;
 use projection::{Conversation, Shell};
 pub(crate) use projection::{
-    ConversationEntry, Message, Project, ProjectIcon, Thread, TodoListEntry, TodoStepStatus,
+    ConversationEntry, Message, Project, ProjectIcon, QueuedMessage, Thread, TodoListEntry,
+    TodoStepStatus,
 };
 pub(crate) use provider_metadata::{ProviderCatalog, ProviderMetadata};
+pub(crate) use queue_mutation::QueueMutation;
 #[cfg(test)]
 pub(crate) use runtime_approval::ApprovalChoice;
 pub(crate) use runtime_approval::{ApprovalDecision, ApprovalResponse, PendingApproval};
@@ -98,6 +101,16 @@ pub(crate) enum Event {
     Thread {
         thread_id: String,
         entries: Vec<ConversationEntry>,
+    },
+    QueuedMessages {
+        thread_id: String,
+        messages: Vec<QueuedMessage>,
+    },
+    QueueMutationSettled {
+        thread_id: String,
+        mutation: QueueMutation,
+        operation: Uuid,
+        result: Result<(), String>,
     },
     ThreadActions {
         thread_id: String,
@@ -195,6 +208,11 @@ enum Command {
     SendPrompt {
         thread_id: String,
         prompt: String,
+    },
+    MutateQueue {
+        thread_id: String,
+        mutation: QueueMutation,
+        operation: Uuid,
     },
     StopThread(String),
     RenameThread {
@@ -389,6 +407,14 @@ impl Connection {
         let _ = self
             .commands
             .send(Command::SendPrompt { thread_id, prompt });
+    }
+
+    pub(crate) fn mutate_queue(&self, thread_id: String, mutation: QueueMutation, operation: Uuid) {
+        let _ = self.commands.send(Command::MutateQueue {
+            thread_id,
+            mutation,
+            operation,
+        });
     }
 
     pub(crate) fn stop_thread(&self, thread_id: String) {
@@ -867,6 +893,7 @@ struct ThreadSubscription {
     request_id: String,
     thread_id: String,
     conversation: Conversation,
+    reported_queue: Vec<QueuedMessage>,
     reported_approvals: Vec<PendingApproval>,
     reported_questions: Option<Vec<PendingQuestion>>,
     reported_stop: Option<bool>,
@@ -932,6 +959,7 @@ struct Session {
     pending_project_clone_actions: HashMap<String, Instant>,
     thread: Option<ThreadSubscription>,
     pending_prompts: HashMap<String, String>,
+    pending_queue_changes: HashMap<String, (String, QueueMutation, Uuid)>,
     pending_runtime_responses: HashMap<String, (RuntimeResponse, Instant)>,
     pending_stops: HashMap<String, (String, Instant)>,
     pending_title_edits: HashMap<String, (String, Instant)>,
@@ -1033,6 +1061,7 @@ impl Session {
             pending_project_clone_actions: HashMap::new(),
             thread: None,
             pending_prompts: HashMap::new(),
+            pending_queue_changes: HashMap::new(),
             pending_runtime_responses: HashMap::new(),
             pending_stops: HashMap::new(),
             pending_title_edits: HashMap::new(),
@@ -1239,6 +1268,7 @@ impl Session {
             request_id: request_id.clone(),
             thread_id: thread_id.clone(),
             conversation: Conversation::default(),
+            reported_queue: Vec::new(),
             reported_approvals: Vec::new(),
             reported_questions: None,
             reported_stop: None,
@@ -1660,6 +1690,35 @@ impl Session {
                         .await?;
                 }
             }
+            Command::MutateQueue {
+                thread_id,
+                mutation,
+                operation,
+            } => {
+                let available = self.worktree_queue
+                    && self.thread.as_ref().is_some_and(|thread| {
+                        thread.thread_id == thread_id
+                            && thread
+                                .reported_queue
+                                .iter()
+                                .any(|message| message.run_id == mutation.run_id())
+                    });
+                if !available {
+                    events.send(Event::QueueMutationSettled {
+                        thread_id,
+                        mutation,
+                        operation,
+                        result: Err("The queued message is no longer available.".into()),
+                    });
+                } else {
+                    let request_id = self.allocate_id();
+                    let payload = mutation.payload(&thread_id, operation);
+                    self.pending_queue_changes
+                        .insert(request_id.clone(), (thread_id, mutation, operation));
+                    self.send_request(&request_id, "orchestration.dispatchCommand", payload)
+                        .await?;
+                }
+            }
         }
         Ok(())
     }
@@ -1909,6 +1968,13 @@ impl Session {
                                 thread_id: thread.thread_id.clone(),
                                 entries: thread.conversation.entries(),
                             });
+                            if thread.reported_queue != thread.conversation.queued() {
+                                thread.reported_queue = thread.conversation.queued().to_vec();
+                                events.send(Event::QueuedMessages {
+                                    thread_id: thread.thread_id.clone(),
+                                    messages: thread.reported_queue.clone(),
+                                });
+                            }
                             let approvals = thread.conversation.approvals.visible();
                             if approvals != thread.reported_approvals {
                                 thread.reported_approvals = approvals.clone();
@@ -2137,6 +2203,17 @@ impl Session {
                         .finish_launch_step(launch, exit.into_result(), events)
                         .await;
                 }
+                if let Some((thread_id, mutation, operation)) =
+                    self.pending_queue_changes.remove(&request_id)
+                {
+                    events.send(Event::QueueMutationSettled {
+                        thread_id,
+                        mutation,
+                        operation,
+                        result: exit.into_result().map(|_| ()),
+                    });
+                    return Ok(());
+                }
                 let error = exit.into_result().err();
                 if request_id == self.shell_request_id {
                     return Err(SessionStop::Protocol(
@@ -2280,6 +2357,14 @@ async fn run(
         events.send(Event::Reconnecting);
         session.unconfirm_runtime_responses(events);
         session.finish_interrupted_ref_requests(events);
+        for (_, (thread_id, mutation, operation)) in session.pending_queue_changes.drain() {
+            events.send(Event::QueueMutationSettled {
+                thread_id,
+                mutation,
+                operation,
+                result: Err("The connection closed before confirming the queue change.".into()),
+            });
+        }
         for (_, thread_id) in session.pending_prompts.drain() {
             events.send(Event::RequestError {
                 thread_id,
