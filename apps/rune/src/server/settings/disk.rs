@@ -1,10 +1,61 @@
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::time::SystemTime;
 
 use serde_json::Value;
 
 use super::Fields;
+
+#[derive(PartialEq, Eq)]
+pub(super) struct Revision {
+    modified: Option<SystemTime>,
+    created: Option<SystemTime>,
+    length: u64,
+    #[cfg(unix)]
+    identity: (u64, u64, i64, i64),
+}
+
+impl From<fs::Metadata> for Revision {
+    fn from(metadata: fs::Metadata) -> Self {
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+
+        Self {
+            modified: metadata.modified().ok(),
+            created: metadata.created().ok(),
+            length: metadata.len(),
+            #[cfg(unix)]
+            identity: (
+                metadata.dev(),
+                metadata.ino(),
+                metadata.ctime(),
+                metadata.ctime_nsec(),
+            ),
+        }
+    }
+}
+
+pub(super) fn revision(path: &Path) -> io::Result<Option<Revision>> {
+    match fs::metadata(path) {
+        Ok(metadata) => Ok(Some(metadata.into())),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+pub(super) fn read_observed(path: &Path) -> io::Result<(Option<Revision>, String)> {
+    match fs::File::open(path) {
+        Ok(mut source) => {
+            let revision = source.metadata()?.into();
+            let mut contents = String::new();
+            source.read_to_string(&mut contents)?;
+            Ok((Some(revision), contents))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok((None, "{}".to_owned())),
+        Err(error) => Err(error),
+    }
+}
 
 pub(super) fn read(path: &Path) -> io::Result<Fields> {
     match fs::read_to_string(path) {

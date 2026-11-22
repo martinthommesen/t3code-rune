@@ -1,6 +1,7 @@
 mod bootstrap;
 mod claude_worker;
 mod config_updates;
+mod config_watch;
 mod credentials;
 mod environment_identity;
 mod filesystem_browse;
@@ -205,6 +206,7 @@ impl LocalHost {
                     let keybindings_watch = config
                         .keybindings
                         .watch(settings.path().with_file_name("keybindings.json"));
+                    let settings_watch = settings.watch();
                     let local = LocalOperations {
                         projects,
                         project_favicons,
@@ -238,7 +240,9 @@ impl LocalHost {
                         }
                     }
                     keybindings_watch.abort();
+                    settings_watch.abort();
                     let _ = keybindings_watch.await;
+                    let _ = settings_watch.await;
                     titles.abort();
                     let _ = titles.await;
                     project_clones.shutdown().await;

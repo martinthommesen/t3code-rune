@@ -315,3 +315,34 @@ fn startup_reconciliation_leaves_invalid_stored_settings_for_repair() {
         false
     );
 }
+
+#[test]
+fn reports_each_observed_settings_revision_once_even_when_its_values_match() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("settings.json");
+    let contents = b"{\"defaultAutoPull\":true}\n";
+    fs::write(&path, contents).unwrap();
+    let file = SettingsFile::new(path.clone());
+    file.initialize_watch();
+    let mut changes = file.subscribe_changes();
+    file.observe();
+    assert!(changes.try_recv().is_err());
+
+    disk::write(&path, contents).unwrap();
+    file.observe();
+    assert_eq!(changes.try_recv().unwrap()["defaultAutoPull"], true);
+    file.observe();
+    assert!(changes.try_recv().is_err());
+
+    let patch = serde_json::json!({"patch":{"defaultAutoPull":false}});
+    let result = file.update(
+        Patch::decode(&patch).unwrap(),
+        &temp.path().join("statev2.sqlite"),
+    );
+    assert_eq!(result.unwrap()["defaultAutoPull"], false);
+    assert_eq!(changes.try_recv().unwrap()["defaultAutoPull"], false);
+    file.observe();
+    assert_eq!(changes.try_recv().unwrap()["defaultAutoPull"], false);
+    file.observe();
+    assert!(changes.try_recv().is_err());
+}

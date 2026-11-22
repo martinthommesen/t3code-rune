@@ -16,6 +16,7 @@ mod patch;
 mod project_overrides;
 mod project_scripts;
 mod providers;
+mod watch;
 
 pub(crate) use jsonc::parse as parse_settings_json;
 pub(super) use patch::Patch;
@@ -36,7 +37,7 @@ pub(super) struct SettingsFile {
 
 #[derive(Default)]
 struct Changes {
-    writes: Mutex<()>,
+    observed: Mutex<Option<disk::Revision>>,
     subscribers: Subscribers,
 }
 
@@ -89,7 +90,7 @@ impl SettingsFile {
     ) -> Result<(), SettingsError> {
         let _write = self
             .shared
-            .writes
+            .observed
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         let mut stored = match disk::read(&self.path) {
@@ -118,14 +119,45 @@ impl SettingsFile {
         Ok(())
     }
 
+    pub(super) fn watch(&self) -> tokio::task::JoinHandle<()> {
+        watch::start(self.clone())
+    }
+
+    fn initialize_watch(&self) {
+        let mut observed = self
+            .shared
+            .observed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Ok(revision) = disk::revision(&self.path) {
+            *observed = revision;
+        }
+    }
+
+    fn observe(&self) {
+        let mut observed = self
+            .shared
+            .observed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let Ok((revision, contents)) = disk::read_observed(&self.path) else {
+            return;
+        };
+        if *observed != revision {
+            let current = SettingsSnapshot::decode(&contents).for_client();
+            self.shared.subscribers.publish(&current);
+            *observed = revision;
+        }
+    }
+
     pub(super) fn subscribe_changes(&self) -> UnboundedReceiver<Arc<Value>> {
         self.shared.subscribers.subscribe()
     }
 
     pub(super) fn update(&self, patch: Patch, database: &Path) -> Result<Value, Value> {
-        let _write = self
+        let _document = self
             .shared
-            .writes
+            .observed
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         let mut stored =
