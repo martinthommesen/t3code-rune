@@ -21,7 +21,10 @@ struct Unarchive {
 }
 
 impl ThreadCommands {
-    pub(super) fn unarchive(&self, payload: Value) -> Result<CommittedThread, ThreadCommandError> {
+    pub(in crate::server) fn unarchive(
+        &self,
+        payload: Value,
+    ) -> Result<(CommittedThread, Vec<String>), ThreadCommandError> {
         let input: Unarchive = serde_json::from_value(payload)
             .map_err(|cause| ThreadCommandError::InvalidRequest(cause.to_string()))?;
         let command_id = trim_js(&input.command_id);
@@ -37,7 +40,9 @@ impl ThreadCommands {
             .query_row(SELECT_RECEIPT, [command_id], Receipt::read)
             .optional()?
         {
-            return receipt.replay(command_id, thread_id);
+            return receipt
+                .replay(command_id, thread_id)
+                .map(|receipt| (receipt, Vec::new()));
         }
         let now = now_timestamp();
         let thread = transaction
@@ -46,11 +51,10 @@ impl ThreadCommands {
                     row.get::<_, String>(0)?,
                     row.get::<_, Option<String>>(1)?,
                     row.get::<_, Option<String>>(2)?,
-                    row.get::<_, bool>(3)?,
                 ))
             })
             .optional()?;
-        let Some((encoded, deleted, archived, archived_side_chats)) = thread else {
+        let Some((encoded, deleted, archived)) = thread else {
             record_rejection(
                 &transaction,
                 thread_id,
@@ -67,7 +71,7 @@ impl ThreadCommands {
             transaction.commit()?;
             return Err(ThreadCommandError::Rejected(message));
         }
-        if archived.is_none() {
+        let Some(parent_archived_at) = archived else {
             record_rejection(
                 &transaction,
                 thread_id,
@@ -77,43 +81,55 @@ impl ThreadCommands {
             )?;
             transaction.commit()?;
             return Err(ThreadCommandError::NotArchived(thread_id.to_owned()));
-        }
-        if archived_side_chats {
-            return Err(ThreadCommandError::Rejected(
-                "This thread has side chats that must be unarchived with it.".into(),
-            ));
-        }
-        let mut projection: Value = serde_json::from_str(&encoded)
-            .map_err(|cause| rusqlite::Error::ToSqlConversionFailure(Box::new(cause)))?;
-        if !projection.is_object() {
-            return Err(rusqlite::Error::InvalidQuery.into());
-        }
-        projection["archivedAt"] = Value::Null;
-        projection["updatedAt"] = json!(now);
-        let sequence = ThreadEventStream::command(&transaction, thread_id, command_id).append(
-            "thread.unarchived",
-            &now,
-            &json!({"providerInstanceId":projection["providerInstanceId"]}),
-            &projection,
+        };
+        let mut applied_at = now_timestamp();
+        let mut sequence = unarchive_thread(
+            &transaction,
+            thread_id,
+            command_id,
+            command_id,
+            &encoded,
+            &applied_at,
         )?;
-        record_projected_sequence(&transaction, sequence, &now)?;
+        let mut thread_ids = vec![thread_id.to_owned()];
+        for child_id in
+            super::archive::side_chats(&transaction, thread_id, Some(&parent_archived_at))?
+        {
+            let encoded: String =
+                transaction.query_row(SELECT_THREAD, [&child_id], |row| row.get(0))?;
+            let child_command = format!("{command_id}:side-chat:{child_id}");
+            applied_at = now_timestamp();
+            sequence = unarchive_thread(
+                &transaction,
+                &child_id,
+                command_id,
+                &child_command,
+                &encoded,
+                &applied_at,
+            )?;
+            thread_ids.push(child_id);
+        }
+        record_projected_sequence(&transaction, sequence, &applied_at)?;
         transaction.execute(
             INSERT_RECEIPT,
             params![
                 command_id,
                 thread_id,
                 COMMAND,
-                now,
+                applied_at,
                 sequence,
                 "accepted",
                 None::<String>
             ],
         )?;
         transaction.commit()?;
-        Ok(CommittedThread {
-            sequence: sequence as u64,
-            committed: true,
-        })
+        Ok((
+            CommittedThread {
+                sequence: sequence as u64,
+                committed: true,
+            },
+            thread_ids,
+        ))
     }
 }
 
@@ -135,13 +151,26 @@ fn record_rejection(
     Ok(())
 }
 
+fn unarchive_thread(
+    transaction: &Transaction<'_>,
+    thread_id: &str,
+    command_id: &str,
+    event_command: &str,
+    encoded: &str,
+    now: &str,
+) -> rusqlite::Result<i64> {
+    let mut projection = super::archive::decode_projection(encoded)?;
+    projection["archivedAt"] = Value::Null;
+    projection["updatedAt"] = json!(now);
+    ThreadEventStream::command_with_event_source(transaction, thread_id, command_id, event_command)
+        .append(
+            "thread.unarchived",
+            now,
+            &json!({"providerInstanceId":projection["providerInstanceId"]}),
+            &projection,
+        )
+}
+
 const SELECT_THREAD: &str = "
-    SELECT parent.payload_json, parent.deleted_at, parent.archived_at, EXISTS (
-        SELECT 1 FROM orchestration_v2_projection_context_transfers AS transfer
-        JOIN orchestration_v2_projection_threads AS child ON child.thread_id = transfer.target_thread_id
-        WHERE transfer.source_thread_id = parent.thread_id AND transfer.type = 'fork'
-          AND child.deleted_at IS NULL AND json_extract(child.payload_json, '$.lineage.sideChat') = 1
-          AND julianday(child.archived_at) >= julianday(parent.archived_at)
-    )
-    FROM orchestration_v2_projection_threads AS parent WHERE parent.thread_id = ?1
-";
+    SELECT payload_json, deleted_at, archived_at
+    FROM orchestration_v2_projection_threads WHERE thread_id=?1";

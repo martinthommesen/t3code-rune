@@ -1679,6 +1679,10 @@ fn dispatch_thread(
             .threads
             .delete_archived(payload)
             .map(|result| (result.receipt, result.thread_ids))
+    } else if command_type == "thread.archive" {
+        local.threads.archive(payload)
+    } else if command_type == "thread.unarchive" {
+        local.threads.unarchive(payload)
     } else {
         local
             .threads

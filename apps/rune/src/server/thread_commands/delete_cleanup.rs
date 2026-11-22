@@ -186,17 +186,19 @@ const SELECT_CLEANUP: &str = "
                 AND json_extract(thread.payload_json,'$.lineage.sideChat')=1
                 AND effect.command_id=receipt.command_id || ':side-chat:' || effect.thread_id))
       )) OR (
-        thread.deleted_at IS NULL AND thread.archived_at IS NOT NULL
-        AND effect.effect_type='terminal.cleanup'
+        thread.deleted_at IS NULL AND effect.effect_type='terminal.cleanup'
         AND EXISTS (
             SELECT 1 FROM orchestration_events AS archived
             JOIN orchestration_command_receipts AS receipt ON receipt.command_id=archived.command_id
             WHERE archived.aggregate_kind='thread' AND archived.application_event_version=2
               AND archived.stream_id=effect.thread_id AND archived.event_type='thread.archived'
-              AND archived.occurred_at=thread.archived_at AND archived.sequence=receipt.result_sequence
-              AND receipt.aggregate_kind='thread' AND receipt.aggregate_id=effect.thread_id
-              AND receipt.command_id=effect.command_id AND receipt.command_type='thread.archive'
+              AND archived.sequence<=receipt.result_sequence
+              AND receipt.aggregate_kind='thread' AND receipt.command_type='thread.archive'
               AND receipt.status='accepted'
+              AND ((receipt.aggregate_id=effect.thread_id AND receipt.command_id=effect.command_id)
+                OR (receipt.aggregate_id=json_extract(archived.payload_json,'$.lineage.parentThreadId')
+                    AND json_extract(archived.payload_json,'$.lineage.sideChat')=1
+                    AND effect.command_id=receipt.command_id || ':side-chat:' || effect.thread_id))
         )
       ))
       AND NOT EXISTS (

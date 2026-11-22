@@ -146,8 +146,8 @@ impl ThreadCommands {
         match payload["type"].as_str() {
             Some("thread.visit") => self.visit(payload),
             Some(rename::COMMAND) => self.rename(payload),
-            Some(archive::COMMAND) => self.archive(payload),
-            Some(unarchive::COMMAND) => self.unarchive(payload),
+            Some(archive::COMMAND) => self.archive(payload).map(|(receipt, _)| receipt),
+            Some(unarchive::COMMAND) => self.unarchive(payload).map(|(receipt, _)| receipt),
             _ => self.create(CreateThread::parse(payload)?),
         }
     }
