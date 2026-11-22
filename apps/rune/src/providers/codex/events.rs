@@ -69,6 +69,7 @@ pub enum TurnEvent {
         lifecycle: ToolLifecycle,
     },
     WebSearch(WebSearchUpdate),
+    TodoList(TodoListUpdate),
     ToolOutputDelta {
         item_id: String,
         delta: String,
@@ -122,6 +123,28 @@ pub struct WebSearchUpdate {
     pub lifecycle: ToolLifecycle,
     pub started_at_ms: Option<i64>,
     pub patterns: Vec<String>,
+}
+
+#[derive(Debug)]
+pub struct TodoListUpdate {
+    pub steps: Vec<TodoListStep>,
+    pub explanation: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TodoListStep {
+    pub id: String,
+    pub text: String,
+    pub status: TodoListStepStatus,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TodoListStepStatus {
+    Pending,
+    #[serde(alias = "inProgress")]
+    Running,
+    Completed,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -285,14 +308,62 @@ impl WebSearchFields {
         let mut seen = HashSet::new();
         candidates
             .into_iter()
-            .map(|text| {
-                text.trim_matches(|ch: char| {
-                    ch == '\u{feff}' || (ch.is_whitespace() && ch != '\u{85}')
-                })
-            })
+            .map(trim_provider_text)
             .filter(|text| !text.is_empty() && seen.insert(*text))
             .map(str::to_owned)
             .collect()
+    }
+}
+
+fn trim_provider_text(text: &str) -> &str {
+    text.trim_matches(|ch: char| ch == '\u{feff}' || (ch.is_whitespace() && ch != '\u{85}'))
+}
+
+#[derive(Deserialize)]
+struct TurnPlan {
+    #[serde(flatten)]
+    key: TurnKey,
+    explanation: Option<String>,
+    plan: Vec<NativePlanStep>,
+}
+
+#[derive(Deserialize)]
+struct NativePlanStep {
+    step: String,
+    status: TodoListStepStatus,
+}
+
+impl TurnPlan {
+    fn into_update(self) -> (TurnKey, TurnEvent) {
+        let steps = self
+            .plan
+            .into_iter()
+            .enumerate()
+            .map(|(offset, step)| {
+                let index = offset + 1;
+                let text = trim_provider_text(&step.step);
+                let text = if text.is_empty() {
+                    format!("Step {index}")
+                } else {
+                    text.to_owned()
+                };
+                TodoListStep {
+                    id: format!("step-{index}"),
+                    text,
+                    status: step.status,
+                }
+            })
+            .collect();
+        let explanation = self
+            .explanation
+            .as_deref()
+            .map(trim_provider_text)
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned);
+        (
+            self.key,
+            TurnEvent::TodoList(TodoListUpdate { steps, explanation }),
+        )
     }
 }
 
@@ -453,6 +524,7 @@ fn notification(
             let TokenUsage { key, token_usage } = payload(method, params)?;
             (key, TurnEvent::TokenUsageUpdated { usage: token_usage })
         }
+        "turn/plan/updated" => payload::<TurnPlan>(method, params)?.into_update(),
         "thread/settings/updated" => {
             let ThreadSettingsUpdate {
                 thread_id,

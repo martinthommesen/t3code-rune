@@ -1097,6 +1097,109 @@ set -eu
     }
 
     #[tokio::test]
+    async fn updates_the_captured_todo_list_and_keeps_its_step_timing() {
+        const RECORDING: &str = include_str!(
+            "../../../../server/src/orchestration-v2/testkit/fixtures/todo_list/codex_transcript.ndjson"
+        );
+        let frames = RECORDING
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        let mut script = "#!/bin/sh\nset -eu\n".to_owned();
+        for stage in [
+            vec![replay_reply(&frames, "initialize", 1)],
+            vec![],
+            vec![replay_reply(&frames, "thread/start", 2)],
+            vec![replay_reply(&frames, "thread/name/set", 3)],
+            vec![replay_reply(&frames, "config/read", 4)],
+            vec![replay_reply(&frames, "turn/start", 5)],
+        ] {
+            append_request(&mut script, &stage);
+        }
+        let mut updates = 0;
+        for row in frames.iter().skip_while(|row| row["label"] != "turn/start") {
+            if row["type"] != "emit_inbound" || row["frame"].get("id").is_some() {
+                continue;
+            }
+            if row["label"] == "turn/plan/updated" {
+                updates += 1;
+                if updates == 2 {
+                    script.push_str("while [ ! -f release-plan-update ]; do sleep 0.02; done\n");
+                }
+            }
+            emit_frame(&mut script, &row["frame"]);
+        }
+        script.push_str("while IFS= read -r request; do :; done\n");
+
+        let fixture = Fixture::new();
+        let commands = fixture.commands();
+        let mut dispatch = command_payload();
+        dispatch["text"] = replay_prompt(&frames).into();
+        commands
+            .dispatch(serde_json::from_value(dispatch).unwrap())
+            .unwrap();
+        let (changes, _) = broadcast::channel(32);
+        let worker = TurnWorker::spawn(commands, settings_for_script(&fixture, &script), changes);
+        let connection = fixture.connection();
+        wait_for_item(&connection, "todo_list", "completed").await;
+        let plan = || -> Value {
+            let payload: String = connection.query_row(
+                "SELECT payload_json FROM orchestration_v2_projection_plans WHERE thread_id = ?1 AND kind = 'todo_list'",
+                [THREAD], |row| row.get(0),
+            ).unwrap();
+            serde_json::from_str(&payload).unwrap()
+        };
+        let initial = plan();
+        assert_eq!(initial["steps"][0]["status"], "running");
+        assert_eq!(initial["steps"][1]["status"], "pending");
+        assert!(initial["steps"][0]["durationAnchorAt"].is_string());
+        fs::write(fixture.directory.join("release-plan-update"), "").unwrap();
+        wait_for_run(&fixture, "completed").await;
+        worker.shutdown().await.unwrap();
+        let final_plan = plan();
+        assert_eq!(final_plan["id"], initial["id"]);
+        assert_eq!(final_plan["status"], "active");
+        assert!(final_plan["steps"][0]["durationMs"].as_u64().unwrap() > 0);
+        for step in final_plan["steps"].as_array().unwrap() {
+            assert_eq!(step["status"], "completed");
+            assert!(step.get("durationAnchorAt").is_none());
+        }
+        let rows = {
+            let mut select = connection.prepare(
+                "SELECT event_type, payload_json FROM orchestration_events WHERE stream_id = ?1
+                 AND (json_extract(payload_json, '$.type') = 'todo_list' OR json_extract(payload_json, '$.kind') = 'todo_list')
+                 ORDER BY sequence",
+            ).unwrap();
+            select
+                .query_map([THREAD], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .unwrap()
+                .map(|row| {
+                    let (kind, payload) = row.unwrap();
+                    (kind, serde_json::from_str::<Value>(&payload).unwrap())
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            rows.iter().map(|row| row.0.as_str()).collect::<Vec<_>>(),
+            [
+                "node.updated",
+                "plan.updated",
+                "turn-item.updated",
+                "node.updated",
+                "plan.updated",
+                "turn-item.updated",
+            ]
+        );
+        assert_eq!(rows[2].1["id"], rows[5].1["id"]);
+        assert_eq!(rows[2].1["ordinal"], rows[5].1["ordinal"]);
+        assert_eq!(rows[5].1["planId"], final_plan["id"]);
+        assert_eq!(rows[5].1["status"], "completed");
+        assert!(rows[5].1["steps"][0].get("durationMs").is_none());
+    }
+
+    #[tokio::test]
     async fn records_completed_web_search_patterns_without_raw_results() {
         replay_web_search(false).await;
     }

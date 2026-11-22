@@ -71,6 +71,9 @@ pub(super) fn apply(
         "node.updated" => {
             transaction.prepare_cached(NODE)?.execute([&encoded])?;
         }
+        "plan.updated" => {
+            transaction.prepare_cached(PLAN)?.execute([&encoded])?;
+        }
         "checkpoint-scope.created" => {
             transaction
                 .prepare_cached(CHECKPOINT_SCOPE)?
@@ -102,6 +105,22 @@ const THREAD_TOUCH: &str = "
     UPDATE orchestration_v2_projection_threads
     SET updated_at = ?2, payload_json = json_set(payload_json, '$.updatedAt', ?2)
     WHERE thread_id = ?1
+";
+
+const PLAN: &str = "
+    INSERT INTO orchestration_v2_projection_plans (
+        plan_id, thread_id, run_id, node_id, kind, status, payload_json
+    ) VALUES (
+        json_extract(?1, '$.id'), json_extract(?1, '$.threadId'),
+        json_extract(?1, '$.runId'), json_extract(?1, '$.nodeId'),
+        json_extract(?1, '$.kind'), json_extract(?1, '$.status'), ?1
+    ) ON CONFLICT(plan_id) DO UPDATE SET
+        thread_id = excluded.thread_id,
+        run_id = excluded.run_id,
+        node_id = excluded.node_id,
+        kind = excluded.kind,
+        status = excluded.status,
+        payload_json = excluded.payload_json
 ";
 
 const CONTEXT_HANDOFF: &str = "

@@ -924,6 +924,13 @@ impl Worker {
                             .record_web_search(thread_id, &claim.run_id, &key, update)?,
                     );
                 }
+                TurnEvent::TodoList(update) => {
+                    self.publish_optional(
+                        thread_id,
+                        self.commands
+                            .record_todo_list(thread_id, &claim.run_id, &key, &update)?,
+                    );
+                }
                 TurnEvent::ToolChanged { .. } => {
                     let _ = client.interrupt_turn(&key).await;
                     return Err(WorkerError::Unavailable(
@@ -1145,7 +1152,7 @@ fn turn_event(
         CodexSessionEvent::Turn { key, event }
             if key.thread_id == expected.thread_id
                 && match &event {
-                    TurnEvent::WebSearch(_) => matches!(
+                    TurnEvent::WebSearch(_) | TurnEvent::TodoList(_) => matches!(
                         commands.native_turn_status(app_thread_id, &key)?.as_deref(),
                         Some("interrupted" | "completed" | "cancelled" | "failed"),
                     ),
