@@ -1,5 +1,6 @@
 pub(in crate::server) mod citation_search;
 mod legacy_cutover;
+mod legacy_pre52;
 mod legacy_pull_requests;
 mod legacy_settlement;
 mod sql;
@@ -14,7 +15,8 @@ use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
 };
 
-const MINIMUM_HEAD: i64 = 52;
+const MINIMUM_HEAD: i64 = 38;
+const TITLE_STATE_HEAD: i64 = 52;
 
 struct Migration {
     id: i64,
@@ -129,7 +131,7 @@ pub(super) fn migrate(path: &Path) -> Result<(), MigrationError> {
     reconcile_preview(&mut database)?;
     let mut head = validated_head(&database)?;
 
-    for migration in sql::MIGRATIONS {
+    for migration in migrations() {
         if migration.id <= head {
             continue;
         }
@@ -156,6 +158,10 @@ pub(super) fn migrate(path: &Path) -> Result<(), MigrationError> {
         head = migration.id;
     }
     Ok(())
+}
+
+fn migrations() -> impl Iterator<Item = &'static Migration> {
+    legacy_pre52::MIGRATIONS.iter().chain(sql::MIGRATIONS)
 }
 
 fn preview_id(database: &Connection) -> rusqlite::Result<Option<i64>> {
@@ -251,11 +257,16 @@ fn validated_head(database: &Connection) -> Result<i64, MigrationError> {
         return Err(MigrationError::UnsupportedBase { head });
     }
 
-    let expected = sql::BASE_HISTORY.iter().copied().chain(
-        sql::MIGRATIONS
-            .iter()
-            .map(|migration| (migration.id, migration.name)),
-    );
+    let required = if head >= TITLE_STATE_HEAD {
+        TITLE_STATE_HEAD
+    } else {
+        MINIMUM_HEAD
+    };
+    let expected = sql::BASE_HISTORY
+        .iter()
+        .copied()
+        .chain(migrations().map(|migration| (migration.id, migration.name)))
+        .skip_while(|(id, _)| *id < required);
     for (id, name) in expected.take_while(|(id, _)| *id <= head) {
         let recorded = history.get(&id);
         if recorded.is_none_or(|recorded| recorded != name) {

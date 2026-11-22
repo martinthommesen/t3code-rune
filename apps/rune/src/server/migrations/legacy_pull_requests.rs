@@ -115,11 +115,7 @@ fn encode_link(legacy: &str, at: &str) -> rusqlite::Result<String> {
     .map_err(|cause| error(Box::new(cause)))
 }
 
-pub(super) fn legacy_key(
-    repository: &str,
-    url: &str,
-    number: Option<u64>,
-) -> (String, String) {
+pub(super) fn legacy_key(repository: &str, url: &str, number: Option<u64>) -> (String, String) {
     let parsed = Url::parse(url).ok();
     parsed
         .as_ref()
@@ -187,10 +183,15 @@ fn keyed_authority(url: &Url, expected: u64) -> Option<(String, String)> {
 
 fn canonical_repository(host: String, repository: String) -> (String, String) {
     let parts: Vec<&str> = repository.split('/').collect();
-    if matches!(host.as_str(), "ssh.dev.azure.com" | "vs-ssh.visualstudio.com")
-        && let ["v3", account, project, name] = parts.as_slice()
+    if matches!(
+        host.as_str(),
+        "ssh.dev.azure.com" | "vs-ssh.visualstudio.com"
+    ) && let ["v3", account, project, name] = parts.as_slice()
     {
-        return ("dev.azure.com".into(), format!("{account}/{project}/_git/{name}"));
+        return (
+            "dev.azure.com".into(),
+            format!("{account}/{project}/_git/{name}"),
+        );
     }
     if let Some(account) = host
         .strip_suffix(".visualstudio.com")
@@ -241,4 +242,35 @@ fn change_request(
 
 fn decimal_id(value: &str) -> bool {
     !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+#[test]
+fn frozen_pull_request_keys_normalize_azure_aliases_without_dropping_custom_ports() {
+    assert_eq!(
+        legacy_key(
+            "saved/repository",
+            "https://ssh.dev.azure.com/v3/Account/Project/Repo/pulls/7",
+            Some(7),
+        ),
+        ("dev.azure.com".into(), "account/project/_git/repo".into())
+    );
+    assert_eq!(
+        legacy_key(
+            "saved/repository",
+            "https://ssh.dev.azure.com:8443/v3/Account/Project/Repo/pulls/7",
+            Some(7),
+        ),
+        (
+            "ssh.dev.azure.com:8443".into(),
+            "v3/account/project/repo".into()
+        )
+    );
+    assert_eq!(
+        legacy_key(
+            "saved/repository",
+            "https://forge.example:8443/group/repo/pulls/18446744073709551616/_git/repo/pullrequest/7",
+            Some(7),
+        ),
+        ("forge.example".into(), "saved/repository".into())
+    );
 }
