@@ -1144,6 +1144,15 @@ impl<'a> ThreadEventStream<'a> {
         thread_id: &'a str,
         command_id: &'a str,
     ) -> Self {
+        Self::command_with_event_source(transaction, thread_id, command_id, command_id)
+    }
+
+    pub(super) fn command_with_event_source(
+        transaction: &'a Transaction<'a>,
+        thread_id: &'a str,
+        command_id: &'a str,
+        event_command_id: &str,
+    ) -> Self {
         Self {
             transaction,
             thread_id,
@@ -1151,7 +1160,7 @@ impl<'a> ThreadEventStream<'a> {
             event_id_prefix: format!(
                 "event:thread:{}:command:{}",
                 encode_id_part(thread_id),
-                encode_id_part(command_id)
+                encode_id_part(event_command_id)
             ),
         }
     }

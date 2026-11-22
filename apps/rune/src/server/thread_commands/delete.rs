@@ -1,4 +1,4 @@
-use rusqlite::{OptionalExtension, TransactionBehavior, params};
+use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -21,11 +21,22 @@ struct Delete {
     thread_id: String,
 }
 
+pub(in crate::server) struct DeletedThreads {
+    pub(in crate::server) receipt: CommittedThread,
+    pub(in crate::server) thread_ids: Vec<String>,
+}
+
+struct Candidate {
+    payload: Value,
+    project_id: String,
+    archived: bool,
+}
+
 impl ThreadCommands {
-    pub(super) fn delete_archived(
+    pub(in crate::server) fn delete_archived(
         &self,
         payload: Value,
-    ) -> Result<CommittedThread, ThreadCommandError> {
+    ) -> Result<DeletedThreads, ThreadCommandError> {
         let input: Delete = serde_json::from_value(payload)
             .map_err(|cause| ThreadCommandError::InvalidRequest(cause.to_string()))?;
         let command_id = trim_js(&input.command_id);
@@ -41,51 +52,62 @@ impl ThreadCommands {
             .query_row(SELECT_RECEIPT, [command_id], Receipt::read)
             .optional()?
         {
-            return receipt.replay(command_id, thread_id);
+            return receipt
+                .replay(command_id, thread_id)
+                .map(|receipt| DeletedThreads {
+                    receipt,
+                    thread_ids: Vec::new(),
+                });
         }
-        let state = transaction
-            .query_row(SELECT_THREAD, [thread_id], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
-            })
-            .optional()?;
-        let Some((encoded, ordinary_archive)) = state else {
-            return Err(ThreadCommandError::MissingProjection(thread_id.to_owned()));
-        };
-        if !ordinary_archive {
-            return Err(ThreadCommandError::Rejected(
-                "This thread requires additional cleanup before it can be deleted from Archive."
-                    .into(),
-            ));
+
+        let root = candidate(&transaction, thread_id)?;
+        if !root.archived
+            || root.payload["lineage"]["rootThreadId"] != thread_id
+            || !root.payload["lineage"]["parentThreadId"].is_null()
+        {
+            return Err(additional_cleanup());
         }
-        let mut projection: Value = serde_json::from_str(&encoded)
-            .map_err(|cause| rusqlite::Error::ToSqlConversionFailure(Box::new(cause)))?;
-        if !projection.is_object() {
-            return Err(rusqlite::Error::InvalidQuery.into());
+        let children = side_chats(&transaction, thread_id)?;
+        let mut members = Vec::with_capacity(children.len() + 1);
+        for child_id in children {
+            let child = candidate(&transaction, &child_id)?;
+            let lineage = &child.payload["lineage"];
+            if child.project_id != root.project_id
+                || lineage["rootThreadId"] != thread_id
+                || lineage["parentThreadId"] != thread_id
+                || lineage["relationshipToParent"] != "fork"
+                || lineage["sideChat"] != true
+                || !side_chats(&transaction, &child_id)?.is_empty()
+            {
+                return Err(additional_cleanup());
+            }
+            let child_command = format!("{command_id}:side-chat:{child_id}");
+            members.push((child_id, child_command, child.payload));
         }
+
         let now = now_timestamp();
-        projection["deletedAt"] = json!(now);
-        projection["titleRegeneration"] = Value::Null;
-        projection["updatedAt"] = json!(now);
-        let sequence = ThreadEventStream::command(&transaction, thread_id, command_id).append(
-            "thread.deleted",
+        let mut sequence = archive_member(
+            &transaction,
+            thread_id,
+            command_id,
+            command_id,
+            root.payload,
             &now,
-            &json!({"providerInstanceId":projection["providerInstanceId"]}),
-            &projection,
         )?;
-        record_projected_sequence(&transaction, sequence, &now)?;
-        for effect in DELETION_EFFECTS {
-            transaction.execute(
-                INSERT_EFFECT,
-                params![
-                    format!("effect:{command_id}:{effect}"),
-                    command_id,
-                    thread_id,
-                    effect,
-                    json!({"type":effect}).to_string(),
-                    now,
-                ],
+        let mut thread_ids = Vec::with_capacity(members.len() + 1);
+        thread_ids.push(thread_id.to_owned());
+        for (child_id, child_command, projection) in members {
+            sequence = archive_member(
+                &transaction,
+                &child_id,
+                command_id,
+                &child_command,
+                projection,
+                &now,
             )?;
+            thread_ids.push(child_id);
         }
+        record_projected_sequence(&transaction, sequence, &now)?;
         transaction.execute(
             INSERT_RECEIPT,
             params![
@@ -99,12 +121,110 @@ impl ThreadCommands {
             ],
         )?;
         transaction.commit()?;
-        Ok(CommittedThread {
-            sequence: sequence as u64,
-            committed: true,
+        Ok(DeletedThreads {
+            receipt: CommittedThread {
+                sequence: sequence as u64,
+                committed: true,
+            },
+            thread_ids,
         })
     }
 }
+
+fn candidate(
+    transaction: &Transaction<'_>,
+    thread_id: &str,
+) -> Result<Candidate, ThreadCommandError> {
+    let state = transaction
+        .query_row(SELECT_THREAD, [thread_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, bool>(2)?,
+                row.get::<_, bool>(3)?,
+            ))
+        })
+        .optional()?;
+    let Some((encoded, project_id, archived, supported)) = state else {
+        return Err(ThreadCommandError::MissingProjection(thread_id.to_owned()));
+    };
+    if !supported {
+        return Err(additional_cleanup());
+    }
+    let payload: Value = serde_json::from_str(&encoded)
+        .map_err(|cause| rusqlite::Error::ToSqlConversionFailure(Box::new(cause)))?;
+    if !payload.is_object() {
+        return Err(rusqlite::Error::InvalidQuery.into());
+    }
+    Ok(Candidate {
+        payload,
+        project_id,
+        archived,
+    })
+}
+
+fn side_chats(
+    transaction: &Transaction<'_>,
+    parent_thread_id: &str,
+) -> rusqlite::Result<Vec<String>> {
+    transaction
+        .prepare_cached(SELECT_SIDE_CHATS)?
+        .query_map([parent_thread_id], |row| row.get(0))?
+        .collect()
+}
+
+fn archive_member(
+    transaction: &Transaction<'_>,
+    thread_id: &str,
+    command_id: &str,
+    effect_command_id: &str,
+    mut projection: Value,
+    now: &str,
+) -> rusqlite::Result<i64> {
+    projection["deletedAt"] = json!(now);
+    projection["titleRegeneration"] = Value::Null;
+    projection["updatedAt"] = json!(now);
+    let sequence = ThreadEventStream::command_with_event_source(
+        transaction,
+        thread_id,
+        command_id,
+        effect_command_id,
+    )
+    .append(
+        "thread.deleted",
+        now,
+        &json!({"providerInstanceId":projection["providerInstanceId"]}),
+        &projection,
+    )?;
+    for effect in DELETION_EFFECTS {
+        transaction.execute(
+            INSERT_EFFECT,
+            params![
+                format!("effect:{effect_command_id}:{effect}"),
+                effect_command_id,
+                thread_id,
+                effect,
+                json!({"type":effect}).to_string(),
+                now,
+            ],
+        )?;
+    }
+    Ok(sequence)
+}
+
+fn additional_cleanup() -> ThreadCommandError {
+    ThreadCommandError::Rejected(
+        "This thread requires additional cleanup before it can be deleted from Archive.".into(),
+    )
+}
+
+const SELECT_SIDE_CHATS: &str = "
+    SELECT child.thread_id FROM orchestration_v2_projection_context_transfers AS transfer
+    JOIN orchestration_v2_projection_threads AS child ON child.thread_id = transfer.target_thread_id
+    WHERE transfer.source_thread_id = ?1 AND transfer.type = 'fork'
+      AND child.deleted_at IS NULL AND json_extract(child.payload_json,'$.lineage.sideChat') = 1
+    GROUP BY child.thread_id ORDER BY MIN(transfer.rowid)
+";
 
 const INSERT_EFFECT: &str = "
     INSERT INTO orchestration_v2_effect_outbox (
@@ -114,18 +234,10 @@ const INSERT_EFFECT: &str = "
 ";
 
 const SELECT_THREAD: &str = "
-    SELECT thread.payload_json,
-        thread.archived_at IS NOT NULL AND thread.deleted_at IS NULL
-        AND json_extract(thread.payload_json,'$.lineage.rootThreadId') IS thread.thread_id
-        AND json_extract(thread.payload_json,'$.lineage.parentThreadId') IS NULL
+    SELECT thread.payload_json, thread.project_id, thread.archived_at IS NOT NULL,
+        thread.deleted_at IS NULL
         AND json_extract(thread.payload_json,'$.worktreePath') IS NULL
         AND json_extract(thread.payload_json,'$.forkedFrom') IS NULL
-        AND NOT EXISTS (
-            SELECT 1 FROM orchestration_v2_projection_context_transfers AS transfer
-            JOIN orchestration_v2_projection_threads AS child ON child.thread_id = transfer.target_thread_id
-            WHERE transfer.source_thread_id = thread.thread_id AND transfer.type = 'fork'
-              AND child.deleted_at IS NULL AND json_extract(child.payload_json,'$.lineage.sideChat') = 1
-        )
         AND NOT EXISTS (
             SELECT 1 FROM orchestration_v2_projection_runs AS run WHERE run.thread_id = thread.thread_id
               AND (run.status IN ('preparing','queued','starting','running','waiting')

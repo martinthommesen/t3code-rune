@@ -1534,12 +1534,25 @@ fn dispatch_thread(
     }
     let command_type = command_type.to_owned();
     let thread_id = payload["threadId"].as_str().unwrap_or_default().to_owned();
-    match local.threads.dispatch(payload) {
-        Ok(result) => {
+    let result = if command_type == "thread.delete" {
+        local
+            .threads
+            .delete_archived(payload)
+            .map(|result| (result.receipt, result.thread_ids))
+    } else {
+        local
+            .threads
+            .dispatch(payload)
+            .map(|receipt| (receipt, vec![thread_id]))
+    };
+    match result {
+        Ok((result, thread_ids)) => {
             if result.committed {
-                let _ = local
-                    .projection_changes
-                    .send(ProjectionChange::Thread(thread_id));
+                for thread_id in thread_ids {
+                    let _ = local
+                        .projection_changes
+                        .send(ProjectionChange::Thread(thread_id));
+                }
                 if command_type == "thread.metadata.update" {
                     local.turn_queue.wake();
                 }

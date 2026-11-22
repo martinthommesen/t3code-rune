@@ -168,15 +168,24 @@ impl ThreadCommands {
 const SELECT_CLEANUP: &str = "
     SELECT effect.effect_id, effect.thread_id, effect.effect_type, effect.attempt_count
     FROM orchestration_v2_effect_outbox AS effect
-    JOIN orchestration_command_receipts AS receipt ON receipt.command_id=effect.command_id
-      AND receipt.aggregate_id=effect.thread_id AND receipt.aggregate_kind='thread'
     JOIN orchestration_v2_projection_threads AS thread ON thread.thread_id=effect.thread_id
-    WHERE effect.status='pending' AND effect.available_at<=?1
-      AND receipt.status='accepted' AND receipt.command_type='thread.delete'
-      AND thread.archived_at IS NOT NULL AND thread.deleted_at IS NOT NULL
+    WHERE effect.status='pending' AND effect.available_at<=?1 AND thread.deleted_at IS NOT NULL
       AND effect.effect_type IN ('scheduled-tasks.cleanup','terminal.cleanup','preview.cleanup')
-      AND effect.effect_id='effect:' || receipt.command_id || ':' || effect.effect_type
+      AND effect.effect_id='effect:' || effect.command_id || ':' || effect.effect_type
       AND json_extract(effect.payload_json,'$.type')=effect.effect_type
+      AND EXISTS (
+        SELECT 1 FROM orchestration_events AS tombstone
+        JOIN orchestration_command_receipts AS receipt ON receipt.command_id=tombstone.command_id
+        WHERE tombstone.aggregate_kind='thread' AND tombstone.application_event_version=2
+          AND tombstone.stream_id=effect.thread_id AND tombstone.event_type='thread.deleted'
+          AND tombstone.sequence<=receipt.result_sequence
+          AND receipt.aggregate_kind='thread' AND receipt.command_type='thread.delete' AND receipt.status='accepted'
+          AND ((receipt.aggregate_id=effect.thread_id AND receipt.command_id=effect.command_id
+                AND thread.archived_at IS NOT NULL)
+            OR (receipt.aggregate_id=json_extract(thread.payload_json,'$.lineage.parentThreadId')
+                AND json_extract(thread.payload_json,'$.lineage.sideChat')=1
+                AND effect.command_id=receipt.command_id || ':side-chat:' || effect.thread_id))
+      )
       AND NOT EXISTS (
         SELECT 1 FROM orchestration_v2_effect_outbox AS earlier
         WHERE earlier.thread_id=effect.thread_id AND earlier.command_id=effect.command_id

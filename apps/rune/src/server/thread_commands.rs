@@ -145,7 +145,6 @@ impl ThreadCommands {
         match payload["type"].as_str() {
             Some("thread.visit") => self.visit(payload),
             Some(rename::COMMAND) => self.rename(payload),
-            Some(delete::COMMAND) => self.delete_archived(payload),
             Some(unarchive::COMMAND) => self.unarchive(payload),
             _ => self.create(CreateThread::parse(payload)?),
         }
