@@ -1,13 +1,17 @@
 use std::collections::HashSet;
 
-use rusqlite::{Connection, OptionalExtension, Row, types::Type};
+use rusqlite::{Connection, OptionalExtension, Params, Row, types::Type};
 use serde_json::{Map, Value, json};
 use time::{OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339};
 
 mod background;
+mod trim;
 
 const THREAD_COLUMNS: &str = include_str!("shell_threads.sql");
 const THREADS: &str = "WHERE t.deleted_at IS NULL AND (t.archived_at IS NOT NULL) = ?1
+    ORDER BY t.updated_at ASC, t.thread_id ASC";
+const SELECTED_ACTIVE_THREADS: &str = "WHERE t.deleted_at IS NULL AND t.archived_at IS NULL
+    AND t.thread_id IN (SELECT value FROM json_each(?1))
     ORDER BY t.updated_at ASC, t.thread_id ASC";
 const ACTIVE_THREAD: &str = "WHERE t.deleted_at IS NULL AND t.archived_at IS NULL
     AND t.thread_id = ?1";
@@ -17,38 +21,82 @@ const PROJECTS: &str = "
            tracked_folders_json, pinned_at, archived_at, created_at, updated_at
     FROM projection_projects WHERE deleted_at IS NULL";
 
-pub(super) enum Location {
-    Active,
-    Archive,
-}
-
-pub(super) fn read(
+pub(super) fn read_archive(
     database: &Connection,
     snapshot_sequence: u64,
-    location: Location,
 ) -> rusqlite::Result<Value> {
-    let projects = database
-        .prepare(&format!("{PROJECTS} ORDER BY created_at, project_id"))?
-        .query_map([], project)?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut statement = database.prepare(&format!("{THREAD_COLUMNS}{THREADS}"))?;
-    let mut rows = statement.query([matches!(location, Location::Archive)])?;
-    let mut threads = Vec::new();
-    while let Some(row) = rows.next()? {
-        threads.push(thread(database, row)?);
-    }
+    let projects = read_projects(database)?;
+    let threads = read_threads(database, THREADS, [true])?;
+    Ok(json!({
+        "schemaVersion": 2,
+        "snapshotSequence": snapshot_sequence,
+        "projects": projects,
+        "threads": threads,
+    }))
+}
+
+pub(super) fn read_subscriber(
+    database: &Connection,
+    snapshot_sequence: u64,
+    omit_idle_subagents: bool,
+    omit_older_settled: bool,
+) -> rusqlite::Result<(Value, HashSet<String>)> {
+    let projects = read_projects(database)?;
+    let options = trim::Options {
+        omit_idle_subagents,
+        omit_older_settled,
+    };
+    let (threads, active_subagents, older_settled) = if omit_idle_subagents || omit_older_settled {
+        let plan = trim::Plan::read(database, options)?;
+        let mut threads = if plan.ids.is_empty() {
+            Vec::new()
+        } else {
+            let ids = serde_json::to_string(&plan.ids).expect("serializable thread IDs");
+            read_threads(database, SELECTED_ACTIVE_THREADS, [ids])?
+        };
+        let older_settled = plan.apply(&mut threads, snapshot_sequence);
+        (threads, plan.active_subagents, older_settled)
+    } else {
+        let threads = read_threads(database, THREADS, [false])?;
+        let active_subagents = threads
+            .iter()
+            .filter(|thread| trim::subagent(thread))
+            .filter_map(|thread| thread["id"].as_str().map(str::to_owned))
+            .collect();
+        (threads, active_subagents, None)
+    };
     let mut snapshot = json!({
         "schemaVersion": 2,
         "snapshotSequence": snapshot_sequence,
         "projects": projects,
         "threads": threads,
+        "archivedThreads": [],
     });
-    if matches!(location, Location::Active) {
-        snapshot["archivedThreads"] = json!([]);
-        Ok(json!({"kind": "snapshot", "snapshot": snapshot}))
-    } else {
-        Ok(snapshot)
+    if let Some(older_settled) = older_settled {
+        snapshot["olderSettled"] = older_settled;
     }
+    Ok((
+        json!({"kind": "snapshot", "snapshot": snapshot}),
+        active_subagents,
+    ))
+}
+
+fn read_threads(
+    database: &Connection,
+    filter: &str,
+    params: impl Params,
+) -> rusqlite::Result<Vec<Value>> {
+    database
+        .prepare(&format!("{THREAD_COLUMNS}{filter}"))?
+        .query_map(params, |row| thread(database, row))?
+        .collect()
+}
+
+pub(super) fn read_projects(database: &Connection) -> rusqlite::Result<Vec<Value>> {
+    database
+        .prepare(&format!("{PROJECTS} ORDER BY created_at, project_id"))?
+        .query_map([], project)?
+        .collect()
 }
 
 pub(super) fn read_project(database: &Connection, id: &str) -> rusqlite::Result<Option<Value>> {

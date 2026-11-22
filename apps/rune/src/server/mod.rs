@@ -10,8 +10,10 @@ mod migrations;
 mod named_projects;
 mod project_clone;
 mod project_commands;
+mod repository_identity;
 mod rpc;
 mod settings;
+mod shell_http;
 mod store;
 mod terminal;
 mod terminal_rpc;
@@ -81,6 +83,7 @@ struct LocalOperations {
     projects: ProjectCommands,
     named_projects_root: PathBuf,
     project_clones: ProjectClones,
+    repository_identities: repository_identity::Identities,
     threads: ThreadCommands,
     turns: TurnCommands,
     turn_queue: TurnQueue,
@@ -175,12 +178,17 @@ impl LocalHost {
                             eprintln!("The local thread title worker stopped: {error}");
                         }
                     });
-                    let project_clones =
-                        ProjectClones::new(projects.clone(), projection_changes.clone());
+                    let repository_identities = repository_identity::Identities::default();
+                    let project_clones = ProjectClones::new(
+                        projects.clone(),
+                        projection_changes.clone(),
+                        repository_identities.clone(),
+                    );
                     let local = LocalOperations {
                         projects,
                         named_projects_root,
                         project_clones: project_clones.clone(),
+                        repository_identities,
                         threads,
                         turns,
                         turn_queue: turn_worker.sender(),
@@ -322,6 +330,7 @@ fn router(environment: SharedEnvironment) -> Router {
         .route("/.well-known/t3/environment", get(descriptor))
         .route("/oauth/token", post(exchange))
         .route("/api/auth/websocket-ticket/rpc", post(issue_ticket))
+        .route("/api/orchestration/shell", get(shell_http::snapshot))
         .route("/ws", get(upgrade))
         .layer(DefaultBodyLimit::max(8 * 1024))
         .layer(middleware::from_fn_with_state(
@@ -377,7 +386,7 @@ async fn descriptor(State(environment): State<SharedEnvironment>) -> Json<Value>
         "platform": {"os": os, "arch": arch},
         "serverVersion": env!("CARGO_PKG_VERSION"),
         "orchestrationProtocolVersion": PROTOCOL_VERSION,
-        "capabilities": {"t3ReadOnly": true, "t3ProjectWrites": local, "t3NamedProjects": local, "t3CloneProjects": local, "t3PromptWrites": local, "t3ThreadLaunch": local, "t3WorktreeLaunch": local, "t3RemoteWorktreeLaunch": local, "t3WorktreeSetup": local, "t3CheckoutSwitch": local, "t3ThreadStop": local, "t3ArchiveSnapshots": local, "t3ThreadVisits": local, "t3Terminal": local}
+        "capabilities": {"t3ReadOnly": true, "t3ProjectWrites": local, "t3NamedProjects": local, "t3CloneProjects": local, "t3PromptWrites": local, "t3ThreadLaunch": local, "t3WorktreeLaunch": local, "t3RemoteWorktreeLaunch": local, "t3WorktreeSetup": local, "t3ShellHttp": local, "t3CheckoutSwitch": local, "t3ThreadStop": local, "t3ArchiveSnapshots": local, "t3ThreadVisits": local, "t3Terminal": local}
     }))
 }
 
@@ -442,15 +451,7 @@ async fn issue_ticket(
     State(environment): State<SharedEnvironment>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, StatusCode> {
-    let (scheme, value) = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|header| header.to_str().ok())
-        .and_then(|header| header.split_once(' '))
-        .ok_or(StatusCode::UNAUTHORIZED)?;
-    if !scheme.eq_ignore_ascii_case("Bearer") {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
-    let access_token = Uuid::parse_str(value).map_err(|_| StatusCode::UNAUTHORIZED)?;
+    let access_token = bearer_token(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
     let (ticket, ttl) = environment
         .credentials
         .lock()
@@ -463,6 +464,18 @@ async fn issue_ticket(
     Ok(Json(
         json!({"ticket": ticket.to_string(), "expiresAt": expires_at}),
     ))
+}
+
+fn bearer_token(headers: &HeaderMap) -> Option<Uuid> {
+    let (scheme, value) = headers
+        .get(header::AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("Bearer") {
+        return None;
+    }
+    Uuid::parse_str(value).ok()
 }
 
 #[derive(Deserialize)]

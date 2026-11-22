@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::broadcast::{Receiver, error::RecvError};
 use tokio::task::{AbortHandle, JoinSet};
 
 use super::credentials::Permissions;
@@ -13,6 +13,7 @@ use super::launch_model;
 use super::named_projects::{self, CreateNamedProject};
 use super::project_clone::StartInput as CloneStartInput;
 use super::project_commands::CommandError as ProjectCommandError;
+use super::repository_identity::{Change as IdentityChange, Identities};
 use super::store::Store;
 use super::terminal_rpc;
 use super::thread_commands::ThreadCommandError;
@@ -46,7 +47,10 @@ enum ClientMessage {
         #[serde(rename = "requestId")]
         request_id: RequestId,
     },
-    Ack,
+    Ack {
+        #[serde(rename = "requestId")]
+        request_id: Option<RequestId>,
+    },
     Ping,
     Eof,
 }
@@ -115,7 +119,12 @@ pub(super) async fn serve(
     let mut changes = local
         .as_ref()
         .map(|local| local.projection_changes.subscribe());
-    let mut shell_request = None;
+    let identities = local
+        .as_ref()
+        .map(|local| local.repository_identities.clone());
+    let mut identity_changes: Option<Receiver<IdentityChange>> = None;
+    let mut shell_requests = HashMap::<RequestId, shell_stream::Subscription>::new();
+    let mut shell_completions = HashSet::<RequestId>::new();
     let mut thread_requests = HashMap::<RequestId, String>::new();
     let mut streams = streams::Streams::new();
     let mut operations = JoinSet::new();
@@ -139,7 +148,7 @@ pub(super) async fn serve(
                 continue;
             }
             change = async { changes.as_mut().expect("local host has a projection change stream").recv().await },
-                if changes.is_some() && (shell_request.is_some() || !thread_requests.is_empty()) => {
+                if changes.is_some() && (!shell_requests.is_empty() || !thread_requests.is_empty()) => {
                 let thread_ids = match change {
                     Ok(ProjectionChange::Project) => Vec::new(),
                     Ok(ProjectionChange::Thread(thread_id)) => vec![thread_id],
@@ -147,9 +156,34 @@ pub(super) async fn serve(
                     Err(RecvError::Closed) => break,
                 };
                 if refresh_projections(
-                    &mut socket, &store, &mut shell_request, &mut thread_requests, &thread_ids,
+                    &mut socket,
+                    &store,
+                    identities.as_ref().expect("local projection changes have an identity service"),
+                    &mut shell_requests,
+                    &mut thread_requests,
+                    &thread_ids,
                 ).await { continue; }
                 break;
+            }
+            change = async { identity_changes.as_mut().expect("local identity stream").recv().await },
+                if identity_changes.is_some() && !shell_requests.is_empty() => {
+                let changes = shell_stream::batch_changes(
+                    identity_changes.as_mut().expect("local identity stream"),
+                    change,
+                ).await;
+                let store = store.clone();
+                let identities = identities.clone().expect("local identity service");
+                let Ok(Ok(enrichment)) = tokio::task::spawn_blocking(move || {
+                    shell_stream::Enrichment::read(&store, &identities, changes)
+                }).await else { break; };
+                for shell in shell_requests.values_mut() {
+                    if let Some(frame) = shell.enrichment_frame(&enrichment)
+                        && !send(&mut socket, frame).await
+                    {
+                        return;
+                    }
+                }
+                continue;
             }
         };
         let Some(Ok(message)) = message else { break };
@@ -166,15 +200,27 @@ pub(super) async fn serve(
                 if tag == "orchestration.subscribeShell" =>
             {
                 let store = store.clone();
-                let live = local.is_some();
+                let identities = identities.clone();
+                if identity_changes.is_none()
+                    && let Some(service) = &identities
+                {
+                    identity_changes = Some(service.subscribe());
+                }
                 let Ok(update) = tokio::task::spawn_blocking(move || {
-                    shell_stream::Subscription::start(&store, id, payload, live)
+                    shell_stream::Subscription::start(&store, id, payload, identities.as_ref())
                 })
                 .await
                 else {
                     break;
                 };
-                shell_request = update.subscription;
+                if let Some(subscription) = update.subscription {
+                    shell_requests.insert(subscription.id.clone(), subscription);
+                } else if shell_requests.is_empty() {
+                    identity_changes = None;
+                }
+                if let Some(request_id) = update.complete_on_ack {
+                    shell_completions.insert(request_id);
+                }
                 let Some(frame) = update.frame else { continue };
                 Ok(frame)
             }
@@ -458,11 +504,10 @@ pub(super) async fn serve(
                     task.abort();
                 }
                 thread_requests.remove(&request_id);
-                if shell_request
-                    .as_ref()
-                    .is_some_and(|shell| shell.id == request_id)
-                {
-                    shell_request = None;
+                shell_requests.remove(&request_id);
+                shell_completions.remove(&request_id);
+                if shell_requests.is_empty() {
+                    identity_changes = None;
                 }
                 Ok(json!({
                     "_tag": "Exit",
@@ -470,7 +515,10 @@ pub(super) async fn serve(
                     "exit": { "_tag": "Failure", "cause": [{"_tag": "Interrupt"}] },
                 }))
             }
-            ClientMessage::Ack => continue,
+            ClientMessage::Ack { request_id } => match request_id {
+                Some(id) if shell_completions.remove(&id) => Ok(success(id, Value::Null)),
+                _ => continue,
+            },
             ClientMessage::Eof => break,
         };
         let Ok(response) = response else {
@@ -755,7 +803,8 @@ async fn send(socket: &mut WebSocket, frame: Value) -> bool {
 async fn refresh_projections(
     socket: &mut WebSocket,
     store: &Store,
-    shell_request: &mut Option<shell_stream::Subscription>,
+    identities: &Identities,
+    shell_requests: &mut HashMap<RequestId, shell_stream::Subscription>,
     thread_requests: &mut HashMap<RequestId, String>,
     thread_ids: &[String],
 ) -> bool {
@@ -765,21 +814,27 @@ async fn refresh_projections(
         .map(|(request_id, thread_id)| (request_id.clone(), thread_id.clone()))
         .collect::<Vec<_>>();
     let store = store.clone();
-    let shell = shell_request.take();
-    let Ok((shell, frames)) = tokio::task::spawn_blocking(move || {
-        let shell = shell.map(|shell| shell.refresh(&store));
+    let identities = identities.clone();
+    let shells = std::mem::take(shell_requests);
+    let Ok((updates, frames)) = tokio::task::spawn_blocking(move || {
+        let updates: Vec<_> = shells
+            .into_values()
+            .map(|shell| shell.refresh(&store, &identities))
+            .collect();
         let mut frames = Vec::with_capacity(requests.len());
         for (id, thread_id) in requests {
             frames.push((id.clone(), thread_snapshot(&store, id, &thread_id, true)));
         }
-        (shell, frames)
+        (updates, frames)
     })
     .await
     else {
         return false;
     };
-    if let Some(shell) = shell {
-        *shell_request = shell.subscription;
+    for shell in updates {
+        if let Some(subscription) = shell.subscription {
+            shell_requests.insert(subscription.id.clone(), subscription);
+        }
         if let Some(frame) = shell.frame
             && !send(socket, frame).await
         {

@@ -24,6 +24,18 @@ pub(super) struct ProjectRow {
     project: Project,
     pub(super) default_model_selection: Option<ModelSelection>,
     pub(super) archived_at: Option<String>,
+    repository_identity: Option<Value>,
+}
+
+impl ProjectRow {
+    fn retain_repository_identity(&mut self, previous: Option<&Self>) {
+        if self.repository_identity.is_none()
+            && let Some(previous) = previous.filter(|row| row.project.path == self.project.path)
+        {
+            self.repository_identity
+                .clone_from(&previous.repository_identity);
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -94,7 +106,11 @@ impl ThreadProviders {
 
 impl Thread {
     pub(crate) fn has_started_run(&self) -> bool {
-        self.activity.latest_run_started_at.is_some()
+        self.run_started_at().is_some()
+    }
+
+    pub(crate) fn run_started_at(&self) -> Option<&str> {
+        self.activity.latest_run_started_at.as_deref()
     }
 
     pub(crate) fn activity_timestamp(&self) -> Option<OffsetDateTime> {
@@ -213,15 +229,28 @@ impl Shell {
                 snapshot,
                 resolved_repository_identity_roots,
             } => {
-                // Repository identity enrichment carries partial projects and empty thread lists.
-                if resolved_repository_identity_roots.is_some() {
-                    return Ok(false);
+                if let Some(roots) = resolved_repository_identity_roots {
+                    return Ok(self.apply_identity_refresh(&snapshot.projects, &roots));
                 }
                 if snapshot.snapshot_sequence < self.sequence {
                     return Ok(false);
                 }
                 self.sequence = snapshot.snapshot_sequence;
-                self.projects = snapshot.projects;
+                let previous: HashMap<_, _> = self
+                    .projects
+                    .iter()
+                    .map(|row| (row.project.id.as_str(), row))
+                    .collect();
+                self.projects = snapshot
+                    .projects
+                    .into_iter()
+                    .map(|mut row| {
+                        row.retain_repository_identity(
+                            previous.get(row.project.id.as_str()).copied(),
+                        );
+                        row
+                    })
+                    .collect();
                 self.threads = unique_threads(snapshot.threads, false);
                 if self.archive_sequence.is_none() {
                     self.archive = unique_threads(snapshot.archived_threads, true);
@@ -231,10 +260,13 @@ impl Shell {
                 }
                 true
             }
-            ShellItem::ProjectUpdated { sequence, project } => self
-                .apply_delta(sequence, |shell| {
-                    upsert(&mut shell.projects, project, |row| &row.project.id)
-                }),
+            ShellItem::ProjectUpdated {
+                sequence,
+                mut project,
+            } => self.apply_delta(sequence, |shell| {
+                project.retain_repository_identity(shell.project(&project.project.id));
+                upsert(&mut shell.projects, project, |row| &row.project.id)
+            }),
             ShellItem::ProjectRemoved {
                 sequence,
                 project_id,
@@ -276,6 +308,35 @@ impl Shell {
             ShellItem::Ignored => false,
         };
         Ok(changed)
+    }
+
+    fn apply_identity_refresh(&mut self, candidates: &[ProjectRow], roots: &[String]) -> bool {
+        let candidates: HashMap<_, _> = candidates
+            .iter()
+            .map(|row| (row.project.id.as_str(), row))
+            .collect();
+        let roots: HashSet<_> = roots.iter().map(String::as_str).collect();
+        let mut changed = false;
+        for project in &mut self.projects {
+            let Some(candidate) = candidates
+                .get(project.project.id.as_str())
+                .filter(|row| row.project.path == project.project.path)
+            else {
+                continue;
+            };
+            let resolved_here = roots.contains(project.project.path.as_str());
+            let fills_missing =
+                project.repository_identity.is_none() && candidate.repository_identity.is_some();
+            if (resolved_here || fills_missing)
+                && project.repository_identity != candidate.repository_identity
+            {
+                project
+                    .repository_identity
+                    .clone_from(&candidate.repository_identity);
+                changed = true;
+            }
+        }
+        changed
     }
 
     pub(super) fn apply_archive_snapshot(
@@ -745,6 +806,131 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(shell.view().1[0].id, "old");
+    }
+
+    #[test]
+    fn marked_repository_refresh_updates_only_existing_same_root_metadata() {
+        let mut shell = Shell::default();
+        let identity = |name: &str| {
+            json!({"canonicalKey": format!("example.test/team/{name}"), "locator": {
+                "source": "git-remote", "remoteName": "origin",
+                "remoteUrl": format!("https://example.test/team/{name}.git"),
+            }})
+        };
+        let previous = identity("previous");
+        let resolved = identity("resolved");
+        let project = |id: &str, root: &str, title: &str, repository: Value| json!({"id":id, "title":title, "workspaceRoot":root, "repositoryIdentity":repository});
+        let thread = json!({"id":"latest", "projectId":"p", "title":"Latest thread"});
+        assert!(
+            shell
+                .apply(json!({"kind":"snapshot", "snapshot": {
+                    "snapshotSequence": 8,
+                    "projects": [project("p", "/p", "Latest", Value::Null),
+                                 project("q", "/q", "Other project", previous.clone())],
+                    "threads": [thread],
+                }}))
+                .unwrap()
+        );
+
+        let marked = |projects: Vec<Value>, roots: &[&str]| {
+            json!({"kind":"snapshot", "resolvedRepositoryIdentityRoots": roots, "snapshot": {
+                "snapshotSequence":4, "projects":projects, "threads":[], "archivedThreads":[],
+            }})
+        };
+        let refresh = marked(
+            vec![
+                project("p", "/p", "Stale title", resolved.clone()),
+                project("q", "/changed", "Wrong root", Value::Null),
+                project("r", "/r", "Absent", resolved.clone()),
+            ],
+            &["/p", "/q", "/changed", "/r"],
+        );
+        assert!(shell.apply(refresh.clone()).unwrap());
+        assert!(!shell.apply(refresh).unwrap());
+        assert_eq!(shell.sequence, 8);
+        assert_eq!(shell.view().1[0].id, "latest");
+        assert_eq!(shell.project("p").unwrap().project.name, "Latest");
+        assert_eq!(
+            shell.project("p").unwrap().repository_identity,
+            Some(resolved.clone())
+        );
+        assert_eq!(
+            shell.project("q").unwrap().repository_identity,
+            Some(previous.clone())
+        );
+        assert!(shell.project("r").is_none());
+
+        assert!(
+            shell
+                .apply(marked(
+                    vec![
+                        project("p", "/p", "Ignored", Value::Null),
+                        project("q", "/q", "Ignored", Value::Null),
+                    ],
+                    &["/p"]
+                ))
+                .unwrap()
+        );
+        assert!(shell.project("p").unwrap().repository_identity.is_none());
+        assert!(
+            shell
+                .apply(marked(
+                    vec![
+                        project("p", "/p", "Ignored", resolved.clone()),
+                        project("q", "/q", "Ignored", resolved),
+                    ],
+                    &[]
+                ))
+                .unwrap()
+        );
+        assert!(shell.project("p").unwrap().repository_identity.is_some());
+        assert_eq!(
+            shell.project("q").unwrap().repository_identity,
+            Some(previous)
+        );
+    }
+
+    #[test]
+    fn authoritative_project_updates_preserve_unresolved_same_root_identity() {
+        let mut shell = Shell::default();
+        let identity = json!({"canonicalKey":"example.test/team/repo", "locator": {
+            "source":"git-remote", "remoteName":"origin",
+            "remoteUrl":"https://example.test/team/repo.git",
+        }});
+        let project = |title: &str, root: &str, repository: Value| json!({"id":"p", "title":title, "workspaceRoot":root, "repositoryIdentity":repository});
+        let snapshot = |sequence: u64, project: Value| {
+            json!({"kind":"snapshot", "snapshot": {
+                "snapshotSequence":sequence, "projects":[project], "threads":[],
+            }})
+        };
+        assert!(
+            shell
+                .apply(snapshot(5, project("First", "/root", identity.clone())))
+                .unwrap()
+        );
+        assert!(
+            shell
+                .apply(snapshot(6, project("Second", "/root", Value::Null)))
+                .unwrap()
+        );
+        assert!(
+            shell
+                .apply(json!({"kind":"project.updated", "sequence":7,
+                    "project":project("Current", "/root", Value::Null),
+                }))
+                .unwrap()
+        );
+        let current = shell.project("p").unwrap();
+        assert_eq!(current.project.name, "Current");
+        assert_eq!(current.repository_identity, Some(identity));
+        assert!(
+            shell
+                .apply(json!({"kind":"project.updated", "sequence":8,
+                    "project":project("Moved", "/other", Value::Null),
+                }))
+                .unwrap()
+        );
+        assert!(shell.project("p").unwrap().repository_identity.is_none());
     }
 
     #[test]

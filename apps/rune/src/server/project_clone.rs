@@ -90,6 +90,7 @@ pub(super) struct ProjectClones(Arc<Tracker>);
 struct Tracker {
     projects: ProjectCommands,
     projections: broadcast::Sender<ProjectionChange>,
+    repository_identities: super::repository_identity::Identities,
     actions: tokio::sync::Mutex<()>,
     state: Mutex<State>,
     published: watch::Sender<Vec<Snapshot>>,
@@ -136,10 +137,12 @@ impl ProjectClones {
     pub(super) fn new(
         projects: ProjectCommands,
         projections: broadcast::Sender<ProjectionChange>,
+        repository_identities: super::repository_identity::Identities,
     ) -> Self {
         Self(Arc::new(Tracker {
             projects,
             projections,
+            repository_identities,
             actions: tokio::sync::Mutex::new(()),
             state: Mutex::new(State::default()),
             published: watch::channel(Vec::new()).0,
@@ -450,6 +453,10 @@ impl ProjectClones {
             let sequence = tracker.finish(&project_id, &outcome);
             done.send_replace(true);
             if let (Outcome::Done, Some(sequence)) = (outcome, sequence) {
+                tracker
+                    .0
+                    .repository_identities
+                    .request_refresh(&destination);
                 tracker.update_project(&project_id).await;
                 tokio::time::sleep(DONE_RETENTION).await;
                 let mut state = tracker.0.state.lock().expect("clone state lock");

@@ -116,6 +116,10 @@ impl Credentials {
         Some(issued)
     }
 
+    pub(super) fn authorizes(&self, access_token: Uuid, now: Instant) -> bool {
+        matches!(&self.0, State::Claimed { session, .. } if session.accepts(access_token, now))
+    }
+
     pub(super) fn consume_ticket(
         &mut self,
         value: Uuid,

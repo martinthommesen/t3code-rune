@@ -211,12 +211,49 @@ impl Store {
         })
     }
 
-    pub(super) fn live_shell_snapshot(&self) -> rusqlite::Result<Value> {
-        self.read_shell(shell_snapshot::Location::Active)
+    pub(super) fn live_subscriber_shell_snapshot(
+        &self,
+        omit_idle_subagents: bool,
+        omit_older_settled: bool,
+    ) -> rusqlite::Result<(Value, HashSet<String>)> {
+        let mut database = open_readonly(&self.path)?;
+        let read = database.transaction()?;
+        let sequence = read.query_row(SHELL_SEQUENCE, [], |row| row.get(0))?;
+        let snapshot = shell_snapshot::read_subscriber(
+            &read,
+            sequence,
+            omit_idle_subagents,
+            omit_older_settled,
+        )?;
+        read.commit()?;
+        Ok(snapshot)
+    }
+
+    pub(super) fn live_project_metadata(&self) -> rusqlite::Result<(u64, Vec<Value>)> {
+        let mut database = open_readonly(&self.path)?;
+        let read = database.transaction()?;
+        let sequence = read.query_row(SHELL_SEQUENCE, [], |row| row.get(0))?;
+        let projects = shell_snapshot::read_projects(&read)?;
+        read.commit()?;
+        Ok((sequence, projects))
+    }
+
+    pub(super) fn can_resume_shell(&self, cursor: u64) -> rusqlite::Result<bool> {
+        let mut database = open_readonly(&self.path)?;
+        let read = database.transaction()?;
+        let sequence = read.query_row(SHELL_SEQUENCE, [], |row| row.get(0))?;
+        let resumable = shell_delta::can_resume(&read, cursor, sequence)?;
+        read.commit()?;
+        Ok(resumable)
     }
 
     pub(super) fn live_archived_shell_snapshot(&self) -> rusqlite::Result<Value> {
-        self.read_shell(shell_snapshot::Location::Archive)
+        let mut database = open_readonly(&self.path)?;
+        let read = database.transaction()?;
+        let sequence = read.query_row(SHELL_SEQUENCE, [], |row| row.get(0))?;
+        let snapshot = shell_snapshot::read_archive(&read, sequence)?;
+        read.commit()?;
+        Ok(snapshot)
     }
 
     /// Read canonical changes and their durable cursor in one SQLite snapshot.
@@ -231,15 +268,6 @@ impl Store {
         let batch = shell_delta::read(&read, after_sequence, sequence, known_subagents)?;
         read.commit()?;
         Ok(batch)
-    }
-
-    fn read_shell(&self, location: shell_snapshot::Location) -> rusqlite::Result<Value> {
-        let mut database = open_readonly(&self.path)?;
-        let read = database.transaction()?;
-        let sequence = read.query_row(SHELL_SEQUENCE, [], |row| row.get(0))?;
-        let snapshot = shell_snapshot::read(&read, sequence, location)?;
-        read.commit()?;
-        Ok(snapshot)
     }
 
     pub fn thread(&self, thread_id: &str) -> rusqlite::Result<Option<ThreadDetail>> {

@@ -162,7 +162,11 @@ pub(super) fn read(
     }))
 }
 
-fn can_resume(database: &Connection, after_sequence: u64, sequence: u64) -> rusqlite::Result<bool> {
+pub(super) fn can_resume(
+    database: &Connection,
+    after_sequence: u64,
+    sequence: u64,
+) -> rusqlite::Result<bool> {
     if after_sequence == sequence {
         return Ok(true);
     }
