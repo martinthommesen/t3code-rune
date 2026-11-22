@@ -33,6 +33,11 @@ pub(super) fn view(
     let compact = viewport_height <= 544.0;
     let scratch = workspace.is_scratch(project);
     let clearance = if viewport_width < 640.0 { 16.0 } else { 20.0 };
+    let form = if draft.model_picker.is_some() {
+        form.paint_order(2)
+    } else {
+        form
+    };
     let mut stack = col()
         .key("draft-composer-stack")
         .w_full()
