@@ -297,7 +297,7 @@ struct State {
     drafts: HashMap<String, Draft>,
     new_thread_drafts: HashMap<String, Draft>,
     parked_thread_drafts: HashMap<uuid::Uuid, (String, Draft)>,
-    new_thread_picker: Option<new_thread::Picker>,
+    command_palette: Option<new_thread::Picker>,
     questions: HashMap<String, question::Questions>,
     question_auto_advance: Option<question::AutoAdvance>,
     draft_workspace_popup: Option<draft_hero::WorkspacePopup>,
@@ -339,7 +339,7 @@ impl Default for State {
             drafts: HashMap::new(),
             new_thread_drafts: HashMap::new(),
             parked_thread_drafts: HashMap::new(),
-            new_thread_picker: None,
+            command_palette: None,
             questions: HashMap::new(),
             question_auto_advance: None,
             draft_workspace_popup: None,
@@ -396,7 +396,7 @@ impl State {
         self.drafts.clear();
         self.new_thread_drafts.clear();
         self.parked_thread_drafts.clear();
-        self.new_thread_picker = None;
+        self.command_palette = None;
         self.questions.clear();
         self.question_auto_advance = None;
         self.add_project = None;
@@ -1114,7 +1114,7 @@ impl State {
                     self.drafts.clear();
                     self.new_thread_drafts.clear();
                     self.parked_thread_drafts.clear();
-                    self.new_thread_picker = None;
+                    self.command_palette = None;
                     self.questions.clear();
                     self.question_auto_advance = None;
                     self.terminal_tabs.clear();
@@ -1686,7 +1686,7 @@ impl State {
                 self.workspace = None;
                 self.question_auto_advance = None;
                 self.connection_error = Some(reason);
-                self.new_thread_picker = None;
+                self.command_palette = None;
                 self.add_project = None;
                 self.added_project = None;
                 self.scratch_request = None;
@@ -1925,10 +1925,15 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
         state
             .terminal_close_dialog(palette)
             .or_else(|| settings::overlay(state, palette, width, height, cx))
-            .or_else(|| new_thread::overlay(state, palette, width, height))
             .or_else(|| file_preview::expanded(state, detail_layout, palette))
     };
-    let modal_open = modal.is_some();
+    let command_palette = if onboarding_open || state.terminal_close_confirmation_open() {
+        None
+    } else {
+        new_thread::overlay(state, palette, width, height)
+    };
+    let palette_open = command_palette.is_some();
+    let modal_open = modal.is_some() || palette_open;
     let mut body = col()
         .key("t3-code-window")
         .w_full()
@@ -1999,22 +2004,27 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
     }
     if !onboarding_open {
         if let Some(dialog) = modal {
-            body = body.child(dialog);
-        } else if let Some(menu) = state
-            .terminal
-            .as_ref()
-            .and_then(|pane| terminal::terminal_menu(pane, [width, height]))
+            body = body.child(if palette_open { dialog.inert() } else { dialog });
+        } else if !palette_open
+            && let Some(menu) = state
+                .terminal
+                .as_ref()
+                .and_then(|pane| terminal::terminal_menu(pane, [width, height]))
         {
             body = body.child(menu);
         } else if let Some(form) = &state.add_project {
             body = body.child(project::dialog(form, palette));
-        } else if let Some(overlays) = sidebar::project_scope_overlay(state, palette, pane_size[1])
+        } else if !palette_open
+            && let Some(overlays) = sidebar::project_scope_overlay(state, palette, pane_size[1])
         {
             body = body.children(overlays);
-        } else if let Some(overlays) = worktree_setup::overlay(state, palette, width) {
+        } else if !palette_open
+            && let Some(overlays) = worktree_setup::overlay(state, palette, width)
+        {
             body = body.children(overlays);
         }
     }
+    body = body.children(command_palette);
     if let Some(caption) = state.window_chrome.overlay(palette.dark) {
         body = body.child(caption);
     }

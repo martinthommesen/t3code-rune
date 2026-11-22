@@ -203,7 +203,7 @@ impl State {
         self.request_scratch_project(false);
     }
 
-    pub(in crate::ui) fn start_scratch_from_new_thread_picker(&mut self) {
+    pub(in crate::ui) fn start_scratch_from_command_palette(&mut self) {
         self.request_scratch_project(true);
     }
 

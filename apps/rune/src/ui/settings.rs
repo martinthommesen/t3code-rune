@@ -128,14 +128,14 @@ impl Page {
 }
 
 impl State {
-    fn open_client_settings(&mut self, tx: &mut Tx) {
+    pub(super) fn open_client_settings(&mut self, tx: &mut Tx) {
         self.settings.open = true;
         self.settings.page = Page::General;
         self.settings.return_focus = "open-client-settings";
         tx.focus(DIALOG, false);
     }
 
-    fn close_client_settings(&mut self, tx: &mut Tx) {
+    pub(super) fn close_client_settings(&mut self, tx: &mut Tx) {
         self.save_project_name();
         self.settings.open = false;
         self.settings.keybindings.clear_view();

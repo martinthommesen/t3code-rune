@@ -262,16 +262,25 @@ pub(super) fn shortcut(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool
     let mods = event.mods;
     if state.workspace.is_none()
         || state.onboarding.is_active()
-        || state.settings.is_open()
         || state.add_project.is_some()
-        || state.new_thread_picker.is_some()
+        || state.command_palette.is_some()
         || state.terminal_close_confirmation_open()
     {
         return false;
     }
     let terminal_focus = tx.focused() == Some(super::terminal::INPUT_KEY);
     let control = mods.ctrl || (!cfg!(target_os = "macos") && mods.cmd);
-    match state.resolve_shortcut(event, tx) {
+    let command = state.resolve_shortcut(event, tx);
+    if command == Some("commandPalette.toggle") && !terminal_focus {
+        if !tx.key_repeat() {
+            state.open_command_palette(tx);
+        }
+        return true;
+    }
+    if state.settings.is_open() {
+        return false;
+    }
+    match command {
         Some("sidebar.toggle") if !(control && terminal_focus) => {
             if !tx.key_repeat() {
                 state.toggle_sidebar();

@@ -144,7 +144,7 @@ impl State {
             .map(|project| project.path.clone())
     }
 
-    fn choose_project_name(&mut self, tx: &mut Tx) {
+    pub(super) fn choose_project_name(&mut self, tx: &mut Tx) {
         if let Some(form) = &mut self.add_project {
             form.step = ProjectStep::Name;
             form.browse = None;
