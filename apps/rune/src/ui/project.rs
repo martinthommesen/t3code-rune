@@ -9,7 +9,6 @@ use super::{BODY, Palette, SMALL, State, TITLE, button, error_text, form_field, 
 pub(super) mod clone_banner;
 mod existing;
 mod folder;
-pub(super) mod folder_collision;
 mod git_url;
 mod home;
 mod native_picker;
@@ -431,6 +430,22 @@ impl State {
         connection.add_project(command_id.clone(), workspace_root, title);
         form.pending = Some(command_id);
         form.error = None;
+    }
+
+    pub(super) fn project_folder_collision(&mut self, command_id: &str, tx: &mut Tx) {
+        let Some(form) = self.add_project.as_mut().filter(|form| {
+            form.pending.as_deref() == Some(command_id) && matches!(form.step, ProjectStep::Folder)
+        }) else {
+            return;
+        };
+        form.pending = None;
+        form.error = None;
+        super::action_error::show(
+            self,
+            super::action_error::Kind::AddProjectFolder,
+            "Failed to mutate project.",
+            tx,
+        );
     }
 
     pub(super) fn project_added(

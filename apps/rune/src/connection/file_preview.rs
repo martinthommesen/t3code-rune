@@ -31,7 +31,7 @@ pub(crate) struct Contents {
 #[serde(rename_all = "camelCase")]
 pub(super) struct FailureFields {
     #[serde(rename = "_tag")]
-    tag: Option<String>,
+    pub(super) tag: Option<String>,
     failure: Option<String>,
     cwd: Option<String>,
     resolved_path: Option<String>,

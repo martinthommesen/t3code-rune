@@ -13,6 +13,7 @@ use crate::connection::{
     WorktreeSetup, worktree_setup::Phase as SetupPhase,
 };
 
+mod action_error;
 mod approval;
 mod browser_preview;
 mod composer;
@@ -282,6 +283,9 @@ struct DraftRefs {
     loading: bool,
     refresh_again: bool,
     switching: bool,
+    pending_create: Option<String>,
+    created_checkout: Option<String>,
+    reopen_query: Option<String>,
     error: Option<String>,
 }
 
@@ -311,7 +315,7 @@ struct State {
     added_project: Option<project::AddedProject>,
     scratch_request: Option<project::ScratchRequest>,
     project_notice: Option<String>,
-    project_folder_collision: Option<project::folder_collision::Notice>,
+    action_error: Option<action_error::Notice>,
     client_settings: ClientSettings,
     onboarding: onboarding::Onboarding,
     settings: settings::Panel,
@@ -357,7 +361,7 @@ impl Default for State {
             added_project: None,
             scratch_request: None,
             project_notice: None,
-            project_folder_collision: None,
+            action_error: None,
             client_settings: ClientSettings::default(),
             onboarding: onboarding::Onboarding::default(),
             settings: settings::Panel::default(),
@@ -782,7 +786,7 @@ impl State {
         }
     }
 
-    fn change_draft_checkout(&mut self, project_id: &str, name: &str, create: bool) {
+    fn change_draft_checkout(&mut self, project_id: &str, name: &str, create: bool) -> bool {
         let Some(project) = self
             .workspace
             .as_ref()
@@ -799,10 +803,10 @@ impl State {
                     .find(|project| project.id == project_id)
             })
         else {
-            return;
+            return false;
         };
         let Some(connection) = &self.connection else {
-            return;
+            return false;
         };
         let Some(draft) = self.new_thread_drafts.get_mut(project_id).filter(|draft| {
             !draft.pending
@@ -810,24 +814,26 @@ impl State {
                 && draft.workspace_mode == WorkspaceMode::Local
                 && draft.refs.is_repo == Some(true)
         }) else {
-            return;
+            return false;
         };
         let matching = draft.refs.branches.iter().find(|entry| entry.name == name);
         let unavailable = if create {
-            matching.is_some()
+            matching.is_some() || draft.refs.created_checkout.as_deref() == Some(name)
         } else {
             matching.is_none_or(|entry| entry.current)
         };
         if name.is_empty() || unavailable {
-            return;
+            return false;
         }
         draft.refs.switching = true;
+        draft.refs.pending_create = create.then(|| name.to_owned());
         connection.change_git_checkout(
             project_id.to_owned(),
             project.path.clone(),
             name.to_owned(),
             create,
         );
+        true
     }
 
     fn set_draft_start_from_origin(&mut self, project_id: &str, enabled: bool) {
@@ -1077,7 +1083,7 @@ impl State {
         }
         changed |= onboarding::Onboarding::poll(self, clock, tx);
         changed |= self.poll_project_browse();
-        changed |= project::folder_collision::poll(self, tx);
+        changed |= action_error::poll(self, tx);
         changed |= self.poll_question(clock);
         changed |= sidebar::poll_rename(self);
         changed |= sidebar::poll_draft_project_picker(self);
@@ -1473,7 +1479,7 @@ impl State {
                 self.project_added(&command_id, result, tx)
             }
             Event::ProjectFolderCollision { command_id } => {
-                project::folder_collision::show(self, &command_id, tx);
+                self.project_folder_collision(&command_id, tx);
             }
             Event::GitRefs { project_id, result } => {
                 let remote = self
@@ -1490,6 +1496,7 @@ impl State {
                         Ok(refs) => {
                             draft.refs.is_repo = Some(refs.is_repo);
                             draft.refs.branches = refs.branches;
+                            draft.refs.created_checkout = None;
                             let branches = || {
                                 draft
                                     .refs
@@ -1519,12 +1526,17 @@ impl State {
             Event::GitCheckout { project_id, result } => {
                 if let Some(draft) = self.new_thread_drafts.get_mut(&project_id) {
                     draft.refs.switching = false;
+                    let create = draft.refs.pending_create.take().is_some();
                     match result {
                         Ok(name) => {
                             for branch in &mut draft.refs.branches {
                                 branch.current = !branch.is_remote
                                     && name.as_deref() == Some(branch.name.as_str());
                             }
+                            draft.refs.created_checkout = if create { name } else { None };
+                        }
+                        Err(message) if create => {
+                            action_error::show(self, action_error::Kind::CreateRef, message, tx);
                         }
                         Err(message) => self.project_notice = Some(message),
                     }
@@ -2128,7 +2140,7 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
     body = body.children(settings::add_project_base_scope_warning(
         state, palette, width,
     ));
-    body = body.children(project::folder_collision::overlay(state, palette, width));
+    body = body.children(action_error::overlay(state, palette, width));
     if let Some(caption) = state.window_chrome.overlay(palette.dark) {
         body = body.child(caption);
     }

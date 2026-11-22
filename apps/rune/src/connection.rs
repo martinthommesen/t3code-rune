@@ -1247,6 +1247,7 @@ enum RpcCause {
 struct RpcError {
     message: Option<String>,
     detail: Option<String>,
+    reason: Option<Value>,
     #[serde(default, rename = "pathMissing")]
     path_missing: bool,
     #[serde(default, rename = "cause")]
@@ -1256,6 +1257,22 @@ struct RpcError {
 }
 
 impl RpcExit {
+    fn create_ref_error(&self) -> Option<String> {
+        let Self::Failure { cause } = self else {
+            return None;
+        };
+        cause.iter().find_map(|cause| match cause {
+            RpcCause::Fail { error } if error.file.tag.as_deref() == Some("GitCommandError") => {
+                let detail = error.detail.as_deref()?;
+                Some(match error.reason.as_ref().and_then(Value::as_str) {
+                    Some(reason) => format!("{detail} ({reason})"),
+                    None => detail.to_owned(),
+                })
+            }
+            _ => None,
+        })
+    }
+
     fn into_result(self) -> Result<Value, String> {
         match self {
             Self::Success { value } => Ok(value),
@@ -1370,7 +1387,7 @@ struct Session {
     pending_project_images: Option<(String, Uuid, Instant)>,
     pending_launches: HashMap<String, (LaunchStage, Instant)>,
     pending_git_refs: HashMap<String, GitRefsRequest>,
-    pending_git_checkouts: HashMap<String, String>,
+    pending_git_checkouts: HashMap<String, (String, bool)>,
     pending_workspace_defaults: HashMap<String, (String, Instant)>,
     pending_project_file_defaults: HashMap<String, (String, draft_defaults::Preferences, Instant)>,
     pending_named_project_defaults: HashMap<String, draft_defaults::Preferences>,
@@ -2230,7 +2247,8 @@ impl Session {
             } => {
                 if self.checkout_switch {
                     let id = self.allocate_id();
-                    self.pending_git_checkouts.insert(id.clone(), project_id);
+                    self.pending_git_checkouts
+                        .insert(id.clone(), (project_id, create));
                     let mut payload = json!({"cwd":cwd,"refName":name});
                     let tag = if create {
                         payload["switchRef"] = json!(true);
@@ -2398,7 +2416,7 @@ impl Session {
                 result: Err("Connection lost while loading Git refs.".into()),
             });
         }
-        for (_, project_id) in self.pending_git_checkouts.drain() {
+        for (_, (project_id, _)) in self.pending_git_checkouts.drain() {
             events.send(Event::GitCheckout {
                 project_id,
                 result: Err("The connection closed before Git confirmed the checkout.".into()),
@@ -2818,17 +2836,17 @@ impl Session {
                         .exit(&request_id, exit.into_result(), events);
                     return Ok(());
                 }
-                if let Some(project_id) = self.pending_git_checkouts.remove(&request_id) {
-                    let result = exit
-                        .into_result()
-                        .and_then(|value| match value.get("refName") {
-                            Some(Value::Null) => Ok(None),
-                            Some(Value::String(name)) if !name.is_empty() => Ok(Some(name.clone())),
-                            _ => {
-                                Err("The environment returned an invalid Git checkout result."
-                                    .into())
-                            }
-                        });
+                if let Some((project_id, create)) = self.pending_git_checkouts.remove(&request_id) {
+                    let result = if create && let Some(message) = exit.create_ref_error() {
+                        Err(message)
+                    } else {
+                        exit.into_result()
+                    }
+                    .and_then(|value| match value.get("refName") {
+                        Some(Value::Null) if !create => Ok(None),
+                        Some(Value::String(name)) if !name.is_empty() => Ok(Some(name.clone())),
+                        _ => Err("The environment returned an invalid Git checkout result.".into()),
+                    });
                     events.send(Event::GitCheckout { project_id, result });
                     return Ok(());
                 }

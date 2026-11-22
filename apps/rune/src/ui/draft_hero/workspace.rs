@@ -187,29 +187,38 @@ pub(super) fn view(
         .paint_order(1)
         .child(mode_trigger)
         .child(el().grow(1.0));
-    if branch_available {
-        let name = selected.map_or_else(
-            || "Select ref".into(),
-            |branch| {
-                if draft.workspace_mode == WorkspaceMode::Local {
-                    branch.name.clone()
-                } else if remote && draft.start_from_origin && !branch.is_remote {
-                    format!("From {} (remote)", branch.name)
-                } else {
-                    format!("From {}", branch.name)
-                }
-            },
-        );
-        let project_id = project_id.to_owned();
+    let creating = draft.refs.pending_create.as_deref();
+    if branch_available || creating.is_some() {
+        let name = match draft.workspace_mode {
+            WorkspaceMode::Local => creating
+                .or(draft.refs.created_checkout.as_deref())
+                .or_else(|| selected.map(|branch| branch.name.as_str()))
+                .unwrap_or("Select ref")
+                .to_owned(),
+            WorkspaceMode::Worktree => selected.map_or_else(
+                || "Select ref".into(),
+                |branch| {
+                    if remote && draft.start_from_origin && !branch.is_remote {
+                        format!("From {} (remote)", branch.name)
+                    } else {
+                        format!("From {}", branch.name)
+                    }
+                },
+            ),
+        };
         let open = matches!(state.draft_workspace_popup, Some(Popup::BaseRef { .. }));
-        bar = bar.child(
-            trigger(&name, &BRANCH, colors)
-                .key("draft-base-branch")
-                .min_w(0.0)
-                .role("combobox")
-                .label(format!("Branch: {name}"))
-                .a11y_value(&name)
-                .expanded(open)
+        let mut branch_trigger = trigger(&name, &BRANCH, colors)
+            .key("draft-base-branch")
+            .min_w(0.0)
+            .role("combobox")
+            .label(format!("Branch: {name}"))
+            .a11y_value(&name)
+            .expanded(open)
+            .disabled(!branch_available)
+            .opacity(if branch_available { 1.0 } else { 0.64 });
+        if branch_available {
+            let project_id = project_id.to_owned();
+            branch_trigger = branch_trigger
                 .focusable(true)
                 .hover(colors.hover)
                 .focus_ring(1.0, -1.0, colors.focus)
@@ -218,15 +227,20 @@ pub(super) fn view(
                     if matches!(state.draft_workspace_popup, Some(Popup::BaseRef { .. })) {
                         state.draft_workspace_popup = None;
                     } else {
+                        let query = state
+                            .new_thread_drafts
+                            .get_mut(&project_id)
+                            .and_then(|draft| draft.refs.reopen_query.take());
                         state.load_draft_refs(&project_id, true);
                         state.draft_workspace_popup = Some(Popup::BaseRef {
-                            query: Box::default(),
+                            query: Box::new(query.map_or_else(TextEdit::default, TextEdit::new)),
                             active: None,
                         });
                         tx.focus_when_shown("draft-ref-search", false);
                     }
-                }),
-        );
+                });
+        }
+        bar = bar.child(branch_trigger);
     } else if let Some(branch) = selected {
         bar = bar.child(trigger(&branch.name, &BRANCH, colors));
     }
@@ -374,8 +388,10 @@ fn create_ref_name(draft: &Draft, query: &str) -> Option<String> {
         return None;
     }
     let name = sanitize_ref_name(query);
-    (!name.is_empty() && !draft.refs.branches.iter().any(|branch| branch.name == name))
-        .then_some(name)
+    (!name.is_empty()
+        && draft.refs.created_checkout.as_deref() != Some(name.as_str())
+        && !draft.refs.branches.iter().any(|branch| branch.name == name))
+    .then_some(name)
 }
 
 fn highlighted_branch(
@@ -418,6 +434,7 @@ fn branch_menu(
 ) -> El {
     let event_project = project.to_owned();
     let submit_project = project.to_owned();
+    let dismiss_project = project.to_owned();
     let edit = text_input(query, TextStyle::new(14.0, 400.0).lh(26.0))
         .key("draft-ref-search")
         .w_full()
@@ -535,7 +552,7 @@ fn branch_menu(
                 .hover(colors.hover)
                 .focus_ring(1.0, -1.0, colors.focus)
                 .on_press_tx(move |state: &mut State, tx| {
-                    select_new_ref(state, &project, &name, tx)
+                    select_new_ref(state, &project, &name, false, tx)
                 })
                 .child(text(&label).font(ITEM).color(colors.ink).truncate()),
         );
@@ -558,7 +575,9 @@ fn branch_menu(
         .shadow(3.0, 10.0, Color::BLACK.alpha(0.22))
         .paint_order(1)
         .pin(None, None, Some(right), Some(28.75))
-        .on_key(|state: &mut State, event, tx| dismiss(state, event, tx, "draft-base-branch"))
+        .on_key(move |state: &mut State, event, tx| {
+            dismiss_ref_menu(state, &dismiss_project, event, tx)
+        })
         .child(
             row().w_full().h(42.0).px(11.0).gap(8.0).center_y().child(
                 row()
@@ -660,8 +679,21 @@ fn dismiss(state: &mut State, event: &KeyEvent, tx: &mut Tx, key: &str) -> bool 
     true
 }
 
+fn dismiss_ref_menu(state: &mut State, project: &str, event: &KeyEvent, tx: &mut Tx) -> bool {
+    let focus = if state
+        .new_thread_drafts
+        .get(project)
+        .is_some_and(|draft| draft.workspace_mode == WorkspaceMode::Local)
+    {
+        "initial-prompt"
+    } else {
+        "draft-base-branch"
+    };
+    dismiss(state, event, tx, focus)
+}
+
 fn branch_keys(state: &mut State, project: &str, event: &KeyEvent, tx: &mut Tx) -> bool {
-    if dismiss(state, event, tx, "draft-base-branch") {
+    if dismiss_ref_menu(state, project, event, tx) {
         return true;
     }
     if !matches!(event.key, Key::Up | Key::Down)
@@ -724,7 +756,7 @@ fn choose_highlighted_branch(state: &mut State, project: &str, tx: &mut Tx) {
     if let Some(name) = name {
         select_branch(state, project, &name, tx);
     } else if let Some(name) = create {
-        select_new_ref(state, project, &name, tx);
+        select_new_ref(state, project, &name, true, tx);
     }
 }
 
@@ -735,15 +767,25 @@ fn select_branch(state: &mut State, project: &str, name: &str, tx: &mut Tx) {
         .map(|draft| draft.workspace_mode)
     {
         Some(WorkspaceMode::Worktree) => state.set_draft_base_ref(project, name),
-        Some(WorkspaceMode::Local) => state.change_draft_checkout(project, name, false),
+        Some(WorkspaceMode::Local) => {
+            state.change_draft_checkout(project, name, false);
+        }
         None => {}
     }
     state.draft_workspace_popup = None;
     tx.focus("draft-base-branch", tx.focus_visible());
 }
 
-fn select_new_ref(state: &mut State, project: &str, name: &str, tx: &mut Tx) {
-    state.change_draft_checkout(project, name, true);
-    state.draft_workspace_popup = None;
+fn select_new_ref(state: &mut State, project: &str, name: &str, keep_query: bool, tx: &mut Tx) {
+    if !state.change_draft_checkout(project, name, true) {
+        return;
+    }
+    let popup = state.draft_workspace_popup.take();
+    if keep_query
+        && let Some(Popup::BaseRef { query, .. }) = popup
+        && let Some(draft) = state.new_thread_drafts.get_mut(project)
+    {
+        draft.refs.reopen_query = Some(query.text.clone());
+    }
     tx.focus("initial-prompt", tx.focus_visible());
 }

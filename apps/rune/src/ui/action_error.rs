@@ -2,10 +2,8 @@ use std::time::{Duration, Instant};
 
 use rune::{Color, El, Icon, Key, TextStyle, Tx, col, el, icon, row, text};
 
-use super::super::{Palette, State};
+use super::{Palette, State};
 
-const TITLE: &str = "Failed to add project";
-const DESCRIPTION: &str = "Failed to mutate project.";
 const LIFETIME: Duration = Duration::from_secs(5);
 const COPIED_LIFETIME: Duration = Duration::from_secs(2);
 const TITLE_STYLE: TextStyle = TextStyle::new(14.0, 500.0).lh(20.0);
@@ -32,35 +30,45 @@ static CHECK: Icon = Icon {
     body: r#"<path d="m20 6-11 11-5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
 
-pub(in crate::ui) struct Notice {
+pub(super) enum Kind {
+    AddProjectFolder,
+    CreateRef,
+}
+
+impl Kind {
+    fn presentation(&self) -> (&'static str, &'static str) {
+        match self {
+            Self::AddProjectFolder => ("add-project-folder-error", "Failed to add project"),
+            Self::CreateRef => ("create-ref-error", "Failed to create and switch ref."),
+        }
+    }
+}
+
+pub(super) struct Notice {
+    kind: Kind,
+    description: String,
     expires: Instant,
     copied_until: Option<Instant>,
 }
 
-pub(in crate::ui) fn show(state: &mut State, command_id: &str, tx: &mut Tx) {
-    let Some(form) = state.add_project.as_mut().filter(|form| {
-        form.pending.as_deref() == Some(command_id)
-            && matches!(form.step, super::ProjectStep::Folder)
-    }) else {
-        return;
-    };
-    form.pending = None;
-    form.error = None;
-    state.project_folder_collision = Some(Notice {
+pub(super) fn show(state: &mut State, kind: Kind, description: impl Into<String>, tx: &mut Tx) {
+    state.action_error = Some(Notice {
+        kind,
+        description: description.into(),
         expires: Instant::now() + LIFETIME,
         copied_until: None,
     });
     tx.wake_after(LIFETIME);
 }
 
-pub(in crate::ui) fn poll(state: &mut State, tx: &mut Tx) -> bool {
-    let Some(notice) = &mut state.project_folder_collision else {
+pub(super) fn poll(state: &mut State, tx: &mut Tx) -> bool {
+    let Some(notice) = &mut state.action_error else {
         return false;
     };
     let now = Instant::now();
     let remaining = notice.expires.saturating_duration_since(now);
     if remaining.is_zero() {
-        state.project_folder_collision = None;
+        state.action_error = None;
         return true;
     }
     tx.wake_after(remaining);
@@ -76,16 +84,16 @@ pub(in crate::ui) fn poll(state: &mut State, tx: &mut Tx) -> bool {
 }
 
 fn copy(state: &mut State, tx: &mut Tx) {
-    let Some(notice) = &mut state.project_folder_collision else {
+    let Some(notice) = &mut state.action_error else {
         return;
     };
-    tx.copy(DESCRIPTION);
+    tx.copy(notice.description.as_str());
     notice.copied_until = Some(Instant::now() + COPIED_LIFETIME);
     tx.wake_after(COPIED_LIFETIME);
 }
 
 fn dismiss(state: &mut State, _: &mut Tx) {
-    state.project_folder_collision = None;
+    state.action_error = None;
 }
 
 fn icon_button(
@@ -117,16 +125,17 @@ fn icon_button(
         .child(icon(glyph, 12.0).color(palette.muted).a11y_hidden())
 }
 
-pub(in crate::ui) fn overlay(state: &State, palette: Palette, width: f32) -> Option<El> {
-    let notice = state.project_folder_collision.as_ref()?;
+pub(super) fn overlay(state: &State, palette: Palette, width: f32) -> Option<El> {
+    let notice = state.action_error.as_ref()?;
+    let (key, title) = notice.kind.presentation();
     let copied = notice.copied_until.is_some();
     let inset = if width >= 640.0 { 32.0 } else { 16.0 };
     let width = (width - 2.0 * inset).clamp(0.0, 360.0);
     Some(
         row()
-            .key("add-project-folder-error")
+            .key(key)
             .role("alert")
-            .label(TITLE)
+            .label(title)
             .pin(None, Some(inset + 40.0), Some(inset), None)
             .w(width)
             .center_y()
@@ -148,16 +157,17 @@ pub(in crate::ui) fn overlay(state: &State, palette: Palette, width: f32) -> Opt
                             .items_center()
                             .gap(8.0)
                             .child(icon(&ERROR, 16.0).color(palette.error).a11y_hidden())
-                            .child(text(TITLE).font(TITLE_STYLE).color(palette.ink)),
+                            .child(text(title).font(TITLE_STYLE).color(palette.ink)),
                     )
                     .child(
-                        text(DESCRIPTION)
+                        text(&notice.description)
                             .font(DESCRIPTION_STYLE)
-                            .color(palette.muted),
+                            .color(palette.muted)
+                            .wrap(),
                     ),
             )
             .child(icon_button(
-                "copy-add-project-folder-error",
+                &format!("copy-{key}"),
                 if copied { "Copied error" } else { "Copy error" },
                 if copied { &CHECK } else { &COPY },
                 palette,
@@ -165,7 +175,7 @@ pub(in crate::ui) fn overlay(state: &State, palette: Palette, width: f32) -> Opt
             ))
             .child(
                 icon_button(
-                    "dismiss-add-project-folder-error",
+                    &format!("dismiss-{key}"),
                     "Dismiss notification",
                     &CLOSE,
                     palette,
