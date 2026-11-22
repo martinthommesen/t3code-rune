@@ -2,7 +2,7 @@ use rusqlite::Transaction;
 
 use super::{Migration, citation_search, legacy_cutover, legacy_pull_requests, legacy_settlement};
 
-pub(super) const BASE_HISTORY: &[(i64, &str)] = &[(15, "ProjectionTurnsSourceProposedPlan")];
+pub(super) const BASE_HISTORY: &[(i64, &str)] = &[(1, "OrchestrationEvents")];
 
 pub(super) const PULL_REQUEST_FILES_VIEWED: Migration = Migration::sql(
     53,

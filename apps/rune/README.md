@@ -37,7 +37,7 @@ The desktop reads `userdata/statev2.sqlite` inside that directory and initialize
 cargo run --locked -- --local-database /path/to/statev2.sqlite
 ```
 
-The built-in host upgrades databases from migration 15 onward through migration 105. If the profile has a V1 `state.sqlite` but no `statev2.sqlite`, it opens the V1 file read-only and upgrades a consistent copy. Rune restores legacy thread previews at startup and loads the rest of a conversation when you open it.
+The built-in host upgrades databases from the first recorded migration through migration 105. If the profile has a V1 `state.sqlite` but no `statev2.sqlite`, it opens the V1 file read-only and upgrades a consistent copy. Rune restores legacy thread previews at startup and loads the rest of a conversation when you open it.
 
 Threads configured for Codex can send text prompts through the built-in host. Install the Codex CLI or configure a Codex instance in the database directory's `settings.json`. The built-in host launches the configured Codex app server over standard input and output. For a new thread without a configured default model, it can discover the recommended model from the local Codex catalog.
 
