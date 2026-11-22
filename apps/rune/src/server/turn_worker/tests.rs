@@ -1342,6 +1342,20 @@ set -eu
         .await;
     }
 
+    #[tokio::test]
+    async fn stops_a_pending_native_file_change_without_answering_the_approval() {
+        let recording = include_str!(
+            "../../../../server/src/orchestration-v2/testkit/fixtures/tool_call_restricted_granular/codex_transcript.ndjson"
+        );
+        replay_stop_with_request(
+            recording,
+            "item/fileChange/requestApproval",
+            "file-change",
+            false,
+        )
+        .await;
+    }
+
     async fn replay_stop_with_request(
         recording: &str,
         method: &str,
@@ -1353,7 +1367,8 @@ set -eu
         const STOP: &str = include_str!(
             "../../../../server/src/orchestration-v2/testkit/fixtures/turn_interrupt/codex_transcript.ndjson"
         );
-        let approval = request_kind == "command";
+        let approval = request_kind != "user_input";
+        let file_approval = request_kind == "file-change";
         let recording: Vec<Value> = recording
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
@@ -1391,6 +1406,7 @@ set -eu
                 .filter(|record| {
                     record["type"] == "emit_inbound"
                         && (record["label"] == method
+                            || (file_approval && record["frame"].get("id").is_none())
                             || matches!(
                                 record["label"].as_str(),
                                 Some(
@@ -1406,13 +1422,15 @@ set -eu
         );
         append_request(&mut script, &turn);
         let mut reply = vec![replay_reply(&stop, "turn/interrupt", 6)];
-        if let Some(resolved) = recording
+        let resolved = recording
             .iter()
             .find(|record| record["label"] == "serverRequest/resolved")
-        {
-            reply.push(resolved["frame"].clone());
+            .map(|resolved| resolved["frame"].clone());
+        if file_approval {
+            reply.extend(std::iter::once(terminal).chain(resolved));
+        } else {
+            reply.extend(resolved.into_iter().chain([terminal]));
         }
-        reply.push(terminal);
         append_request(&mut script, &reply);
         script.push_str("while IFS= read -r request; do :; done\n");
 
@@ -1517,13 +1535,21 @@ set -eu
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         }).await.unwrap();
-        let before_release: String = connection.query_row(
-            "SELECT status FROM orchestration_v2_projection_runtime_requests WHERE thread_id = ?1",
-            [THREAD], |row| row.get(0),
+        let before_release: (String, String, String) = connection.query_row(
+            "SELECT request.status, json_extract(request.payload_json, '$.responseCapability.type'),
+                    card.status
+             FROM orchestration_v2_projection_runtime_requests AS request
+             JOIN orchestration_v2_projection_turn_items AS card ON card.node_id = request.node_id
+             WHERE request.thread_id = ?1",
+            [THREAD], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         ).unwrap();
         assert_eq!(
             before_release,
-            if approval { "pending" } else { "cancelled" }
+            if approval {
+                ("pending".into(), "live".into(), "waiting".into())
+            } else {
+                ("cancelled".into(), "live".into(), "cancelled".into())
+            }
         );
         if restart {
             worker.task.abort();
@@ -1568,7 +1594,14 @@ set -eu
                 "succeeded".into()
             )
         );
-        let expected = if approval {
+        let expected = if file_approval {
+            [
+                "provider-turn.updated",
+                "run-attempt.updated",
+                "turn-item.updated",
+                "run.updated",
+            ]
+        } else if approval {
             [
                 "provider-turn.updated",
                 "node.updated",

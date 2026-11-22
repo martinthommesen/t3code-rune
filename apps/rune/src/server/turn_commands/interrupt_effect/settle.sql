@@ -20,12 +20,17 @@ WHERE run.thread_id = ?1 AND turn.provider_turn_id = ?2
   AND NOT EXISTS (SELECT 1 FROM orchestration_v2_projection_subagents AS task WHERE task.run_id = run.run_id)
   AND NOT EXISTS (SELECT 1 FROM orchestration_v2_projection_runtime_requests AS runtime_request
     WHERE runtime_request.provider_turn_id = turn.provider_turn_id AND runtime_request.status = 'pending'
-      AND NOT (runtime_request.kind IS 'command'
-        AND json_extract(runtime_request.payload_json, '$.responseCapability.type') IS 'live'
+      AND NOT (json_extract(runtime_request.payload_json, '$.responseCapability.type') IS 'live'
         AND json_extract(runtime_request.payload_json, '$.responseCapability.providerSessionId') IS provider_thread.provider_session_id
-        AND EXISTS (SELECT 1 FROM orchestration_v2_projection_nodes AS approval
+        AND ((runtime_request.kind IS 'command' AND EXISTS (SELECT 1 FROM orchestration_v2_projection_nodes AS approval
           JOIN orchestration_v2_projection_turn_items AS command ON command.node_id = approval.parent_node_id
             AND command.thread_id = approval.thread_id AND command.provider_turn_id = turn.provider_turn_id
             AND command.type = 'command_execution' AND command.status = 'interrupted'
           WHERE approval.node_id = runtime_request.node_id AND approval.thread_id = run.thread_id
-            AND approval.kind = 'approval_request' AND approval.status = 'waiting')))
+            AND approval.kind = 'approval_request' AND approval.status = 'waiting'))
+          OR (runtime_request.kind IS 'file-change' AND EXISTS (
+            SELECT 1 FROM orchestration_v2_projection_nodes AS approval
+            WHERE approval.node_id = runtime_request.node_id AND approval.thread_id = run.thread_id
+              AND approval.kind = 'approval_request' AND approval.status = 'waiting'
+              AND approval.run_id = run.run_id AND approval.root_node_id = node.node_id
+              AND approval.provider_turn_id = turn.provider_turn_id)))))

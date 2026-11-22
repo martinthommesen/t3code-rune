@@ -62,8 +62,14 @@ WHERE thread.thread_id = ?1 AND thread.deleted_at IS NULL AND thread.archived_at
       AND NOT (request.provider_turn_id IS turn.provider_turn_id
         AND json_extract(request.payload_json, '$.responseCapability.type') IS 'live'
         AND json_extract(request.payload_json, '$.responseCapability.providerSessionId') IS session.provider_session_id
-        AND (request.kind IS 'user_input' OR EXISTS (SELECT 1 FROM waiting_commands
-          WHERE request_id = request.runtime_request_id))))
+        AND (request.kind IS 'user_input'
+          OR EXISTS (SELECT 1 FROM waiting_commands WHERE request_id = request.runtime_request_id)
+          OR (request.kind IS 'file-change' AND EXISTS (
+            SELECT 1 FROM orchestration_v2_projection_nodes AS approval
+            WHERE approval.node_id = request.node_id AND approval.thread_id = run.thread_id
+              AND approval.kind = 'approval_request' AND approval.status = 'waiting'
+              AND approval.run_id = run.run_id AND approval.root_node_id = node.node_id
+              AND approval.provider_turn_id = turn.provider_turn_id)))))
   AND NOT EXISTS (SELECT 1 FROM orchestration_v2_projection_turn_items AS item
     WHERE item.run_id = run.run_id AND item.type IN ('command_execution', 'dynamic_tool', 'file_change', 'subagent')
       AND item.status IN ('pending', 'running', 'waiting')
