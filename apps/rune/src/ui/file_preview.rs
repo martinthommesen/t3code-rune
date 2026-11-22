@@ -289,6 +289,10 @@ pub(super) fn dock_width(window: f32, workspace: f32) -> f32 {
         .min((workspace - 120.0).max(0.0))
 }
 
+pub(super) fn expanded(state: &State, layout: Layout, palette: Palette) -> Option<El> {
+    image::expanded::view(state, layout, palette)
+}
+
 #[derive(Clone, Copy)]
 struct Colors {
     background: Color,

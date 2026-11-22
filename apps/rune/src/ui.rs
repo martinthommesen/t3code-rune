@@ -1803,6 +1803,7 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
         state
             .terminal_close_dialog(palette)
             .or_else(|| settings::overlay(state, palette, width, height))
+            .or_else(|| file_preview::expanded(state, detail_layout, palette))
     };
     let modal_open = modal.is_some();
     let mut body = col()

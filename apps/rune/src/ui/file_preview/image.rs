@@ -1,3 +1,4 @@
+pub(super) mod expanded;
 mod menu;
 
 use rune::{
@@ -42,6 +43,7 @@ pub(super) struct PreviewImage {
     contents: Contents,
     zoom: Option<f32>,
     menu: Option<rune::PointerPress>,
+    expanded: Option<Box<expanded::Dialog>>,
     pub(super) save: Phase,
 }
 
@@ -63,6 +65,7 @@ impl PreviewImage {
             contents: Contents::Loading,
             zoom: None,
             menu: None,
+            expanded: None,
             save: Phase::Ready,
         }
     }
@@ -211,9 +214,20 @@ pub(super) fn view(
     let picture = menu::target(
         el().key(PICTURE)
             .size(scaled[0], scaled[1])
-            .role("image")
-            .label(&preview.target.path)
-            .pixels_fit(raster.picture.pixels(), SurfaceFit::Fit),
+            .role("button")
+            .label(format!("Zoom {}", preview.target.path))
+            .cursor(rune::Cursor::ZoomIn)
+            .pixels_fit(raster.picture.pixels(), SurfaceFit::Fit)
+            .on_press_tx(State::open_expanded_image)
+            .on_key(|state: &mut State, event, tx| {
+                if event.key != rune::Key::Enter {
+                    return false;
+                }
+                if !tx.key_repeat() {
+                    state.open_expanded_image(tx);
+                }
+                true
+            }),
     );
     let canvas = col()
         .w_full()
