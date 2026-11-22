@@ -67,7 +67,7 @@ impl Choice<'_> {
     }
 }
 
-fn ordered_projects(shell: &Shell) -> Vec<&Project> {
+pub(super) fn ordered_projects(shell: &Shell, pinned_first: bool) -> Vec<&Project> {
     let mut activity = HashMap::<&str, Option<OffsetDateTime>>::new();
     for thread in shell.threads.iter().filter(|thread| !thread.archived) {
         let latest = thread.latest_user_activity();
@@ -92,7 +92,7 @@ fn ordered_projects(shell: &Shell) -> Vec<&Project> {
                     .find_map(|time| OffsetDateTime::parse(time, &Rfc3339).ok())
             });
         (
-            project.pinned_at.is_none(),
+            pinned_first && project.pinned_at.is_none(),
             Reverse(timestamp),
             normalized_search(&project.name),
             &project.id,
@@ -108,7 +108,7 @@ fn choices<'a>(scope: &ProjectScope, shell: &'a Shell) -> Vec<Choice<'a>> {
         .then_some(Choice::All)
         .into_iter()
         .chain(
-            ordered_projects(shell)
+            ordered_projects(shell, true)
                 .into_iter()
                 .filter(|project| {
                     query.is_empty() || normalized_search(&project.name).contains(&query)
@@ -144,7 +144,7 @@ pub(super) fn view_trigger(
     let scoped: Vec<_> = if selected.is_empty() {
         Vec::new()
     } else {
-        ordered_projects(shell)
+        ordered_projects(shell, true)
             .into_iter()
             .filter(|project| selected.contains(&project.id))
             .collect()

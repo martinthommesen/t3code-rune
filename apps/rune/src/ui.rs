@@ -405,6 +405,10 @@ impl State {
     }
 
     fn show_destination(&mut self, destination: Destination) -> bool {
+        let destination = match destination {
+            Destination::Home => self.home_draft().unwrap_or(Destination::Home),
+            destination => destination,
+        };
         let Some(workspace) = &mut self.workspace else {
             return false;
         };
@@ -506,6 +510,15 @@ impl State {
         }
         self.observe_selected_draft_worktree();
         true
+    }
+
+    fn home_draft(&self) -> Option<Destination> {
+        let workspace = self
+            .workspace
+            .as_ref()
+            .filter(|workspace| workspace.launch_writes && !workspace.reconnecting)?;
+        let project = sidebar::most_recent_project(workspace.shell.as_ref()?)?;
+        Some(Destination::NewThread(project.id.clone()))
     }
 
     fn load_draft_refs(&mut self, project_id: &str, refresh: bool) {
@@ -943,6 +956,14 @@ impl State {
             Event::Shell { projects, threads } => {
                 self.update_shell(Shell { projects, threads });
                 self.select_added_project();
+                if self
+                    .workspace
+                    .as_ref()
+                    .is_some_and(|workspace| workspace.selection.is_none())
+                    && let Some(draft) = self.home_draft()
+                {
+                    self.show_destination(draft);
+                }
             }
             Event::ProjectFavicon { target, image } => {
                 if let (Some(workspace), Some(cache)) = (&mut self.workspace, &self.image_cache) {

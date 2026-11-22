@@ -22,6 +22,12 @@ mod provider_badge;
 
 pub(super) use project_scope::overlay as project_scope_overlay;
 
+pub(super) fn most_recent_project(shell: &Shell) -> Option<&Project> {
+    project_scope::ordered_projects(shell, false)
+        .into_iter()
+        .next()
+}
+
 const SMALL: TextStyle = TextStyle::new(12.0, 400.0).lh(16.0);
 const TITLE: TextStyle = TextStyle::new(14.0, 500.0).lh(20.0);
 const INACTIVE_TITLE: TextStyle = TextStyle::new(14.0, 400.0).lh(20.0);
