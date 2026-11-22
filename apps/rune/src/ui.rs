@@ -63,7 +63,7 @@ enum ProjectView {
     Threads,
     NewThread,
     WaitingForThread(String),
-    Conversation(Conversation),
+    Conversation(Box<Conversation>),
 }
 
 struct ProjectSelection {
@@ -381,10 +381,8 @@ impl State {
         if workspace.destination() == destination
             && !matches!(
                 workspace.selection.as_ref().map(|project| &project.view),
-                Some(ProjectView::Conversation(Conversation {
-                    transcript: Transcript::Failed(_),
-                    ..
-                }))
+                Some(ProjectView::Conversation(conversation))
+                    if matches!(conversation.transcript, Transcript::Failed(_))
             )
         {
             return false;
@@ -429,7 +427,7 @@ impl State {
             }),
             Destination::Thread { project, thread } => Some(ProjectSelection {
                 id: project,
-                view: ProjectView::Conversation(Conversation {
+                view: ProjectView::Conversation(Box::new(Conversation {
                     id: thread,
                     transcript: Transcript::Loading,
                     expanded_messages: HashSet::new(),
@@ -441,7 +439,7 @@ impl State {
                     worktree_cancel_pending: false,
                     worktree_details_open: false,
                     worktree_elapsed_second: None,
-                }),
+                })),
             }),
             Destination::NewThread(id) => {
                 self.new_thread_drafts.entry(id.clone()).or_default();
@@ -713,17 +711,16 @@ impl State {
             return;
         };
         let Some(ProjectSelection {
-            view:
-                ProjectView::Conversation(Conversation {
-                    id,
-                    transcript: Transcript::Loaded(_),
-                    ..
-                }),
+            view: ProjectView::Conversation(conversation),
             ..
         }) = &workspace.selection
         else {
             return;
         };
+        if !matches!(conversation.transcript, Transcript::Loaded(_)) {
+            return;
+        }
+        let id = &conversation.id;
         let Some(thread) = workspace.thread(id).filter(|thread| !thread.archived) else {
             return;
         };
