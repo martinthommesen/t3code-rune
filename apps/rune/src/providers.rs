@@ -1,4 +1,6 @@
+pub mod claude;
 pub mod codex;
+mod ndjson;
 mod process;
 mod protocol;
 

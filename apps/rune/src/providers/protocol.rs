@@ -1,9 +1,10 @@
 use serde_json::{Map, Value, json};
-use tokio::io::{AsyncBufRead, AsyncBufReadExt};
+use tokio::io::AsyncBufRead;
 
+use super::ndjson::{self, ReadError};
 use super::{CodexError, RequestId, RpcError};
 
-pub(super) const MAX_FRAME_BYTES: usize = 128 * 1024 * 1024;
+pub(super) use super::ndjson::MAX_FRAME_BYTES;
 
 pub(super) enum Frame {
     Request {
@@ -93,31 +94,17 @@ pub(super) async fn read_frame(
     buffer: &mut Vec<u8>,
     max_bytes: usize,
 ) -> Result<Option<Frame>, CodexError> {
-    loop {
-        let available = reader
-            .fill_buf()
+    let found =
+        ndjson::read_line(reader, buffer, max_bytes)
             .await
-            .map_err(|error| CodexError::Io(error.into()))?;
-        let eof = available.is_empty();
-        let newline = available.iter().position(|&byte| byte == b'\n');
-        let count = newline.unwrap_or(available.len());
-        if buffer.len() + count > max_bytes {
-            return Err(CodexError::FrameTooLarge);
-        }
-        buffer.extend_from_slice(&available[..count]);
-        reader.consume(count + usize::from(newline.is_some()));
-        if !eof && newline.is_none() {
-            continue;
-        }
-        if buffer.iter().all(u8::is_ascii_whitespace) {
-            buffer.clear();
-            if eof {
-                return Ok(None);
-            }
-            continue;
-        }
-        let frame = Frame::parse(buffer);
-        buffer.clear();
-        return frame.map(Some);
+            .map_err(|error| match error {
+                ReadError::Io(error) => CodexError::Io(error.into()),
+                ReadError::TooLarge => CodexError::FrameTooLarge,
+            })?;
+    if !found {
+        return Ok(None);
     }
+    let frame = Frame::parse(buffer);
+    buffer.clear();
+    frame.map(Some)
 }
