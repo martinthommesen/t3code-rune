@@ -248,7 +248,13 @@ pub(super) fn transcript(
     let (before, after) = messages.split_at(split);
     let message_row = |message: &Message| {
         if message.role == "user" {
-            user_message(conversation, message, bubble_width, colors)
+            user_message(
+                conversation,
+                message,
+                bubble_width,
+                layout.viewport[0],
+                colors,
+            )
         } else {
             response(message, colors)
         }
@@ -291,6 +297,7 @@ fn user_message(
     conversation: &Conversation,
     message: &Message,
     max_width: f32,
+    viewport_width: f32,
     colors: Colors,
 ) -> El {
     let agent = message.created_by.as_deref() == Some("agent");
@@ -371,13 +378,24 @@ fn user_message(
     } else {
         bubble = bubble.label("You").padding(12.0).child(body());
     }
-    col()
+    let mut message_row = col()
         .key(format!("message-{}", message.id))
         .role("article")
         .w_full()
         .items_end()
         .pb(16.0)
-        .child(bubble)
+        .hover_group_focus()
+        .child(bubble);
+    if (!agent || expanded) && !message.text.is_empty() {
+        let action_height = if viewport_width < 640.0 { 28.0 } else { 24.0 };
+        message_row = message_row.child(
+            row()
+                .pt(4.0)
+                .pr(4.0)
+                .child(copy_button(message, colors).w(28.0).h(action_height)),
+        );
+    }
+    message_row
 }
 
 fn response(message: &Message, colors: Colors) -> El {
@@ -403,7 +421,6 @@ fn response(message: &Message, colors: Colors) -> El {
             .selectable(true)
             .selection_color(colors.fallbacks.selected)
     };
-    let clipboard = message.text.clone();
     let mut response = col()
         .key(format!("message-{}", message.id))
         .role("article")
@@ -419,22 +436,25 @@ fn response(message: &Message, colors: Colors) -> El {
         .gap(6.0)
         .hover_group_focus()
         .child(content);
-    if !clipboard.is_empty() {
-        response = response.child(
-            el().key(format!("copy-message-{}", message.id))
-                .role("button")
-                .label("Copy message")
-                .help("Copy message")
-                .size(24.0, 24.0)
-                .center()
-                .radius(8.0)
-                .group_opacity(0.0, 1.0)
-                .hover(colors.accent)
-                .focusable(true)
-                .focus_ring(2.0, -1.0, colors.fallbacks.accent)
-                .on_press_tx(move |_: &mut State, tx| tx.copy(clipboard.clone()))
-                .child(icon(&COPY, 12.0).color(colors.muted).a11y_hidden()),
-        );
+    if !message.text.is_empty() {
+        response = response.child(copy_button(message, colors));
     }
     response
+}
+
+fn copy_button(message: &Message, colors: Colors) -> El {
+    let clipboard = message.text.clone();
+    el().key(format!("copy-message-{}", message.id))
+        .role("button")
+        .label("Copy message")
+        .help("Copy message")
+        .size(24.0, 24.0)
+        .center()
+        .radius(8.0)
+        .group_opacity(0.0, 1.0)
+        .hover(colors.accent)
+        .focusable(true)
+        .focus_ring(2.0, -1.0, colors.fallbacks.accent)
+        .on_press_tx(move |_: &mut State, tx| tx.copy(clipboard.clone()))
+        .child(icon(&COPY, 12.0).color(colors.muted).a11y_hidden())
 }

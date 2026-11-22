@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use rune::color::{hex, oklch};
-use rune::{Color, El, Icon, LoopSpec, TextStyle, Tx, col, el, icon, row, text};
+use rune::{Color, El, Family, Icon, LoopSpec, TextStyle, Tx, col, el, icon, row, text};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
@@ -9,11 +9,17 @@ use crate::connection::worktree_setup::{Phase, Stage, StageId, Status, WorktreeS
 
 use super::{Conversation, Message, Palette, ProjectView, State, Workspace};
 
+mod background;
+
+pub(super) use background::{Disclosure, overlay};
+
 const BODY: TextStyle = TextStyle::new(14.0, 400.0).lh(22.75);
 const SMALL: TextStyle = TextStyle::new(12.0, 400.0).lh(16.0);
 const BUTTON: TextStyle = TextStyle::new(12.0, 500.0).lh(16.0);
-const CODE: TextStyle = TextStyle::new(11.0, 400.0).lh(17.875).mono();
-const DETAILS_CODE: TextStyle = SMALL.mono();
+const CODE: TextStyle = TextStyle::new(11.0, 400.0)
+    .lh(17.875)
+    .family(Family::SystemMono);
+const DETAILS_CODE: TextStyle = SMALL.family(Family::SystemMono);
 const INDENT: f32 = 32.0;
 const TAIL_LINES: usize = 4;
 
@@ -94,20 +100,38 @@ impl Colors {
 }
 
 pub(super) fn poll(state: &mut State, tx: &mut Tx) -> bool {
-    let Some(ProjectView::Conversation(conversation)) = state
-        .workspace
+    let Some(workspace) = &mut state.workspace else {
+        return false;
+    };
+    let Some(ProjectView::Conversation(conversation)) = workspace
+        .selection
+        .as_ref()
+        .map(|selection| &selection.view)
+    else {
+        return false;
+    };
+    let active = background::started_at(conversation, workspace).is_some();
+    let open = conversation
+        .worktree_setup
+        .as_deref()
+        .is_some_and(|setup| setup.phase == Phase::Running && agent_started(setup) && active);
+    let timing = conversation.worktree_setup.as_deref().is_some_and(|setup| {
+        (setup.phase == Phase::Running && (!agent_started(setup) || active))
+            || (active && has_failed_stage(setup))
+    });
+    let Some(ProjectView::Conversation(conversation)) = workspace
+        .selection
         .as_mut()
-        .and_then(|workspace| workspace.selection.as_mut())
         .map(|selection| &mut selection.view)
     else {
         return false;
     };
-    if conversation
-        .worktree_setup
-        .as_deref()
-        .is_none_or(|setup| setup.phase != Phase::Running || agent_started(setup))
-    {
-        return false;
+    let closed = conversation.worktree_background.open && !open;
+    if closed {
+        conversation.worktree_background = Disclosure::default();
+    }
+    if !timing {
+        return closed;
     }
     let now = OffsetDateTime::now_utc();
     let second = now.unix_timestamp();
@@ -115,7 +139,7 @@ pub(super) fn poll(state: &mut State, tx: &mut Tx) -> bool {
     tx.wake_after(Duration::from_nanos(
         1_000_000_000 - u64::from(now.nanosecond()),
     ));
-    changed
+    changed || closed
 }
 
 pub(super) fn view(
@@ -130,38 +154,94 @@ pub(super) fn view(
         || messages.iter().any(|message| message.role == "assistant");
     let handed_off = activity_started && agent_started(setup);
     let running = setup.phase == Phase::Running;
-    let failed_stage = setup
-        .stages
-        .iter()
-        .any(|stage| stage.status == Status::Failed);
     let follow_up = messages
         .iter()
         .filter(|message| message.role == "user" && message.created_by.as_deref() != Some("agent"))
         .nth(1)
         .is_some();
-    if (running && handed_off)
-        || (!running && follow_up)
-        || (setup.phase == Phase::Done && activity_started && !failed_stage)
+    if (!running && follow_up)
+        || (setup.phase == Phase::Done && activity_started && !has_failed_stage(setup))
     {
         return None;
     }
     let colors = Colors::new(palette);
-    let now = conversation
+    let now = now_for(conversation);
+    if running && handed_off {
+        return background::started_at(conversation, workspace)
+            .map(|started| background::working(conversation, Some(setup), started, now, colors));
+    }
+    let presentation = if handed_off {
+        Presentation::Summary
+    } else {
+        Presentation::Full
+    };
+    let section = card(conversation, setup, workspace, presentation, now, colors);
+    if !handed_off && matches!(setup.phase, Phase::Running | Phase::Done) {
+        let label = if running && !agent_started(setup) {
+            "Setting up worktree…".into()
+        } else {
+            background::working_label(&setup.started_at, now)
+        };
+        Some(
+            col()
+                .w_full()
+                .child(heading(&label, None, colors.muted, colors))
+                .child(section),
+        )
+    } else if handed_off && let Some(started) = background::started_at(conversation, workspace) {
+        Some(
+            col()
+                .w_full()
+                .gap(8.0)
+                .child(section)
+                .child(background::working(
+                    conversation,
+                    None,
+                    started,
+                    now,
+                    colors,
+                )),
+        )
+    } else {
+        Some(section)
+    }
+}
+
+fn now_for(conversation: &Conversation) -> OffsetDateTime {
+    conversation
         .worktree_elapsed_second
         .and_then(|second| OffsetDateTime::from_unix_timestamp(second).ok())
-        .unwrap_or_else(OffsetDateTime::now_utc);
+        .unwrap_or_else(OffsetDateTime::now_utc)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Presentation {
+    Full,
+    Summary,
+    Popup,
+}
+
+fn card(
+    conversation: &Conversation,
+    setup: &WorktreeSetup,
+    workspace: &Workspace,
+    presentation: Presentation,
+    now: OffsetDateTime,
+    colors: Colors,
+) -> El {
     let mut section = col()
         .key("worktree-setup")
         .role("group")
         .label("Worktree setup")
         .w_full()
         .min_w(0.0);
-    if handed_off && !running {
-        let status = if failed_stage || matches!(setup.phase, Phase::Failed | Phase::Cancelled) {
-            Status::Failed
-        } else {
-            Status::Done
-        };
+    if presentation == Presentation::Summary {
+        let status =
+            if has_failed_stage(setup) || matches!(setup.phase, Phase::Failed | Phase::Cancelled) {
+                Status::Failed
+            } else {
+                Status::Done
+            };
         section = section.child(stage_line(
             "worktree-setup-summary",
             header_label(setup),
@@ -171,7 +251,9 @@ pub(super) fn view(
             colors,
         ));
     } else {
-        if matches!(setup.phase, Phase::Failed | Phase::Cancelled) {
+        if presentation == Presentation::Full
+            && matches!(setup.phase, Phase::Failed | Phase::Cancelled)
+        {
             section = section.child(heading(
                 header_label(setup),
                 elapsed(Some(&setup.started_at), setup.ended_at.as_deref(), None),
@@ -200,14 +282,16 @@ pub(super) fn view(
                 .wrap_anywhere(),
         );
     }
-    let can_cancel = running
-        && !handed_off
+    let can_cancel = setup.phase == Phase::Running
+        && presentation == Presentation::Full
         && !setup.stages.iter().any(|stage| {
             stage.id == StageId::Agent && matches!(stage.status, Status::Running | Status::Done)
         })
         && workspace.worktree_launch
         && !workspace.reconnecting
-        && thread.is_some_and(|thread| !thread.archived);
+        && workspace
+            .thread(&conversation.id)
+            .is_some_and(|thread| !thread.archived);
     let can_open_terminal = setup.phase != Phase::Cancelled
         && workspace.terminal
         && !workspace.reconnecting
@@ -220,29 +304,13 @@ pub(super) fn view(
         setup,
         can_cancel,
         can_open_terminal,
+        presentation,
         colors,
     ));
-    if conversation.worktree_details_open {
+    if details_open(conversation, presentation) {
         section = section.child(details(setup, colors));
     }
-    if !handed_off && matches!(setup.phase, Phase::Running | Phase::Done) {
-        let title = if running {
-            "Setting up worktree…".into()
-        } else {
-            elapsed(Some(&setup.started_at), None, Some(now)).map_or_else(
-                || "Working...".into(),
-                |elapsed| format!("Working for {elapsed}"),
-            )
-        };
-        Some(
-            col()
-                .w_full()
-                .child(heading(&title, None, colors.muted, colors))
-                .child(section),
-        )
-    } else {
-        Some(section)
-    }
+    section
 }
 
 fn agent_started(setup: &WorktreeSetup) -> bool {
@@ -252,17 +320,17 @@ fn agent_started(setup: &WorktreeSetup) -> bool {
         .any(|stage| stage.id == StageId::Agent && stage.status == Status::Done)
 }
 
+fn has_failed_stage(setup: &WorktreeSetup) -> bool {
+    setup
+        .stages
+        .iter()
+        .any(|stage| stage.status == Status::Failed)
+}
+
 fn header_label(setup: &WorktreeSetup) -> &'static str {
     match setup.phase {
         Phase::Running => "Setting up worktree…",
-        Phase::Done
-            if setup
-                .stages
-                .iter()
-                .any(|stage| stage.status == Status::Failed) =>
-        {
-            "Worktree ready, setup script failed"
-        }
+        Phase::Done if has_failed_stage(setup) => "Worktree ready, setup script failed",
         Phase::Done => "Worktree ready",
         Phase::Failed => "Worktree setup failed",
         Phase::Cancelled => "Worktree setup cancelled",
@@ -281,6 +349,10 @@ fn heading(label: &str, duration: Option<String>, ink: Color, colors: Colors) ->
     if let Some(duration) = duration {
         line = line.child(text(duration).font(SMALL).color(colors.muted));
     }
+    heading_frame(line, colors)
+}
+
+fn heading_frame(line: El, colors: Colors) -> El {
     col()
         .w_full()
         .h(37.0)
@@ -451,10 +523,11 @@ fn actions(
     setup: &WorktreeSetup,
     cancel: bool,
     terminal: bool,
+    presentation: Presentation,
     colors: Colors,
 ) -> El {
     let thread_id = conversation.id.clone();
-    let expanded = conversation.worktree_details_open;
+    let expanded = details_open(conversation, presentation);
     let mut controls = row()
         .w_full()
         .pl(19.0)
@@ -477,7 +550,12 @@ fn actions(
             .expanded(expanded)
             .on_press(move |state: &mut State| {
                 if let Some(conversation) = state.conversation_mut(&thread_id) {
-                    conversation.worktree_details_open = !conversation.worktree_details_open;
+                    let details = if presentation == Presentation::Popup {
+                        &mut conversation.worktree_background.details
+                    } else {
+                        &mut conversation.worktree_details_open
+                    };
+                    *details = !*details;
                 }
             }),
         );
@@ -493,6 +571,11 @@ fn actions(
                 colors,
             )
             .on_press_tx(move |state: &mut State, tx| {
+                if presentation == Presentation::Popup
+                    && let Some(conversation) = state.conversation_mut(&thread_id)
+                {
+                    conversation.worktree_background = Disclosure::default();
+                }
                 state.open_worktree_setup_terminal(&thread_id, &terminal_id, tx)
             }),
         );
@@ -506,6 +589,14 @@ fn actions(
         );
     }
     controls
+}
+
+fn details_open(conversation: &Conversation, presentation: Presentation) -> bool {
+    if presentation == Presentation::Popup {
+        conversation.worktree_background.details
+    } else {
+        conversation.worktree_details_open
+    }
 }
 
 fn action(key: &str, label: &str, width: f32, symbol: &'static Icon, colors: Colors) -> El {
@@ -582,20 +673,22 @@ fn elapsed(
     let end = ended
         .map(|timestamp| OffsetDateTime::parse(timestamp, &Rfc3339).ok())
         .unwrap_or(now)?;
-    let milliseconds = (end - start).whole_milliseconds().max(0);
+    Some(format_duration((end - start).whole_milliseconds().max(0)))
+}
+
+pub(super) fn format_duration(milliseconds: i128) -> String {
     if milliseconds < 1000 {
-        return Some(format!("{}ms", milliseconds.max(1)));
+        return format!("{}ms", milliseconds.max(1));
     }
     if milliseconds < 10_000 {
-        return Some(format!("{}s", ((milliseconds + 50) / 100) as f64 / 10.0));
+        return format!("{}s", ((milliseconds + 50) / 100) as f64 / 10.0);
     }
     let seconds = (milliseconds + 500) / 1000;
-    let duration = match (seconds / 3600, seconds / 60 % 60, seconds % 60) {
+    match (seconds / 3600, seconds / 60 % 60, seconds % 60) {
         (0, 0, s) => format!("{s}s"),
         (0, m, s) => format!("{m}m {s}s"),
         (h, 0, 0) => format!("{h}h"),
         (h, 0, s) => format!("{h}h {s}s"),
         (h, m, s) => format!("{h}h {m}m {s}s"),
-    };
-    Some(duration)
+    }
 }

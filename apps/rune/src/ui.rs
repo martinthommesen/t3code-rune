@@ -57,6 +57,7 @@ struct Conversation {
     worktree_cancel_pending: bool,
     worktree_details_open: bool,
     worktree_elapsed_second: Option<i64>,
+    worktree_background: worktree_setup::Disclosure,
 }
 
 enum ProjectView {
@@ -439,6 +440,7 @@ impl State {
                     worktree_cancel_pending: false,
                     worktree_details_open: false,
                     worktree_elapsed_second: None,
+                    worktree_background: worktree_setup::Disclosure::default(),
                 })),
             }),
             Destination::NewThread(id) => {
@@ -1333,6 +1335,8 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
         body = body.child(dialog);
     } else if let Some(form) = &state.add_project {
         body = body.child(project::dialog(form, palette));
+    } else if let Some(overlays) = worktree_setup::overlay(state, palette, width) {
+        body = body.children(overlays);
     }
     body
 }
@@ -1958,7 +1962,7 @@ mod tests {
     }
 
     #[test]
-    fn conversations_expand_attributed_prompts_and_copy_the_original_response() {
+    fn conversations_expand_attributed_prompts_and_copy_original_messages() {
         let mut runtime =
             Runtime::new(State::default(), view, (1120.0, 740.0), Env::new(true, 1.0));
         let clipboard = rune::clipboard::memory();
@@ -1998,6 +2002,11 @@ mod tests {
         click(&mut runtime, "toggle-message-agent-prompt");
         assert!(runtime.find("message-text-agent-prompt").is_none());
 
+        click(&mut runtime, "copy-message-ordinary-prompt");
+        assert_eq!(
+            clipboard.text().as_deref().map(String::as_str),
+            Some("Ordinary prompt")
+        );
         click(&mut runtime, "copy-message-response");
         assert_eq!(
             clipboard.text().as_deref().map(String::as_str),
