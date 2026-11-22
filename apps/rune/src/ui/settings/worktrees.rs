@@ -9,7 +9,8 @@ use super::{
 mod branches;
 mod location;
 
-pub(super) use branches::overlay;
+pub(in crate::ui) use branches::poll as poll_branch_fields;
+pub(super) use branches::{FieldsPanel, overlay};
 pub(super) use location::LocationPanel;
 pub(in crate::ui) use location::poll as poll_location;
 

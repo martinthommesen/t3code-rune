@@ -31,7 +31,7 @@ macro_rules! glyph {
 mod archive;
 mod keybindings;
 pub(super) use archive::settle as settle_archive_action;
-pub(super) use worktrees::poll_location as poll_worktree_location;
+pub(super) use worktrees::{poll_branch_fields, poll_location as poll_worktree_location};
 
 static GEAR: Icon = glyph!(
     "settings",
@@ -72,6 +72,7 @@ pub(super) struct Panel {
     project: Option<project::Form>,
     workspace: workspace::Panel,
     worktree_location: worktrees::LocationPanel,
+    branch_fields: worktrees::FieldsPanel,
     keybindings: keybindings::Panel,
     return_focus: &'static str,
 }
@@ -92,6 +93,7 @@ impl Default for Panel {
             project: None,
             workspace: workspace::Panel::default(),
             worktree_location: worktrees::LocationPanel::default(),
+            branch_fields: worktrees::FieldsPanel::default(),
             keybindings: keybindings::Panel::default(),
             return_focus: "open-client-settings",
         }
@@ -193,6 +195,9 @@ impl State {
         self.settings
             .worktree_location
             .settle_reset(operation, result.is_ok());
+        self.settings
+            .branch_fields
+            .settle(operation, result.is_ok());
         self.settings.workspace.settle(operation, result);
     }
 

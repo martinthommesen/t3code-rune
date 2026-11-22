@@ -1,9 +1,14 @@
 use rune::{Align, Color, El, Key, KeyEvent, Shadow, Side, Tx, col, el, icon, row, text};
 
-use crate::connection::BranchNamingMode;
+use crate::connection::{BranchNamingMode, BranchTextField};
 
 use super::super::{CONTROL, DESCRIPTION, Palette, RESET, SECTION, State, icon_button};
 use super::workspace::{self, CHEVRON, ITEM, keyboard, surface};
+
+mod fields;
+
+pub(in crate::ui::settings) use fields::FieldsPanel;
+pub(in crate::ui) use fields::poll;
 
 const ROW: &str = "worktree-branch-naming-row";
 const TRIGGER: &str = "worktree-branch-naming";
@@ -137,6 +142,31 @@ pub(super) fn section(state: &State, palette: Palette, width: f32) -> El {
     } else {
         col().gap(12.0).child(description).child(trigger)
     };
+    let mut rows = col()
+        .w_full()
+        .radius(12.0)
+        .border(1.0, palette.line)
+        .border_layout()
+        .child(
+            layout
+                .key(ROW)
+                .focusable(true)
+                .tab_index(-1)
+                .no_focus_ring()
+                .w_full()
+                .px(16.0)
+                .py(12.0),
+        );
+    if let Some(field) = BranchTextField::ALL
+        .into_iter()
+        .find(|field| Some(field.mode()) == mode)
+        && let Some(field) = fields::view(state, palette, width, field)
+    {
+        rows = rows
+            .child(el().w_full().h(1.0).fill(palette.line))
+            .child(field);
+    }
+
     col()
         .key("worktree-branches")
         .w_full()
@@ -148,19 +178,7 @@ pub(super) fn section(state: &State, palette: Palette, width: f32) -> El {
                 .role("heading")
                 .px(16.0),
         )
-        .child(
-            layout
-                .key(ROW)
-                .focusable(true)
-                .tab_index(-1)
-                .no_focus_ring()
-                .w_full()
-                .px(16.0)
-                .py(12.0)
-                .radius(12.0)
-                .border(1.0, palette.line)
-                .border_layout(),
-        )
+        .child(rows)
 }
 
 pub(in crate::ui::settings) fn overlay(state: &State, palette: Palette) -> Option<[El; 2]> {

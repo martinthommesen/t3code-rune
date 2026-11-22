@@ -70,8 +70,11 @@ impl Patch {
                 return Err(format!("{expected}\n  at [\"patch\"][\"{key}\"]"));
             }
             if supported(key) {
-                let value = if key == "worktreesDirectory" {
-                    text(value).expect("worktree location is a string").into()
+                let value = if matches!(
+                    key,
+                    "worktreesDirectory" | "branchNamePrefix" | "branchNameInstructions"
+                ) {
+                    text(value).expect("validated string setting").into()
                 } else {
                     value.clone()
                 };
@@ -169,6 +172,8 @@ fn supported(key: &str) -> bool {
             | "newWorktreesStartFromOrigin"
             | "worktreesDirectory"
             | "branchNamingMode"
+            | "branchNamePrefix"
+            | "branchNameInstructions"
     )
 }
 

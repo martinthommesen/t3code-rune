@@ -75,7 +75,8 @@ pub(crate) use terminal::{
 };
 pub(crate) use workspace_retry::WorkspaceRetry;
 pub(crate) use workspace_settings::{
-    BranchNamingMode, PermissionSetting, ResetWorkspaceOverride, WorkspaceSetting, WorktreeLocation,
+    BranchNamingMode, BranchTextField, PermissionSetting, ResetWorkspaceOverride, WorkspaceSetting,
+    WorktreeLocation,
 };
 pub(crate) use worktree_setup::WorktreeSetup;
 

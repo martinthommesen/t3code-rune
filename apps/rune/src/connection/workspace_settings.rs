@@ -36,6 +36,7 @@ pub(super) enum Edit {
     Permissions(Option<RuntimeMode>),
     WorktreesDirectory(String),
     BranchNaming(Option<BranchNamingMode>),
+    BranchText(BranchTextField, Option<String>),
 }
 
 impl Edit {
@@ -52,6 +53,9 @@ impl Edit {
             Self::BranchNaming(Some(mode)) => (BRANCH_NAMING, json!(mode)),
             Self::BranchNaming(None) if project_scope => (BRANCH_NAMING, Value::Null),
             Self::BranchNaming(None) => (BRANCH_NAMING, json!(BranchNamingMode::Static)),
+            Self::BranchText(field, Some(value)) => (field.key(), json!(value)),
+            Self::BranchText(field, None) if project_scope => (field.key(), Value::Null),
+            Self::BranchText(field, None) => (field.key(), json!(field.default_value())),
         }
     }
 }
@@ -148,10 +152,57 @@ pub(crate) enum BranchNamingMode {
     Custom,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BranchTextField {
+    Prefix,
+    Instructions,
+}
+
+impl BranchTextField {
+    pub(crate) const ALL: [Self; 2] = [Self::Prefix, Self::Instructions];
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Prefix => "branchNamePrefix",
+            Self::Instructions => "branchNameInstructions",
+        }
+    }
+
+    pub(crate) fn index(self) -> usize {
+        match self {
+            Self::Prefix => 0,
+            Self::Instructions => 1,
+        }
+    }
+
+    pub(crate) fn default_value(self) -> &'static str {
+        match self {
+            Self::Prefix => "t3",
+            Self::Instructions => "",
+        }
+    }
+
+    pub(crate) fn mode(self) -> BranchNamingMode {
+        match self {
+            Self::Prefix => BranchNamingMode::Static,
+            Self::Instructions => BranchNamingMode::Custom,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct BranchTextSetting {
+    pub(crate) environment: String,
+    pub(crate) projects: HashMap<String, String>,
+    pub(crate) writable: bool,
+    pub(crate) managed_by: Option<String>,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct BranchNamingSetting {
     pub(crate) configured: BranchNamingMode,
     pub(crate) projects: HashMap<String, BranchNamingMode>,
+    pub(crate) text: [BranchTextSetting; 2],
     pub(crate) writable: bool,
     pub(crate) managed_by: Option<String>,
 }
@@ -177,6 +228,7 @@ pub(super) struct Subscription {
     directory_supported: bool,
     directory_managed_by: Option<String>,
     branch_naming_managed_by: Option<String>,
+    branch_text_managed_by: [Option<String>; 2],
     pending: Option<Pending>,
     overrides: Map<String, Value>,
     pending_file: Option<Pending>,
@@ -198,6 +250,7 @@ impl Subscription {
             directory_supported: false,
             directory_managed_by: None,
             branch_naming_managed_by: None,
+            branch_text_managed_by: [None, None],
             pending: None,
             overrides: Map::new(),
             pending_file: None,
@@ -221,6 +274,8 @@ impl Subscription {
                     self.directory_managed_by = managed_by(&config["managedPolicy"], DIRECTORY);
                     self.branch_naming_managed_by =
                         managed_by(&config["managedPolicy"], BRANCH_NAMING);
+                    self.branch_text_managed_by = BranchTextField::ALL
+                        .map(|field| managed_by(&config["managedPolicy"], field.key()));
 
                     &config["settings"]
                 }
@@ -256,6 +311,7 @@ impl Subscription {
                             .map(|mode| (id.clone(), mode))
                     })
                     .collect(),
+                text: BranchTextField::ALL.map(|field| self.branch_text(settings, field)),
                 writable: self.can_write && self.branch_naming_managed_by.is_none(),
                 managed_by: self.branch_naming_managed_by.clone(),
             },
@@ -300,6 +356,28 @@ impl Subscription {
             writable: self.can_write && self.managed_by.is_none(),
             managed_by: self.managed_by.clone(),
         })
+    }
+
+    fn branch_text(&self, settings: &Value, field: BranchTextField) -> BranchTextSetting {
+        let key = field.key();
+        let managed_by = &self.branch_text_managed_by[field.index()];
+        BranchTextSetting {
+            environment: settings[key]
+                .as_str()
+                .unwrap_or_else(|| field.default_value())
+                .to_owned(),
+            projects: self
+                .overrides
+                .iter()
+                .filter_map(|(id, project)| {
+                    project[key]
+                        .as_str()
+                        .map(|value| (id.clone(), value.to_owned()))
+                })
+                .collect(),
+            writable: self.can_write && managed_by.is_none(),
+            managed_by: managed_by.clone(),
+        }
     }
 
     fn patch(&self, target: &Target, edit: Edit) -> Value {
@@ -395,6 +473,15 @@ impl Connection {
         self.update_workspace_setting(project_id, Edit::BranchNaming(mode))
     }
 
+    pub(crate) fn update_branch_naming_text(
+        &self,
+        project_id: Option<String>,
+        field: BranchTextField,
+        value: Option<String>,
+    ) -> Option<Uuid> {
+        self.update_workspace_setting(project_id, Edit::BranchText(field, value))
+    }
+
     pub(crate) fn reset_workspace_overrides(
         &self,
         projects: Vec<String>,
@@ -456,6 +543,7 @@ impl Session {
             Edit::Permissions(_) => &settings.permission_policy.managed_by,
             Edit::WorktreesDirectory(_) => &settings.directory_managed_by,
             Edit::BranchNaming(_) => &settings.branch_naming_managed_by,
+            Edit::BranchText(field, _) => &settings.branch_text_managed_by[field.index()],
         };
         let environment = matches!(target, Target::Environment);
         let missing_project = match &target {

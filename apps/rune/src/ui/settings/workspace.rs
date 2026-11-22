@@ -4,7 +4,9 @@ use rune::{
 };
 use uuid::Uuid;
 
-use crate::connection::{BranchNamingMode, WorkspaceMode, WorkspaceSetting, WorktreeLocation};
+use crate::connection::{
+    BranchNamingMode, BranchTextField, WorkspaceMode, WorkspaceSetting, WorktreeLocation,
+};
 use t3_rune::providers::codex::RuntimeMode;
 
 use super::{CONTROL, DESCRIPTION, Palette, RESET, SECTION, State, error_text};
@@ -45,6 +47,14 @@ pub(super) struct Panel {
     scope: scope::Scope,
     pending: Option<Uuid>,
     error: Option<String>,
+}
+
+pub(super) struct BranchTextView<'a> {
+    pub(super) value: &'a str,
+    pub(super) project_id: Option<&'a str>,
+    pub(super) reset_value: Option<&'a str>,
+    pub(super) writable: bool,
+    pub(super) managed_by: Option<&'a str>,
 }
 
 pub(super) struct BranchNamingView<'a> {
@@ -158,6 +168,30 @@ impl Panel {
         })
     }
 
+    pub(super) fn branch_text_view(
+        &self,
+        state: &State,
+        field: BranchTextField,
+    ) -> Option<BranchTextView<'_>> {
+        let setting = &self.current.as_ref()?.branch_naming.text[field.index()];
+        let project_id = self.scope.id.as_deref();
+        let project = project_id
+            .and_then(|id| setting.projects.get(id))
+            .map(String::as_str);
+        let environment = setting.environment.as_str();
+        Some(BranchTextView {
+            value: project.unwrap_or(environment),
+            project_id,
+            reset_value: if project_id.is_some() {
+                project.map(|_| environment)
+            } else {
+                (environment != field.default_value()).then_some(field.default_value())
+            },
+            writable: self.pending.is_none() && self.scoped_writable(state, setting.writable),
+            managed_by: setting.managed_by.as_deref(),
+        })
+    }
+
     pub(super) fn writes_pending(&self) -> bool {
         self.pending.is_some()
     }
@@ -217,6 +251,25 @@ pub(super) fn inheritance_marker(label: String, palette: Palette) -> El {
 
 pub(super) fn scope_header(state: &State, palette: Palette) -> El {
     scope::view(state, palette)
+}
+
+pub(super) fn save_branch_text(
+    state: &mut State,
+    field: BranchTextField,
+    value: Option<String>,
+) -> Option<Uuid> {
+    let panel = &state.settings.workspace;
+    let setting = panel.branch_text_view(state, field)?;
+    if !setting.writable {
+        return None;
+    }
+    let project = setting.project_id.map(str::to_owned);
+    let operation = state
+        .connection
+        .as_ref()
+        .and_then(|connection| connection.update_branch_naming_text(project, field, value));
+    start_write(&mut state.settings.workspace, operation);
+    operation
 }
 
 pub(super) fn save_branch_naming(state: &mut State, mode: Option<BranchNamingMode>) {
