@@ -16,6 +16,8 @@ mod jsonc;
 mod patch;
 mod project_overrides;
 mod project_scripts;
+
+pub(super) use project_scripts::decode_script as decode_project_script;
 mod providers;
 mod watch;
 

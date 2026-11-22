@@ -80,6 +80,12 @@ pub(super) fn project(
         let presets = snooze::decode(value, snooze::KEY).ok()?;
         fields.insert(snooze::KEY.to_owned(), json!(presets));
     }
+    if let Some(scripts) = raw.get("defaultProjectScripts") {
+        fields.insert(
+            "defaultProjectScripts".to_owned(),
+            project_scripts::decode(scripts, "").ok()?,
+        );
+    }
     if let Some(value) = raw.get("addProjectBaseDirectory") {
         fields.insert("addProjectBaseDirectory".to_owned(), text(value)?.into());
     }

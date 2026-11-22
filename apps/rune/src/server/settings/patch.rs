@@ -4,7 +4,10 @@ use serde_json::{Value, json};
 
 use crate::snooze;
 
-use super::{Fields, favorites, project_overrides::ProjectPatch, text, worktree_location_history};
+use super::{
+    Fields, favorites, project_overrides::ProjectPatch, project_scripts, text,
+    worktree_location_history,
+};
 
 const SUBMODULE_MODES: &str = "Expected \"recursive\" | \"top-level\" | \"none\"";
 
@@ -68,6 +71,12 @@ impl Patch {
             if key == snooze::KEY {
                 let presets = snooze::decode(value, r#"["patch"]["snoozePresets"]"#)?;
                 patch.fields.insert(key.to_owned(), json!(presets));
+                continue;
+            }
+            if key == "defaultProjectScripts" {
+                let scripts =
+                    project_scripts::decode(value, r#"["patch"]["defaultProjectScripts"]"#)?;
+                patch.fields.insert(key.to_owned(), scripts);
                 continue;
             }
             if key == favorites::DELTA_KEY {

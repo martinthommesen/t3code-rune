@@ -194,8 +194,9 @@ pub(super) fn configured_setup(
                 .find(|script| script["runOnWorktreeCreate"] == true)
         })
         .map(|script| {
-            serde_json::from_value(script.clone())
-                .map_err(|_| "Project setup script was not valid.".into())
+            let script = crate::server::settings::decode_project_script(script, "")
+                .map_err(|_| "Project setup script was not valid.")?;
+            serde_json::from_value(script).map_err(|_| "Project setup script was not valid.".into())
         })
         .transpose()
 }

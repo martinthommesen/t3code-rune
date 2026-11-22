@@ -14,7 +14,7 @@ pub(super) fn decode(value: &Value, path: &str) -> Result<Value, String> {
         .map(Value::Array)
 }
 
-fn decode_script(value: &Value, path: &str) -> Result<Value, String> {
+pub(in crate::server) fn decode_script(value: &Value, path: &str) -> Result<Value, String> {
     let script = value
         .as_object()
         .ok_or_else(|| invalid("Expected object", path))?;
