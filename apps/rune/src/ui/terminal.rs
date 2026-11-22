@@ -34,6 +34,7 @@ pub(super) use tabs::TabsByThread;
 
 const DEFAULT_COLS: u16 = 80;
 const DEFAULT_ROWS: u16 = 16;
+const ACTION_GRID: (u16, u16) = (120, 30);
 const DEFAULT_DRAWER_HEIGHT: f32 = 280.0;
 const MIN_DRAWER_HEIGHT: f32 = 180.0;
 const LINE_HEIGHT: f32 = 18.0;
@@ -63,6 +64,7 @@ pub(super) struct Pane {
     focused: bool,
     message: Option<String>,
     received_snapshot: bool,
+    project_action_input: Option<String>,
     close_prompt: Option<ClosePrompt>,
     menu: Option<menu::Menu>,
     mouse: mouse::Mouse,
@@ -93,6 +95,7 @@ impl Pane {
             focused: false,
             message: None,
             received_snapshot: false,
+            project_action_input: None,
             close_prompt: None,
             menu: None,
             mouse: mouse::Mouse::default(),
@@ -144,6 +147,7 @@ impl Pane {
     }
 
     pub(super) fn fail(&mut self, message: String) {
+        self.project_action_input = None;
         self.status = TerminalStatus::Error;
         self.message = Some(message);
     }
@@ -232,10 +236,32 @@ impl State {
         };
         terminal.apply(update);
         let replies = terminal.screen.take_replies();
-        if !replies.is_empty()
-            && let Some(connection) = &self.connection
-        {
-            connection.write_terminal(attachment, replies, false, true);
+        let input = if terminal.received_snapshot {
+            terminal
+                .project_action_input
+                .take()
+                .filter(|_| terminal.status == TerminalStatus::Running)
+        } else {
+            None
+        };
+        if let Some(connection) = &self.connection {
+            if !replies.is_empty() {
+                connection.write_terminal(attachment, replies, false, true);
+            }
+            if let Some(input) = input
+                && self
+                    .workspace
+                    .as_ref()
+                    .is_some_and(|workspace| !workspace.reconnecting)
+            {
+                connection.write_terminal(attachment, input, false, false);
+            }
+        }
+    }
+
+    pub(super) fn discard_project_action_inputs(&mut self) {
+        for pane in self.terminal.iter_mut().chain(&mut self.terminal_peers) {
+            pane.project_action_input = None;
         }
     }
 
@@ -369,7 +395,50 @@ impl State {
         }
     }
 
+    pub(super) fn open_project_action_terminal(
+        &mut self,
+        thread_id: &str,
+        input: String,
+        tx: &mut Tx,
+    ) -> bool {
+        let available = self.workspace.as_ref().is_some_and(|workspace| {
+            workspace.terminal
+                && !workspace.reconnecting
+                && workspace
+                    .thread(thread_id)
+                    .is_some_and(|thread| !thread.archived)
+                && workspace.selection.as_ref().is_some_and(|selection| {
+                    matches!(&selection.view, ProjectView::Conversation(conversation)
+                        if conversation.id == thread_id)
+                })
+        });
+        if !available || self.connection.is_none() {
+            return false;
+        }
+        self.restore_terminal_tabs(thread_id);
+        if self.terminal_tabs.get(thread_id).is_some() {
+            if !self.terminal_tabs.append(thread_id) {
+                return false;
+            }
+        } else {
+            self.terminal_tabs.ensure(thread_id);
+        }
+        self.attach_selected_terminal_with_input(tx, true, Some(input));
+        self.terminal
+            .as_ref()
+            .is_some_and(|pane| pane.thread_id == thread_id && pane.project_action_input.is_some())
+    }
+
     fn attach_selected_terminal(&mut self, tx: &mut Tx, focus: bool) {
+        self.attach_selected_terminal_with_input(tx, focus, None);
+    }
+
+    fn attach_selected_terminal_with_input(
+        &mut self,
+        tx: &mut Tx,
+        focus: bool,
+        mut input: Option<String>,
+    ) {
         let Some(workspace) = self
             .workspace
             .as_ref()
@@ -411,16 +480,23 @@ impl State {
             .members
             .iter()
             .filter_map(|id| tabs.tab(id))
-            .map(|tab| TerminalAttach {
-                target: TerminalTarget {
-                    thread_id: thread_id.clone(),
-                    terminal_id: tab.id.clone(),
-                },
-                cwd: tab.observed_label.is_none().then(|| cwd.clone()),
-                worktree_path: worktree.clone(),
-                cols: DEFAULT_COLS,
-                rows: DEFAULT_ROWS,
-                resume: tab.resume,
+            .map(|tab| {
+                let (cols, rows) = if input.is_some() && selected == tab.id {
+                    ACTION_GRID
+                } else {
+                    (DEFAULT_COLS, DEFAULT_ROWS)
+                };
+                TerminalAttach {
+                    target: TerminalTarget {
+                        thread_id: thread_id.clone(),
+                        terminal_id: tab.id.clone(),
+                    },
+                    cwd: tab.observed_label.is_none().then(|| cwd.clone()),
+                    worktree_path: worktree.clone(),
+                    cols,
+                    rows,
+                    resume: tab.resume,
+                }
             })
             .collect();
         let mut visible = Vec::with_capacity(targets.len());
@@ -451,8 +527,14 @@ impl State {
                 continue;
             }
             let id = target.target.terminal_id.clone();
+            let grid = (target.cols, target.rows);
             let attachment = connection.attach_terminal(target);
-            visible.push(Pane::new(attachment, thread_id.clone(), id));
+            let mut pane = Pane::new(attachment, thread_id.clone(), id);
+            pane.requested_grid = grid;
+            if pane.terminal_id == selected {
+                pane.project_action_input = input.take();
+            }
+            visible.push(pane);
         }
         if let Some(index) = visible.iter().position(|pane| pane.terminal_id == selected) {
             self.terminal = Some(visible.swap_remove(index));

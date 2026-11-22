@@ -1692,6 +1692,7 @@ impl State {
             } => self.project_notice = Some(message),
             event @ (Event::Reconnecting | Event::Reconnected) => {
                 if matches!(event, Event::Reconnecting) {
+                    self.discard_project_action_inputs();
                     self.file_preview = None;
                     self.workspace_settings_disconnected(false);
                     self.keybindings_catalog_available(false);
@@ -2376,6 +2377,7 @@ fn detail(
         state, workspace, project, thread, layout, colors,
     ));
     let details = thread_details::card(state, workspace, project, thread, layout, palette);
+    let actions = thread_details::actions_menu(state, project, thread, layout, palette);
     let content_layout = thread_details::content_layout(state, thread, layout);
     let body = col().w_full().grow(1.0).min_h(0.0);
     let body = if content_layout.pane_width < layout.pane_width {
@@ -2466,7 +2468,9 @@ fn detail(
     {
         pane = pane.child(state.terminal_view(terminal, layout, palette));
     }
-    pane.children(error_banner).children(details)
+    pane.children(error_banner)
+        .children(details)
+        .children(actions.into_iter().flatten())
 }
 
 fn placeholder(title: &str, description: &str, palette: Palette) -> El {

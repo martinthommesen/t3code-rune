@@ -86,6 +86,18 @@ pub(super) struct Panel {
 }
 
 impl Panel {
+    pub(super) fn project_actions<'a>(
+        &'a self,
+        project: &'a super::Project,
+    ) -> &'a [crate::connection::ProjectAction] {
+        self.workspace
+            .current
+            .as_ref()
+            .map_or(project.scripts.as_slice(), |settings| {
+                settings.actions.effective(project)
+            })
+    }
+
     pub(super) fn is_open(&self) -> bool {
         self.open
     }

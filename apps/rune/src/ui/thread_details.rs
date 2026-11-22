@@ -49,15 +49,19 @@ static BRANCH: Icon = glyph!(
     r#"<path d="M15 6a9 9 0 0 0-9 9V3"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/>"#
 );
 
+mod actions;
+
 #[derive(Default)]
 pub(super) struct Popover {
     thread_id: Option<String>,
     focused: bool,
+    actions: Option<actions::Menu>,
 }
 
 impl Popover {
     pub(super) fn close(&mut self) -> bool {
         self.focused = false;
+        self.actions = None;
         self.thread_id.take().is_some()
     }
 
@@ -65,7 +69,9 @@ impl Popover {
         if self.thread_id.is_none() {
             return false;
         }
-        if matches!(tx.focused(), Some(CARD_KEY | TOGGLE_KEY)) {
+        if matches!(tx.focused(), Some(CARD_KEY | TOGGLE_KEY))
+            || tx.focused().is_some_and(actions::owns_focus)
+        {
             self.focused = true;
             false
         } else {
@@ -106,7 +112,7 @@ fn is_open(state: &State, thread_id: &str, mode: Mode) -> bool {
 }
 
 pub(super) fn observe_pane(state: &mut State, [_, _, width, height]: [f32; 4], header: f32) {
-    if mode(width, height, header) == Mode::Inline {
+    if mode(width, height, header) == Mode::Inline && state.thread_details.thread_id.is_some() {
         state.thread_details.close();
     }
 }
@@ -144,6 +150,10 @@ fn toggle_panel(state: &mut State, layout: Layout, tx: &mut Tx) -> bool {
     else {
         return false;
     };
+    state.thread_details.actions = None;
+    if let Some(connection) = &state.connection {
+        connection.ensure_workspace_settings();
+    }
     match presentation(layout) {
         Mode::Inline => {
             let open = !state
@@ -179,7 +189,9 @@ pub(super) fn shortcut(state: &mut State, layout: Layout, event: &KeyEvent, tx: 
     if state.add_project.is_some() || tx.focused() == Some("terminal-input") {
         return false;
     }
-    if event.key == Key::Escape && state.thread_details.close() {
+    if event.key == Key::Escape && actions::dismiss(state, tx) {
+        true
+    } else if event.key == Key::Escape && state.thread_details.close() {
         tx.focus(TOGGLE_KEY, false);
         true
     } else if event.is_command('b') && event.mods.shift && !event.mods.alt {
@@ -282,9 +294,11 @@ pub(super) fn card(
                 .color(environment_ink)
                 .a11y_hidden(),
         );
-    let mut contents = col()
-        .w_full()
-        .child(section("Workspace").child(workspace_row));
+    let mut contents = col().w_full().child(
+        section("Workspace")
+            .child(workspace_row)
+            .children(actions::control(state, workspace, project, thread, palette)),
+    );
     if let Some(branch) = &thread.branch {
         let branch = row()
             .key("thread-details-branch")
@@ -337,6 +351,17 @@ pub(super) fn card(
                     .child(contents),
             ),
     )
+}
+
+pub(super) fn actions_menu(
+    state: &State,
+    project: &Project,
+    thread: Option<&Thread>,
+    layout: Layout,
+    palette: Palette,
+) -> Option<[El; 2]> {
+    let thread = thread.filter(|thread| is_open(state, &thread.id, presentation(layout)))?;
+    actions::overlay(state, project, thread, palette)
 }
 
 fn section(label: &str) -> El {

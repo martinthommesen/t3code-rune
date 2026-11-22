@@ -26,6 +26,7 @@ const TERMINAL_CONFIRMATION: &str = "confirmTerminalClose";
 const THREAD_DELETE_CONFIRMATION: &str = "confirmThreadDelete";
 const THREAD_ARCHIVE_CONFIRMATION: &str = "confirmThreadArchive";
 const THREAD_DETAILS_CLOSED: &str = "threadDetailsInlineClosed";
+const LAST_PROJECT_ACTIONS: &str = "lastInvokedScriptByProject";
 const ONBOARDING_COMPLETED: &str = "onboardingCompletedAt";
 const SIDEBAR_OPEN: &str = "chat_thread_sidebar_open";
 const MAX_SYMLINK_HOPS: usize = 40;
@@ -42,6 +43,7 @@ pub(crate) struct ClientSettings {
     terminal_heights: TerminalHeights,
     terminal_layouts: terminal::Layouts,
     closed_thread_details: ClosedThreadDetails,
+    last_project_actions: BTreeMap<String, String>,
     appearance: AppearancePreference,
     reasoning: reasoning::Preferences,
     project_order: project_order::Preferences,
@@ -57,6 +59,7 @@ impl Default for ClientSettings {
             terminal_heights: TerminalHeights::new(),
             terminal_layouts: terminal::Layouts::new(),
             closed_thread_details: ClosedThreadDetails::new(),
+            last_project_actions: BTreeMap::new(),
             appearance: AppearancePreference::default(),
             reasoning: reasoning::Preferences::default(),
             project_order: project_order::Preferences::default(),
@@ -100,6 +103,10 @@ impl ClientSettings {
             terminal_heights,
             terminal_layouts,
             closed_thread_details,
+            last_project_actions: document
+                .as_ref()
+                .and_then(|document| last_project_actions(document).ok())
+                .unwrap_or_default(),
             appearance: AppearancePreference::at_state_dir(state_dir),
             project_order: document
                 .as_ref()
@@ -166,6 +173,40 @@ impl ClientSettings {
         preference_object(&mut document)?
             .insert(ONBOARDING_COMPLETED.to_owned(), Value::String(timestamp));
         write_document(&target, &document)
+    }
+
+    pub(crate) fn last_project_action(&self, project_id: &str) -> Option<&str> {
+        self.last_project_actions
+            .get(project_id)
+            .map(String::as_str)
+    }
+
+    pub(crate) fn remember_project_action(
+        &mut self,
+        project_id: &str,
+        action_id: &str,
+    ) -> io::Result<()> {
+        if self.last_project_action(project_id) == Some(action_id) {
+            return Ok(());
+        }
+        let update = |actions: &mut BTreeMap<String, String>| {
+            actions.insert(project_id.to_owned(), action_id.to_owned());
+        };
+        if let Some(path) = &self.path {
+            let target = resolve_file_target(path)?;
+            let mut document = read_document(&target)?;
+            let mut actions = last_project_actions(&document)?;
+            update(&mut actions);
+            preference_object(&mut document)?.insert(
+                LAST_PROJECT_ACTIONS.to_owned(),
+                serde_json::to_value(&actions)?,
+            );
+            write_document(&target, &document)?;
+            self.last_project_actions = actions;
+        } else {
+            update(&mut self.last_project_actions);
+        }
+        Ok(())
     }
 
     pub(crate) fn terminal_layout(
@@ -407,6 +448,18 @@ fn closed_thread_details(document: &Map<String, Value>) -> io::Result<ClosedThre
     };
     preferences
         .get(THREAD_DETAILS_CLOSED)
+        .map(|value| serde_json::from_value(value.clone()).map_err(io::Error::from))
+        .transpose()
+        .map(Option::unwrap_or_default)
+}
+
+fn last_project_actions(document: &Map<String, Value>) -> io::Result<BTreeMap<String, String>> {
+    let preferences = match document.get("settings") {
+        Some(value) => value.as_object().ok_or_else(invalid_document)?,
+        None => document,
+    };
+    preferences
+        .get(LAST_PROJECT_ACTIONS)
         .map(|value| serde_json::from_value(value.clone()).map_err(io::Error::from))
         .transpose()
         .map(Option::unwrap_or_default)
