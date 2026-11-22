@@ -21,6 +21,7 @@ pub(crate) struct TerminalTarget {
 pub(crate) struct TerminalAttach {
     pub(crate) target: TerminalTarget,
     pub(crate) cwd: Option<String>,
+    pub(crate) project_root: String,
     pub(crate) worktree_path: Option<String>,
     pub(crate) cols: u16,
     pub(crate) rows: u16,
@@ -179,6 +180,11 @@ impl Intent {
         });
         if let Some(cwd) = &self.attach.cwd {
             payload["cwd"] = json!(cwd);
+            let mut env = json!({"T3CODE_PROJECT_ROOT": self.attach.project_root});
+            if let Some(worktree) = &self.attach.worktree_path {
+                env["T3CODE_WORKTREE_PATH"] = json!(worktree);
+            }
+            payload["env"] = env;
         }
         if self.resume {
             payload["resume"] = json!(true);

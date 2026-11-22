@@ -469,7 +469,8 @@ impl State {
         }
         let thread_id = thread.id.clone();
         let worktree = thread.worktree_path.clone();
-        let cwd = worktree.as_ref().unwrap_or(&project.path).clone();
+        let project_root = project.path.clone();
+        let cwd = worktree.as_ref().unwrap_or(&project_root).clone();
         self.restore_terminal_tabs(&thread_id);
         let tabs = self.terminal_tabs.ensure(&thread_id);
         let Some(group) = tabs.active_group() else {
@@ -492,6 +493,7 @@ impl State {
                         terminal_id: tab.id.clone(),
                     },
                     cwd: tab.observed_label.is_none().then(|| cwd.clone()),
+                    project_root: project_root.clone(),
                     worktree_path: worktree.clone(),
                     cols,
                     rows,

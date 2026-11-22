@@ -18,11 +18,39 @@ fn target(thread: &str) -> TerminalAttach {
             terminal_id: "term-1".to_owned(),
         },
         cwd: Some("/fixture".to_owned()),
+        project_root: "/fixture".to_owned(),
         worktree_path: None,
         cols: 80,
         rows: 24,
         resume: false,
     }
+}
+
+#[test]
+fn terminal_launch_preserves_project_and_worktree_environment() {
+    let mut attach = target("thread");
+    let checkout = Intent::new(1, attach.clone()).payload();
+    assert_eq!(checkout["cwd"], "/fixture");
+    assert_eq!(checkout["env"], json!({"T3CODE_PROJECT_ROOT": "/fixture"}));
+
+    attach.cwd = Some("/worktrees/thread".to_owned());
+    attach.worktree_path = attach.cwd.clone();
+    let worktree = Intent::new(2, attach.clone()).payload();
+    assert_eq!(worktree["cwd"], "/worktrees/thread");
+    assert_eq!(
+        worktree["env"],
+        json!({
+            "T3CODE_PROJECT_ROOT": "/fixture",
+            "T3CODE_WORKTREE_PATH": "/worktrees/thread",
+        })
+    );
+
+    attach.cwd = None;
+    attach.resume = true;
+    let observed = Intent::new(3, attach).payload();
+    assert!(observed.get("cwd").is_none());
+    assert!(observed.get("env").is_none());
+    assert_eq!(observed["resume"], true);
 }
 
 #[test]
