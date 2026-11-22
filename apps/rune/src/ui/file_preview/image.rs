@@ -45,6 +45,7 @@ static ACTUAL: Icon = glyph!(
 
 pub(super) struct PreviewImage {
     contents: Contents,
+    expanded_animation: Option<std::sync::Arc<[u8]>>,
     zoom: Option<f32>,
     menu: Option<rune::PointerPress>,
     expanded: Option<Box<expanded::Dialog>>,
@@ -70,6 +71,7 @@ impl PreviewImage {
     pub(super) fn new() -> Self {
         Self {
             contents: Contents::Loading,
+            expanded_animation: None,
             zoom: None,
             menu: None,
             expanded: None,
@@ -98,6 +100,12 @@ impl PreviewImage {
     }
 
     pub(super) fn loaded(&mut self, outcome: AssetOutcome, cache: Option<&ImageCache>) {
+        self.expanded_animation = match &outcome {
+            AssetOutcome::Image(Source::Animated(animation)) if animation.restart_on_expand => {
+                Some(animation.bytes.clone())
+            }
+            _ => None,
+        };
         self.contents = match (outcome, cache) {
             (AssetOutcome::Image(Source::Png(source)), Some(cache)) => {
                 let Some(clipboard) = ClipboardImage::from_png(source.clone()) else {

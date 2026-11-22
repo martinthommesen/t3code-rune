@@ -2,8 +2,8 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use rune::{
-    Color, Cursor, Drag, El, Icon, Key, KeyEvent, PointerPress, ScrollPos, ScrollSpec, SurfaceFit,
-    TextStyle, Tx, col, el, icon, row, text,
+    Color, Cursor, Drag, El, Icon, Image, ImageCache, Key, KeyEvent, PointerPress, ScrollPos,
+    ScrollSpec, SurfaceFit, TextStyle, Tx, col, el, icon, row, text,
 };
 
 use super::super::{CRUMB, Colors, Layout, Load, Palette, State};
@@ -21,6 +21,7 @@ static ARROW: Icon = Icon {
 
 pub(super) struct Dialog {
     pub(super) menu: Option<PointerPress>,
+    picture: Option<Image>,
     zoom: f32,
     window: [f32; 2],
     return_ring: bool,
@@ -30,9 +31,10 @@ pub(super) struct Dialog {
 }
 
 impl Dialog {
-    fn new(return_ring: bool) -> Self {
+    fn new(return_ring: bool, picture: Option<Image>) -> Self {
         Self {
             menu: None,
+            picture,
             zoom: 1.0,
             window: [0.0; 2],
             return_ring,
@@ -91,13 +93,20 @@ impl Geometry {
 
 impl State {
     pub(super) fn open_expanded_image(&mut self, tx: &mut Tx) {
+        let wake = self.wake.clone();
         let Some(image) = self
             .preview_image_mut()
             .filter(|image| image.ready().is_some())
         else {
             return;
         };
-        image.expanded = Some(Box::new(Dialog::new(tx.by_keys())));
+        // A separate cache gives a newly expanded resource its own playback clock.
+        let picture = image
+            .expanded_animation
+            .as_ref()
+            .zip(wake)
+            .map(|(bytes, wake)| ImageCache::new(wake).load(bytes.clone()));
+        image.expanded = Some(Box::new(Dialog::new(tx.by_keys(), picture)));
         tx.focus_when_shown(BACK, tx.by_keys());
     }
 
@@ -220,6 +229,11 @@ pub(in crate::ui) fn view(state: &State, layout: Layout, palette: Palette) -> Op
     };
     let dialog = image.expanded.as_deref()?;
     let raster = image.ready()?;
+    let picture = dialog
+        .picture
+        .as_ref()
+        .filter(|image| image.error().is_none())
+        .unwrap_or(&raster.picture);
     let geometry = Geometry::new(layout, raster.size);
     let zoom = if dialog.window == geometry.window {
         dialog.zoom
@@ -290,7 +304,7 @@ pub(in crate::ui) fn view(state: &State, layout: Layout, palette: Palette) -> Op
                 .size(picture_width, picture_height)
                 .role("image")
                 .label(&preview.target.path)
-                .pixels_fit(raster.picture.pixels(), SurfaceFit::Fit),
+                .pixels_fit(picture.pixels(), SurfaceFit::Fit),
         );
     if zoom > 1.0 {
         canvas = canvas

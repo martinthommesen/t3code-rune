@@ -13,6 +13,7 @@ base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 fff-search = { git = "https://github.com/dmtrKovalenko/fff.git", rev = "95fd777c2529fc7b4d7572dabff64cc07268f2c5" }
 futures-util = { version = "0.3", features = ["sink"] }
+gif = "=0.14.2"
 hostname = "0.4"
 icu_collator = "=2.3.0"
 icu_locale_core = "=2.4.0"
@@ -26,6 +27,7 @@ image = { version = "0.25", default-features = false, features = [
   "webp",
 ] }
 notify = "=9.0.0-rc.4"
+png = "=0.18.1"
 portable-pty = "0.9"
 regex-lite = "=0.1.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

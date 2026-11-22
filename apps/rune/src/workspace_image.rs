@@ -6,6 +6,7 @@ use image::{AnimationDecoder, DynamicImage, ImageDecoder, ImageEncoder, Limits, 
 use rune::ClipboardImage;
 use rune::clipboard::MAX_IMAGE_BYTES;
 
+mod gif_playback;
 mod tiff;
 
 pub(crate) enum Source {
@@ -38,6 +39,7 @@ pub(crate) struct Animation {
     pub(crate) bytes: Arc<[u8]>,
     pub(crate) size: (u32, u32),
     pub(crate) clipboard: Option<ClipboardImage>,
+    pub(crate) restart_on_expand: bool,
 }
 
 pub(crate) fn mime_type(path: &str) -> Option<&'static str> {
@@ -94,7 +96,7 @@ impl Source {
                 .map(Self::Decoded);
         }
         if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-            return tokio::task::spawn_blocking(move || decode_gif(bytes))
+            return tokio::task::spawn_blocking(move || gif_playback::decode(bytes))
                 .await
                 .ok()?;
         }
@@ -154,13 +156,6 @@ fn decode_ico(mut bytes: Vec<u8>) -> Option<Raster> {
     decode_still(decoder)
 }
 
-fn decode_gif(bytes: Vec<u8>) -> Option<Source> {
-    let mut decoder = image::codecs::gif::GifDecoder::new(Cursor::new(&bytes)).ok()?;
-    limit_image(&mut decoder)?;
-    let frame = decoder.into_frames().next()?.ok()?.into_buffer();
-    Some(animation(bytes, frame))
-}
-
 fn decode_webp(bytes: Vec<u8>) -> Option<Source> {
     let mut decoder = image::codecs::webp::WebPDecoder::new(Cursor::new(&bytes)).ok()?;
     if !decoder.has_animation() {
@@ -169,14 +164,15 @@ fn decode_webp(bytes: Vec<u8>) -> Option<Source> {
     limit_image(&mut decoder)?;
     decoder.set_background_color(Rgba([0, 0, 0, 0])).ok()?;
     let frame = decoder.into_frames().next()?.ok()?.into_buffer();
-    Some(animation(bytes, frame))
+    Some(animation(bytes, frame, false))
 }
 
-fn animation(bytes: Vec<u8>, frame: RgbaImage) -> Source {
+fn animation(bytes: Vec<u8>, frame: RgbaImage, restart_on_expand: bool) -> Source {
     Source::Animated(Animation {
         bytes: bytes.into(),
         size: frame.dimensions(),
         clipboard: clipboard_png(&frame),
+        restart_on_expand,
     })
 }
 
@@ -187,18 +183,21 @@ fn decode_still(mut decoder: impl ImageDecoder) -> Option<Raster> {
         .unwrap_or(image::metadata::Orientation::NoTransforms);
     let mut image = DynamicImage::from_decoder(decoder).ok()?;
     image.apply_orientation(orientation);
-    let rgba = image.into_rgba8();
+    Some(raster(image.into_rgba8()))
+}
+
+fn raster(rgba: RgbaImage) -> Raster {
     let (width, height) = rgba.dimensions();
-    Some(Raster {
+    Raster {
         width,
         height,
         clipboard: clipboard_png(&rgba).into(),
         pixels: rgba.into_raw().into(),
-    })
+    }
 }
 
 fn clipboard_png(rgba: &RgbaImage) -> Option<ClipboardImage> {
-    let mut png = ClipboardPng::default();
+    let mut png = BoundedPng::default();
     image::codecs::png::PngEncoder::new(&mut png)
         .write_image(
             rgba,
@@ -211,14 +210,12 @@ fn clipboard_png(rgba: &RgbaImage) -> Option<ClipboardImage> {
 }
 
 #[derive(Default)]
-struct ClipboardPng(Vec<u8>);
+struct BoundedPng(Vec<u8>);
 
-impl Write for ClipboardPng {
+impl Write for BoundedPng {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         if self.0.len().saturating_add(bytes.len()) > MAX_IMAGE_BYTES {
-            return Err(io::Error::other(
-                "The image is too large for the clipboard.",
-            ));
+            return Err(io::Error::other("The encoded image is too large."));
         }
         self.0.write(bytes)
     }
