@@ -1,4 +1,5 @@
 mod terminal_output;
+pub(crate) use terminal_output::{CommandColor, CommandPen, TerminalOutput};
 #[cfg(test)]
 mod tests;
 
@@ -11,7 +12,7 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio::sync::{Notify, broadcast};
 use tokio::time::{Instant, sleep_until};
 
-use self::terminal_output::{TAIL_CHARS, TerminalOutput};
+use self::terminal_output::TAIL_CHARS;
 use super::super::{ProjectionChange, turn_commands::TurnCommands};
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(100);

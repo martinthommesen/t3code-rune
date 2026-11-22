@@ -26,6 +26,7 @@ use t3_rune::providers::codex::{
 };
 
 use self::command_output::CommandOutputHub;
+pub(crate) use self::command_output::{CommandColor, CommandPen, TerminalOutput};
 pub(super) use self::command_output::{CommandOutputError, CommandOutputSubscription};
 use self::launch::Launch;
 use self::reasoning::{PartOutput, ReasoningOutput};

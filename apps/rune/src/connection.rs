@@ -1,4 +1,5 @@
 mod browse;
+mod command_output;
 mod launch;
 mod projection;
 mod provider_metadata;
@@ -31,12 +32,13 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 use uuid::Uuid;
 
 pub(crate) use browse::FolderListing;
+pub(crate) use command_output::{CommandInspection, CommandOutput};
 pub(crate) use launch::Workspace as LaunchWorkspace;
-use projection::{Conversation, Shell};
 pub(crate) use projection::{
-    ConversationEntry, Message, Project, ProjectIcon, QueuedMessage, Thread, TodoListEntry,
-    TodoStepStatus,
+    CommandEntry, CommandOutputTarget, CommandStatus, CompletedWork, ConversationEntry, Message,
+    Project, ProjectIcon, QueuedMessage, Thread, TodoListEntry, TodoStepStatus,
 };
+use projection::{Conversation, Shell};
 pub(crate) use provider_metadata::{ProviderCatalog, ProviderMetadata};
 pub(crate) use queue_mutation::QueueMutation;
 #[cfg(test)]
@@ -101,6 +103,11 @@ pub(crate) enum Event {
     Thread {
         thread_id: String,
         entries: Vec<ConversationEntry>,
+    },
+    CommandOutput {
+        thread_id: String,
+        attachment: Uuid,
+        output: CommandOutput,
     },
     QueuedMessages {
         thread_id: String,
@@ -205,6 +212,7 @@ pub(crate) enum Event {
 enum Command {
     OpenThread(String),
     CloseThread,
+    ObserveOutput(command_output::Command),
     SendPrompt {
         thread_id: String,
         prompt: String,
@@ -602,6 +610,8 @@ struct Descriptor {
 
 #[derive(Default, Deserialize)]
 struct Capabilities {
+    #[serde(default, rename = "commandOutputStreaming")]
+    command_output_streaming: bool,
     #[serde(default, rename = "t3ReadOnly")]
     read_only: bool,
     #[serde(rename = "t3ProjectWrites")]
@@ -964,6 +974,8 @@ struct Session {
     archive: ArchiveState,
     providers_request_id: Option<String>,
     project_clones_request_id: Option<String>,
+    command_output_streaming: bool,
+    command_outputs: command_output::Subscriptions,
     pending_project_clone_actions: HashMap<String, Instant>,
     thread: Option<ThreadSubscription>,
     draft_setup: Option<(String, String)>,
@@ -1067,6 +1079,8 @@ impl Session {
             },
             providers_request_id: None,
             project_clones_request_id: None,
+            command_output_streaming: capabilities.command_output_streaming,
+            command_outputs: command_output::Subscriptions::default(),
             pending_project_clone_actions: HashMap::new(),
             thread: None,
             draft_setup: None,
@@ -1265,6 +1279,7 @@ impl Session {
     }
 
     async fn open_thread(&mut self, thread_id: String, opened: bool) -> Result<(), SessionStop> {
+        self.close_command_outputs().await?;
         if self
             .terminal
             .as_ref()
@@ -1329,6 +1344,7 @@ impl Session {
     }
 
     async fn close_thread(&mut self) -> Result<(), SessionStop> {
+        self.close_command_outputs().await?;
         self.drop_terminal().await?;
         if let Some(thread) = self.thread.take() {
             self.interrupt(&thread.request_id).await?;
@@ -1469,6 +1485,7 @@ impl Session {
                 }
             }
             Command::Terminal(command) => self.terminal_command(command, events).await?,
+            Command::ObserveOutput(command) => self.command_output(command, events).await?,
             Command::RespondToRuntimeRequest(response) => {
                 self.respond_to_runtime_request(response, events).await?
             }
@@ -1966,6 +1983,8 @@ impl Session {
                     }
                 } else if self.terminal_matches(&request_id) {
                     self.terminal_chunk(values, events).await?;
+                } else if self.command_outputs.matches(&request_id) {
+                    self.command_outputs.chunk(&request_id, values, events);
                 } else if let Some(thread) = self
                     .thread
                     .as_mut()
@@ -2036,6 +2055,11 @@ impl Session {
                     .is_some_and(|(request, _)| request == &request_id)
                 {
                     self.draft_setup = None;
+                    return Ok(());
+                }
+                if self.command_outputs.matches(&request_id) {
+                    self.command_outputs
+                        .exit(&request_id, exit.into_result(), events);
                     return Ok(());
                 }
                 if let Some(project_id) = self.pending_git_checkouts.remove(&request_id) {
@@ -2420,6 +2444,7 @@ async fn run(
             events.send(stage.failure("The connection ended before loading launch settings."));
         }
         let thread_id = session.thread.take().map(|thread| thread.thread_id);
+        let command_outputs = session.command_outputs.inspections();
         let terminal = session.terminal_after_disconnect(events);
         drop(session);
         let mut last_error = reason;
@@ -2442,6 +2467,12 @@ async fn run(
             }
         };
         events.send(Event::Reconnected);
+        for inspection in command_outputs {
+            session
+                .command_output(command_output::Command::Open(inspection), events)
+                .await
+                .map_err(SessionStop::into_message)?;
+        }
     }
 }
 
@@ -2518,6 +2549,7 @@ async fn run_socket(
                     session.interrupt(&id).await?;
                 }
                 session.expire_terminal(events).await?;
+                session.expire_command_outputs(events).await?;
                 session.send(json!({"_tag": "Ping"})).await?;
             }
             command = commands.recv() => {

@@ -6,12 +6,14 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, Row};
 use serde::Serialize;
 use serde_json::Value;
 
+mod command_detail;
 mod fork;
 mod older_settled;
 mod shell_delta;
 mod shell_snapshot;
 mod thread_projection;
 
+pub(super) use command_detail::CommandDetail;
 pub(super) use older_settled::Request as OlderSettledRequest;
 pub(super) use shell_delta::ShellDeltaBatch;
 pub(super) use thread_projection::{

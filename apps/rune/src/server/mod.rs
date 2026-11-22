@@ -23,6 +23,7 @@ mod thread_commands;
 mod thread_launch;
 mod turn_commands;
 mod turn_worker;
+pub(crate) use turn_worker::{CommandColor, CommandPen, TerminalOutput};
 mod vcs_checkout;
 mod vcs_refs;
 mod vcs_status;
@@ -394,7 +395,7 @@ async fn descriptor(State(environment): State<SharedEnvironment>) -> Json<Value>
         "platform": {"os": os, "arch": arch},
         "serverVersion": env!("CARGO_PKG_VERSION"),
         "orchestrationProtocolVersion": PROTOCOL_VERSION,
-        "capabilities": {"t3ReadOnly": true, "t3ProjectWrites": local, "t3NamedProjects": local, "t3CloneProjects": local, "t3PromptWrites": local, "t3ThreadLaunch": local, "t3WorktreeLaunch": local, "t3RemoteWorktreeLaunch": local, "t3WorktreeSetup": local, "t3WorktreeQueue": local, "t3ShellHttp": local, "t3CheckoutSwitch": local, "t3ThreadStop": local, "t3ArchiveSnapshots": local, "t3ThreadVisits": local, "t3Terminal": local}
+        "capabilities": {"t3ReadOnly": true, "t3ProjectWrites": local, "t3NamedProjects": local, "t3CloneProjects": local, "t3PromptWrites": local, "t3ThreadLaunch": local, "t3WorktreeLaunch": local, "t3RemoteWorktreeLaunch": local, "t3WorktreeSetup": local, "t3WorktreeQueue": local, "t3ShellHttp": local, "t3CheckoutSwitch": local, "t3ThreadStop": local, "t3ArchiveSnapshots": local, "t3ThreadVisits": local, "t3Terminal": local, "commandOutputStreaming": local}
     }))
 }
 

@@ -10,6 +10,7 @@ use std::collections::VecDeque;
 use std::fmt::Write as _;
 
 use line::Line;
+pub(crate) use pen::{Color as CommandColor, Pen as CommandPen};
 use pen::{Pen, number};
 use tail::{trim_tail, utf16_len};
 
@@ -19,7 +20,7 @@ const MAX_PENDING_ESCAPE: usize = 64;
 const ESC: u8 = 0x1b;
 
 #[derive(Default)]
-pub(super) struct TerminalOutput {
+pub(crate) struct TerminalOutput {
     screen: Screen,
     text: String,
     pending: String,
@@ -27,7 +28,7 @@ pub(super) struct TerminalOutput {
 }
 
 impl TerminalOutput {
-    pub(super) fn append(&mut self, chunk: &str) {
+    pub(crate) fn append(&mut self, chunk: &str) {
         self.append_with_limit(chunk, TAIL_CHARS);
     }
 
@@ -57,11 +58,11 @@ impl TerminalOutput {
             trim_tail(&mut self.text, limit) || scrollback_truncated || self.screen.discarded;
     }
 
-    pub(super) fn text(&self) -> &str {
+    pub(crate) fn text(&self) -> &str {
         &self.text
     }
 
-    pub(super) fn truncated(&self) -> bool {
+    pub(crate) fn truncated(&self) -> bool {
         self.truncated
     }
 

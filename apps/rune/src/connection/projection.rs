@@ -1,3 +1,4 @@
+mod command;
 mod queue;
 mod transcript;
 
@@ -10,8 +11,9 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use super::launch::ModelSelection;
 use super::runtime_approval::{ApprovalDetails, ApprovalProjection, RuntimeRequest};
 use super::runtime_question::{QuestionDetails, QuestionProjection};
+pub(crate) use command::{CommandEntry, CommandOutputTarget, CommandStatus};
 pub(crate) use queue::QueuedMessage;
-pub(crate) use transcript::{ConversationEntry, TodoListEntry, TodoStepStatus};
+pub(crate) use transcript::{CompletedWork, ConversationEntry, TodoListEntry, TodoStepStatus};
 use transcript::{TimelineRun, Transcript};
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -520,6 +522,13 @@ impl ThreadProjection {
                     TimelineItem::UserMessage(entry) => ("user", entry),
                     TimelineItem::AssistantMessage(entry) => ("assistant", entry),
                     TimelineItem::TodoList(list) => return Some(ConversationEntry::TodoList(list)),
+                    TimelineItem::CommandExecution(mut command) => {
+                        if command.is_workspace_preparation() {
+                            return None;
+                        }
+                        command.set_source(row.source_thread_id, row.source_item_id);
+                        return Some(ConversationEntry::Command(command));
+                    }
                     _ => return None,
                 };
                 if let Some(mut message) = messages.remove(&entry.message_id) {
@@ -538,6 +547,10 @@ impl ThreadProjection {
 #[derive(Deserialize)]
 struct TimelineRow {
     item: TimelineItem,
+    #[serde(rename = "sourceThreadId")]
+    source_thread_id: Option<String>,
+    #[serde(rename = "sourceItemId")]
+    source_item_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -546,6 +559,7 @@ enum TimelineItem {
     UserMessage(TimelineMessage),
     AssistantMessage(TimelineMessage),
     TodoList(TodoListEntry),
+    CommandExecution(Box<CommandEntry>),
     ApprovalRequest(ApprovalDetails),
     UserInputRequest(QuestionDetails),
     #[serde(other)]
@@ -657,6 +671,12 @@ impl Conversation {
                     ThreadEvent::ItemUpdated {
                         payload: TimelineItem::TodoList(list),
                     } => self.transcript.upsert(ConversationEntry::TodoList(list)),
+                    ThreadEvent::ItemUpdated {
+                        payload: TimelineItem::CommandExecution(command),
+                    } => {
+                        !command.is_workspace_preparation()
+                            && self.transcript.upsert(ConversationEntry::Command(command))
+                    }
                     ThreadEvent::ItemUpdated {
                         payload: TimelineItem::ApprovalRequest(details),
                     } => self.approvals.detail(details),

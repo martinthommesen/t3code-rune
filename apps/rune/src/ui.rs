@@ -57,6 +57,7 @@ struct Conversation {
     queued_edit: Option<QueuedEdit>,
     expanded_todo_lists: HashSet<String>,
     expanded_work_runs: HashSet<String>,
+    command_panels: conversation::command_row::Panels,
     approvals: approval::Approvals,
     stop_available: bool,
     queue_worktree_available: bool,
@@ -476,6 +477,7 @@ impl State {
                     queued_edit: None,
                     expanded_todo_lists: HashSet::new(),
                     expanded_work_runs: HashSet::new(),
+                    command_panels: conversation::command_row::Panels::default(),
                     approvals: approval::Approvals::default(),
                     stop_available: false,
                     queue_worktree_available: false,
@@ -941,12 +943,20 @@ impl State {
             }
             Event::FolderBrowsed { browse_id, result } => self.folder_browsed(browse_id, result),
             Event::Thread { thread_id, entries } => {
+                conversation::command_row::entries_changed(self, &thread_id, &entries);
                 if let Some(conversation) = self.conversation_mut(&thread_id) {
                     if matches!(conversation.transcript, Transcript::Loading) {
                         tx.scroll_to_bottom(format!("transcript-{thread_id}"));
                     }
                     conversation.transcript = Transcript::Loaded(entries);
                 }
+            }
+            Event::CommandOutput {
+                thread_id,
+                attachment,
+                output,
+            } => {
+                conversation::command_row::update(self, &thread_id, attachment, output);
             }
             Event::QueuedMessages {
                 thread_id,

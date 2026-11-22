@@ -43,8 +43,12 @@ static COPY: Icon = glyph!(
     r#"<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>"#
 );
 
+mod command_ansi;
+pub(super) mod command_row;
 mod queued_runs;
+mod shell_command;
 mod todo_list;
+mod work_fold;
 
 #[derive(Clone, Copy)]
 pub(super) struct Layout {
@@ -255,7 +259,7 @@ pub(super) fn transcript(
         })
         .map_or(entries.len(), |first_user| first_user + 1);
     let (before, after) = entries.split_at(split);
-    let entry_row = |entry: &ConversationEntry| match entry {
+    let entry_row = |entry: &ConversationEntry, index: usize| match entry {
         ConversationEntry::Message(message) if message.role == "user" => Some(user_message(
             Some(conversation),
             message,
@@ -264,7 +268,22 @@ pub(super) fn transcript(
             colors,
         )),
         ConversationEntry::Message(message) => Some(response(message, colors)),
-        ConversationEntry::TodoList(list) => todo_list::view(conversation, list, colors),
+        ConversationEntry::TodoList(list) => todo_list::view(
+            conversation,
+            list,
+            colors,
+            entries
+                .get(index + 1)
+                .is_some_and(|next| entry.continues_work_before(next)),
+        ),
+        ConversationEntry::Command(command) => command_row::view(
+            conversation,
+            command,
+            colors,
+            entries
+                .get(index + 1)
+                .is_some_and(|next| entry.continues_work_before(next)),
+        ),
     };
     col()
         .key(format!("transcript-{}", conversation.id))
@@ -283,14 +302,24 @@ pub(super) fn transcript(
                 .pt(24.0)
                 .pb(16.0)
                 .selection_group(true)
-                .children(before.iter().filter_map(entry_row))
+                .children(
+                    before
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, entry)| entry_row(entry, index)),
+                )
                 .children(worktree_setup::view(
                     conversation,
                     entries.iter().filter_map(ConversationEntry::message),
                     workspace,
                     colors.fallbacks,
                 ))
-                .children(after.iter().filter_map(entry_row))
+                .children(
+                    after
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, entry)| entry_row(entry, split + index)),
+                )
                 .children(approval::rows(
                     &conversation.id,
                     &conversation.approvals,

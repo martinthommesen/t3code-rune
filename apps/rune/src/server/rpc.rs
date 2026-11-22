@@ -932,6 +932,21 @@ fn response(
     payload: Value,
 ) -> Value {
     match tag {
+        "orchestration.getTurnItem" => {
+            let Some(input) = super::store::CommandDetail::parse(payload) else {
+                return defect(id, "A thread and turn item ID are required.".into());
+            };
+            match store.command_detail(&input) {
+                Ok(item) => success(id, json!({"item": item})),
+                Err(_) => failure(
+                    id,
+                    RpcError::OrchestrationV2GetThreadProjectionError {
+                        thread_id: &input.thread_id,
+                        message: "Failed to load turn item",
+                    },
+                ),
+            }
+        }
         "orchestration.getArchivedShellSnapshot" if local.is_some() => {
             match store.live_archived_shell_snapshot() {
                 Ok(snapshot) => success(id, snapshot),

@@ -1,19 +1,19 @@
 use std::fmt::Write as _;
 
 #[derive(Clone, Copy, Default, Eq, PartialEq)]
-pub(super) struct Pen {
-    bold: bool,
-    dim: bool,
-    italic: bool,
-    underline: bool,
-    inverse: bool,
-    strike: bool,
-    foreground: Option<Color>,
-    background: Option<Color>,
+pub(crate) struct Pen {
+    pub(crate) bold: bool,
+    pub(crate) dim: bool,
+    pub(crate) italic: bool,
+    pub(crate) underline: bool,
+    pub(crate) inverse: bool,
+    pub(crate) strike: bool,
+    pub(crate) foreground: Option<Color>,
+    pub(crate) background: Option<Color>,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
-enum Color {
+pub(crate) enum Color {
     Standard(u8),
     Indexed(u8),
     Rgb(u8, u8, u8),
@@ -24,7 +24,7 @@ impl Pen {
         Self::default()
     }
 
-    pub(super) fn apply(&mut self, params: &str) {
+    pub(crate) fn apply(&mut self, params: &str) {
         if params.is_empty() {
             *self = Self::reset();
             return;
