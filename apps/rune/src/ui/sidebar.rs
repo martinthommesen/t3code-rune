@@ -12,6 +12,7 @@ use unicode_normalization::UnicodeNormalization;
 use crate::connection::ProviderCatalog;
 
 use super::navigation_history::Destination;
+use super::project_favicons::ProjectFavicons;
 use super::sidebar_header::{self, Colors, Layout};
 use super::{Project, ProjectView, Shell, State, Thread, Workspace};
 
@@ -248,7 +249,9 @@ pub(super) fn view(
         .picker
         .filter(|picker| *picker != ProjectPicker::Draft)
     {
-        sidebar = sidebar.child(project_picker(shell, picker, scope, colors, dark, false));
+        sidebar = sidebar.child(project_picker(
+            workspace, shell, picker, scope, colors, dark, false,
+        ));
     }
     sidebar
 }
@@ -326,7 +329,7 @@ fn toolbar(
                 })
                 .child(scope.map_or_else(
                     || icon(&FILTER, 16.0).color(icon_color).a11y_hidden(),
-                    |project| project_badge::view(project, dark),
+                    |project| project_badge::view(project, &workspace.favicons, dark),
                 )),
         );
     }
@@ -438,6 +441,7 @@ pub(super) fn draft_project_picker(
 ) -> Option<El> {
     Some(
         project_picker(
+            workspace,
             workspace.shell.as_ref()?,
             ProjectPicker::Draft,
             Some(project),
@@ -490,6 +494,7 @@ fn change_draft_project(state: &mut State, target: &str) {
 }
 
 fn project_picker(
+    workspace: &Workspace,
     shell: &Shell,
     picker: ProjectPicker,
     scope: Option<&Project>,
@@ -522,7 +527,7 @@ fn project_picker(
                 format!("project-option-{id}"),
                 &project.name,
                 scope.is_some_and(|current| current.id == id),
-                Some(project_badge::view(project, dark)),
+                Some(project_badge::view(project, &workspace.favicons, dark)),
                 colors,
             )
             .on_press_tx(move |state: &mut State, tx| {
@@ -623,6 +628,7 @@ fn thread_list(
 ) -> El {
     let mut projects = HashSet::new();
     let style = CardStyle {
+        favicons: &workspace.favicons,
         environment: &workspace.label,
         providers: workspace.providers.as_ref(),
         now: state.sidebar.now_minute,
@@ -680,7 +686,7 @@ fn thread_list(
                             .selection
                             .as_ref()
                             .is_some_and(|selection| selection.id == id),
-                        Some(project_badge::view(project, dark)),
+                        Some(project_badge::view(project, &workspace.favicons, dark)),
                         colors,
                     )
                     .on_press(move |state: &mut State| state.select_project(&id))
@@ -708,6 +714,7 @@ fn thread_list(
 
 #[derive(Clone, Copy)]
 struct CardStyle<'a> {
+    favicons: &'a ProjectFavicons,
     environment: &'a str,
     providers: Option<&'a ProviderCatalog>,
     now: i64,
@@ -725,6 +732,7 @@ fn thread_card(
     style: CardStyle<'_>,
 ) -> El {
     let CardStyle {
+        favicons,
         environment,
         providers,
         now,
@@ -757,7 +765,7 @@ fn thread_card(
         .gap(6.0)
         .grow(1.0)
         .min_w(0.0)
-        .child(project_badge::view(project, dark))
+        .child(project_badge::view(project, favicons, dark))
         .child(
             text(project.name.as_str())
                 .font(SMALL)

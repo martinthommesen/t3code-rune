@@ -127,7 +127,12 @@ pub(super) fn header(
         .center_y()
         .gap(6.0)
         .radius(4.0)
-        .child(project_badge::view_at(project, colors.fallbacks.dark, 14.0))
+        .child(project_badge::view_at(
+            project,
+            &workspace.favicons,
+            colors.fallbacks.dark,
+            14.0,
+        ))
         .child(
             text(&project.name)
                 .font(TOPBAR_TEXT)

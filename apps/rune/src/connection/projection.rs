@@ -25,6 +25,8 @@ pub(crate) struct Project {
     pub(crate) path: String,
     #[serde(rename = "projectIcon")]
     pub(crate) icon: Option<ProjectIcon>,
+    #[serde(rename = "faviconPath")]
+    pub(crate) favicon_path: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]

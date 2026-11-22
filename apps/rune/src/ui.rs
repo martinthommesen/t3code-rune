@@ -19,6 +19,7 @@ mod conversation;
 mod draft_hero;
 mod navigation_history;
 mod project;
+mod project_favicons;
 mod question;
 mod settings;
 mod sidebar;
@@ -88,6 +89,7 @@ struct ProjectSelection {
 }
 
 struct Workspace {
+    favicons: project_favicons::ProjectFavicons,
     label: String,
     read_only: bool,
     launch_writes: bool,
@@ -239,6 +241,7 @@ struct State {
     url: TextEdit,
     pairing_code: TextEdit,
     wake: Option<Waker>,
+    image_cache: Option<rune::ImageCache>,
     connection: Option<Connection>,
     connection_error: Option<String>,
     workspace: Option<Workspace>,
@@ -269,6 +272,7 @@ impl Default for State {
             url: TextEdit::new("http://127.0.0.1:3773"),
             pairing_code: TextEdit::new("").secure(),
             wake: None,
+            image_cache: None,
             connection: None,
             connection_error: None,
             workspace: None,
@@ -865,6 +869,9 @@ impl State {
             self.apply_event(event, tx);
             changed = true;
         }
+        if let Some(workspace) = &mut self.workspace {
+            changed |= workspace.favicons.poll();
+        }
         changed |= self.poll_project_browse();
         changed |= self.poll_question(clock);
         changed |= sidebar::poll_rename(self);
@@ -911,6 +918,7 @@ impl State {
                     self.draft_environment = Some(environment_id);
                 }
                 self.workspace = Some(Workspace {
+                    favicons: project_favicons::ProjectFavicons::default(),
                     label,
                     read_only,
                     launch_writes,
@@ -935,6 +943,11 @@ impl State {
             Event::Shell { projects, threads } => {
                 self.update_shell(Shell { projects, threads });
                 self.select_added_project();
+            }
+            Event::ProjectFavicon { target, image } => {
+                if let (Some(workspace), Some(cache)) = (&mut self.workspace, &self.image_cache) {
+                    workspace.favicons.loaded(target, image, cache);
+                }
             }
             Event::Providers(providers) => {
                 if let Some(workspace) = &mut self.workspace {
@@ -1305,6 +1318,13 @@ impl State {
                 let mut draft = None;
                 if let Some(workspace) = &mut self.workspace {
                     workspace.reconnecting = matches!(event, Event::Reconnecting);
+                    if workspace.reconnecting {
+                        workspace.favicons.connection_lost();
+                    } else if let (Some(shell), Some(connection)) =
+                        (&workspace.shell, &self.connection)
+                    {
+                        workspace.favicons.sync(&shell.projects, connection);
+                    }
                     if !workspace.reconnecting
                         && let Some(ProjectSelection { id, view }) = &mut workspace.selection
                     {
@@ -1373,6 +1393,9 @@ impl State {
             if !project_present {
                 workspace.selection = None;
             }
+        }
+        if let Some(connection) = &self.connection {
+            workspace.favicons.sync(&shell.projects, connection);
         }
         workspace.shell = Some(shell);
         if let Some(terminal) = &self.terminal
@@ -2032,6 +2055,7 @@ pub(crate) fn run(
         min_size: Some((400.0, 360.0)),
         fonts: &[include_bytes!("../assets/fonts/InterVariable.ttf")],
         setup: Some(|state: &mut State, wake| {
+            state.image_cache = Some(rune::ImageCache::new(wake.clone()));
             state.wake = Some(wake);
             state.connect();
         }),
@@ -2085,6 +2109,7 @@ mod tests {
                 name: "Example".into(),
                 path: "/example".into(),
                 icon: None,
+                favicon_path: None,
             }],
             threads: vec![Thread {
                 id: thread_id.into(),

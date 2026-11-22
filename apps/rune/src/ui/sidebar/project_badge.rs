@@ -1,8 +1,9 @@
 use rune::color::oklch;
-use rune::{Color, El, Family, Icon, TextStyle, el, icon, text};
+use rune::{Color, El, Family, Icon, SurfaceFit, TextStyle, el, icon, text};
 use unicode_normalization::UnicodeNormalization;
 
 use crate::connection::{Project, ProjectIcon};
+use crate::ui::project_favicons::ProjectFavicons;
 
 mod lucide;
 
@@ -70,11 +71,16 @@ fn project_identity(title: &str) -> (String, usize) {
     (monogram, color)
 }
 
-pub(super) fn view(project: &Project, dark: bool) -> El {
-    view_at(project, dark, 16.0)
+pub(super) fn view(project: &Project, favicons: &ProjectFavicons, dark: bool) -> El {
+    view_at(project, favicons, dark, 16.0)
 }
 
-pub(in crate::ui) fn view_at(project: &Project, dark: bool, size: f32) -> El {
+pub(in crate::ui) fn view_at(
+    project: &Project,
+    favicons: &ProjectFavicons,
+    dark: bool,
+    size: f32,
+) -> El {
     match &project.icon {
         Some(ProjectIcon::Monogram { text, color }) => {
             monogram(text, named_color(color, dark), size)
@@ -93,6 +99,13 @@ pub(in crate::ui) fn view_at(project: &Project, dark: bool, size: f32) -> El {
                 .a11y_hidden()
         }
         None | Some(ProjectIcon::Unknown) => {
+            if let Some(image) = favicons.image(project) {
+                return el()
+                    .size(size, size)
+                    .radius(size * 0.25)
+                    .pixels_fit(image.pixels(), SurfaceFit::Fit)
+                    .a11y_hidden();
+            }
             let (initials, index) = project_identity(&project.name);
             monogram(&initials, palette_color(index, dark), size)
         }

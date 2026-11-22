@@ -1,6 +1,7 @@
 mod browse;
 mod command_output;
 mod launch;
+mod project_favicon;
 mod projection;
 mod provider_metadata;
 mod queue_mutation;
@@ -34,6 +35,7 @@ use uuid::Uuid;
 pub(crate) use browse::FolderListing;
 pub(crate) use command_output::{CommandInspection, CommandOutput};
 pub(crate) use launch::Workspace as LaunchWorkspace;
+pub(crate) use project_favicon::{FaviconBytes, FaviconTarget};
 pub(crate) use projection::{
     CommandEntry, CommandOutputTarget, CommandStatus, CompletedWork, ConversationEntry, Message,
     Project, ProjectIcon, QueuedMessage, Thread, TodoListEntry, TodoStepStatus,
@@ -98,6 +100,10 @@ pub(crate) enum Event {
     Shell {
         projects: Vec<Project>,
         threads: Vec<Thread>,
+    },
+    ProjectFavicon {
+        target: FaviconTarget,
+        image: Option<FaviconBytes>,
     },
     Providers(ProviderCatalog),
     Thread {
@@ -210,6 +216,7 @@ pub(crate) enum Event {
 }
 
 enum Command {
+    LoadProjectFavicons(Vec<FaviconTarget>),
     OpenThread(String),
     CloseThread,
     ObserveOutput(command_output::Command),
@@ -344,6 +351,12 @@ pub(crate) enum ProjectCloneAction {
 }
 
 impl Connection {
+    pub(crate) fn load_project_favicons(&self, targets: Vec<FaviconTarget>) {
+        if !targets.is_empty() {
+            let _ = self.commands.send(Command::LoadProjectFavicons(targets));
+        }
+    }
+
     pub(crate) fn start(
         server_url: String,
         pairing_code: String,
@@ -966,6 +979,7 @@ enum ProjectCreation {
 }
 
 struct Session {
+    favicons: project_favicon::Favicons,
     socket: Socket,
     next_request_id: u64,
     shell: Shell,
@@ -1068,6 +1082,7 @@ impl Session {
             next_request_id: 0,
             shell,
             shell_request_id: String::new(),
+            favicons: project_favicon::Favicons::new(environment),
             initial_shell,
             archive: if capabilities
                 .archive_snapshots
@@ -1426,6 +1441,10 @@ impl Session {
         events: &EventSender<impl Fn()>,
     ) -> Result<(), SessionStop> {
         match command {
+            Command::LoadProjectFavicons(targets) => {
+                self.favicons.enqueue(targets);
+                self.request_project_favicons().await?;
+            }
             Command::OpenThread(thread_id) => self.open_thread(thread_id, true).await?,
             Command::CloseThread => self.close_thread().await?,
             Command::ObserveDraftWorktree(thread_id) => {
@@ -2049,6 +2068,11 @@ impl Session {
                 }
             }
             ServerFrame::Exit { request_id, exit } => {
+                if self.favicons.has_grant(&request_id) {
+                    self.favicons
+                        .resolve(&request_id, exit.into_result(), events);
+                    return self.request_project_favicons().await;
+                }
                 if self
                     .draft_setup
                     .as_ref()
@@ -2549,12 +2573,20 @@ async fn run_socket(
                     session.interrupt(&id).await?;
                 }
                 session.expire_terminal(events).await?;
+                session.favicons.expire(events);
+                session.request_project_favicons().await?;
                 session.expire_command_outputs(events).await?;
                 session.send(json!({"_tag": "Ping"})).await?;
             }
             command = commands.recv() => {
                 let Some(command) = command else { return Ok(()) };
                 session.command(command, events).await?;
+            }
+            download = session.favicons.next_download() => {
+                if let Some((target, image)) = download {
+                    events.send(Event::ProjectFavicon { target, image });
+                }
+                session.request_project_favicons().await?;
             }
             frame = session.socket.next() => {
                 let frame = frame
