@@ -73,6 +73,7 @@ async fn publishes_the_http_snapshot_before_replaying_the_socket() {
                 ws.on_upgrade(|mut socket| async move {
                     let request = read(&mut socket).await;
                     assert_eq!(request["tag"], "orchestration.subscribeShell");
+                    expect_config_subscription(&mut socket).await;
                     assert_eq!(
                         request["payload"],
                         json!({
@@ -232,6 +233,7 @@ async fn pairs_reads_sends_launches_and_recovers_without_replaying_mutations() {
 async fn serve_thread(mut socket: WebSocket) {
     let shell = read(&mut socket).await;
     assert_eq!(shell["tag"], "orchestration.subscribeShell");
+    expect_config_subscription(&mut socket).await;
     write(&mut socket, shell_snapshot(&shell["id"])).await;
     expect(&mut socket, "Ack", &shell["id"]).await;
 
@@ -380,6 +382,7 @@ fn disabled_and_hidden_project_models_inherit_the_environment_default() {
 async fn serve_restored_thread(mut socket: WebSocket) {
     let shell = read(&mut socket).await;
     assert_eq!(shell["tag"], "orchestration.subscribeShell");
+    expect_config_subscription(&mut socket).await;
     let thread = read(&mut socket).await;
     assert_eq!(thread["tag"], "orchestration.subscribeThread");
     assert_eq!(thread["payload"]["threadId"], "thread");
@@ -400,6 +403,19 @@ async fn serve_restored_thread(mut socket: WebSocket) {
         }]}),
     )
     .await;
+}
+
+async fn expect_config_subscription(socket: &mut WebSocket) {
+    let request = read(socket).await;
+    assert_eq!(request["tag"], "subscribeServerConfig");
+    assert_eq!(
+        request["payload"],
+        json!({
+            "workspaceSnapshotsOnDemand": true,
+            "providerCatalogsOnDemand": true,
+            "providerCatalogDigests": true,
+        }),
+    );
 }
 
 async fn expect(socket: &mut WebSocket, tag: &str, request_id: &Value) {
