@@ -22,6 +22,8 @@ mod selection;
 mod tabs;
 mod view;
 
+pub(super) use mouse::primary_paste_enabled;
+
 use control::TerminalScreen;
 pub(super) use menu::view as terminal_menu;
 use tabs::SplitDirection;
@@ -97,7 +99,10 @@ impl Pane {
             TerminalUpdate::Snapshot { snapshot } | TerminalUpdate::Restarted { snapshot } => {
                 self.snapshot(snapshot)
             }
-            TerminalUpdate::Output { data } => self.screen.process(data.as_bytes()),
+            TerminalUpdate::Output { data } => {
+                self.screen.process(data.as_bytes());
+                self.mouse.sync_mode(*self.screen.term.mode());
+            }
             TerminalUpdate::Activity {
                 cols,
                 rows,
@@ -141,6 +146,7 @@ impl Pane {
         self.wheel_remainder = 0.0;
         self.mouse = mouse::Mouse::default();
         self.screen.process(snapshot.history.as_bytes());
+        self.mouse.sync_mode(*self.screen.term.mode());
         self.screen.take_replies();
         self.status = snapshot.status;
         self.label = snapshot.label;
@@ -231,6 +237,7 @@ impl State {
                 continue;
             }
             pane.screen.finish_synchronized_update();
+            pane.mouse.sync_mode(*pane.screen.term.mode());
             let replies = pane.screen.take_replies();
             if !replies.is_empty()
                 && let Some(connection) = &self.connection
@@ -919,6 +926,7 @@ fn viewport(terminal: &Pane, active: bool, palette: Palette) -> El {
         .on_drag(move |state: &mut State, drag, tx| {
             state.terminal_pointer_drag(attachment, drag, tx)
         })
+        .pointer_buttons([rune::PointerButton::Middle])
         .on_pointer_move_local(move |state: &mut State, event, tx| {
             state.terminal_pointer_move(attachment, event, tx)
         })

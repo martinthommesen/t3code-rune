@@ -307,6 +307,7 @@ struct State {
     terminal: Option<terminal::Pane>,
     terminal_tabs: terminal::TabsByThread,
     terminal_peers: Vec<terminal::Pane>,
+    terminal_primary_paste: bool,
     thread_details: thread_details::Popover,
     file_preview: Option<file_preview::Preview>,
     thread_error_banner: thread_error_banner::Session,
@@ -346,6 +347,7 @@ impl Default for State {
             terminal: None,
             terminal_tabs: terminal::TabsByThread::default(),
             terminal_peers: Vec::new(),
+            terminal_primary_paste: false,
             thread_details: thread_details::Popover::default(),
             file_preview: None,
             thread_error_banner: thread_error_banner::Session::default(),
@@ -2421,6 +2423,7 @@ pub(crate) fn run(
         ..AppSpec::new("T3 Code", (1100.0, 780.0), State::default, view)
     };
     let local_environment = state_dir.is_some();
+    let terminal_primary_paste = terminal::primary_paste_enabled();
     let app = App::new(spec)
         .titlebar(rune::Titlebar::new(sidebar_header::HEIGHT))
         .chrome(rune::Chrome {
@@ -2435,6 +2438,7 @@ pub(crate) fn run(
                 client_settings,
                 local_environment,
                 onboarding,
+                terminal_primary_paste,
                 ..State::default()
             };
             if let Some(url) = url {

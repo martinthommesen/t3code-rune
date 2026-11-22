@@ -54,12 +54,8 @@ impl State {
         }
         let term = &mut pane.screen.term;
         let modes = *term.mode();
-        if modes.intersects(TermMode::MOUSE_MODE)
-            && !event.mods.shift
-            && !event.mods.ctrl
-            && !event.mods.logo
-            && !event.mods.cmd
-        {
+        if mouse::capture(modes, event.mods) {
+            pane.mouse.reset_motion();
             let button = if rows > 0 { 64 } else { 65 };
             let position = mouse::cell_at(pane, event.x, event.y);
             if let Some((data, binary)) = mouse::encode(modes, button, false, position, event.mods)
