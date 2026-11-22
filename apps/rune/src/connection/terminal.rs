@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
@@ -123,38 +124,35 @@ pub(super) struct Intent {
 
 #[derive(Default)]
 pub(super) struct Selection {
-    current: Mutex<Option<(u64, String)>>,
+    current: Mutex<HashMap<u64, TerminalTarget>>,
 }
 
 impl Selection {
     pub(super) fn attach(&self, intent: &Intent) {
-        *self.current.lock().expect("terminal selection lock") =
-            Some((intent.attachment, intent.attach.target.thread_id.clone()));
+        let mut current = self.current.lock().expect("terminal selection lock");
+        current.retain(|_, target| target != &intent.attach.target);
+        current.insert(intent.attachment, intent.attach.target.clone());
     }
 
     pub(super) fn detach(&self, attachment: u64) {
-        let mut current = self.current.lock().expect("terminal selection lock");
-        if current.as_ref().is_some_and(|(id, _)| *id == attachment) {
-            *current = None;
-        }
+        self.current
+            .lock()
+            .expect("terminal selection lock")
+            .remove(&attachment);
     }
 
     pub(super) fn keep_thread(&self, thread: Option<&str>) {
-        let mut current = self.current.lock().expect("terminal selection lock");
-        if current
-            .as_ref()
-            .is_some_and(|(_, id)| Some(id.as_str()) != thread)
-        {
-            *current = None;
-        }
+        self.current
+            .lock()
+            .expect("terminal selection lock")
+            .retain(|_, target| Some(target.thread_id.as_str()) == thread);
     }
 
     pub(super) fn includes(&self, attachment: u64) -> bool {
         self.current
             .lock()
             .expect("terminal selection lock")
-            .as_ref()
-            .is_some_and(|(id, _)| *id == attachment)
+            .contains_key(&attachment)
     }
 }
 
@@ -411,19 +409,35 @@ const CLOSE_UNCONFIRMED: &str = "The environment did not confirm that the termin
 
 impl Session {
     pub(super) async fn start_terminal(&mut self, intent: Intent) -> Result<(), SessionStop> {
+        if let Some(replaced) = self.terminals.values().find(|terminal| {
+            terminal.intent.attachment == intent.attachment
+                || terminal.intent.attach.target == intent.attach.target
+        }) {
+            self.drop_terminal(replaced.intent.attachment).await?;
+        }
         let request = self.allocate_id();
         let payload = intent.payload();
-        self.drop_terminal().await?;
-        self.terminal = Some(Subscription::new(request.clone(), intent));
+        self.terminals.insert(
+            intent.attachment,
+            Subscription::new(request.clone(), intent),
+        );
         self.send_request(&request, "terminal.attach", payload)
             .await
     }
 
-    pub(super) async fn drop_terminal(&mut self) -> Result<(), SessionStop> {
-        if let Some(terminal) = self.terminal.take() {
+    async fn drop_terminal(&mut self, attachment: u64) -> Result<(), SessionStop> {
+        if let Some(terminal) = self.terminals.remove(&attachment) {
             self.pending_terminal
-                .retain(|_, pending| !pending.kind.is_for_attachment(terminal.intent.attachment));
+                .retain(|_, pending| !pending.kind.is_for_attachment(attachment));
             self.interrupt(&terminal.request_id).await?;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn drop_terminals(&mut self) -> Result<(), SessionStop> {
+        let attachments: Vec<_> = self.terminals.keys().copied().collect();
+        for attachment in attachments {
+            self.drop_terminal(attachment).await?;
         }
         Ok(())
     }
@@ -464,18 +478,17 @@ impl Session {
             }
             return Ok(());
         }
-        let Some(terminal) = self.terminal.as_mut() else {
-            return Ok(());
-        };
-        let current = terminal.intent.attachment;
         match command {
-            Command::Detach(attachment) if attachment == current => self.drop_terminal().await?,
+            Command::Detach(attachment) => self.drop_terminal(attachment).await?,
             Command::Write {
                 attachment,
                 data,
                 binary,
                 reply,
-            } if attachment == current => {
+            } => {
+                let Some(terminal) = self.terminals.get(&attachment) else {
+                    return Ok(());
+                };
                 let action = if reply { Action::Reply } else { Action::Write };
                 if terminal.accepts_input() {
                     let inputs = terminal.inputs(&data, binary, reply);
@@ -491,8 +504,12 @@ impl Session {
                 attachment,
                 cols,
                 rows,
-            } if attachment == current => {
-                if let Some(payload) = terminal.resize(cols, rows) {
+            } => {
+                if let Some(payload) = self
+                    .terminals
+                    .get_mut(&attachment)
+                    .and_then(|terminal| terminal.resize(cols, rows))
+                {
                     self.issue_terminal_request(attachment, Action::Resize, payload)
                         .await?;
                 }
@@ -548,9 +565,9 @@ impl Session {
             return Ok(());
         }
         let attachment = self
-            .terminal
-            .as_mut()
-            .filter(|terminal| terminal.intent.attach.target == target)
+            .terminals
+            .values_mut()
+            .find(|terminal| terminal.intent.attach.target == target)
             .map(|terminal| {
                 terminal.closing = true;
                 terminal.intent.attachment
@@ -573,20 +590,20 @@ impl Session {
 
     pub(super) async fn terminal_chunk(
         &mut self,
+        attachment: u64,
         values: Vec<Value>,
         events: &EventSender<impl Fn()>,
     ) -> Result<(), SessionStop> {
         for value in values {
-            let Some(terminal) = self.terminal.as_mut() else {
+            let Some(terminal) = self.terminals.get_mut(&attachment) else {
                 break;
             };
-            let attachment = terminal.intent.attachment;
             match terminal.receive(value) {
                 Ok(Some((update, resize))) => {
                     let closed = matches!(update, TerminalUpdate::Closed);
                     events.send(Event::Terminal { attachment, update });
                     if closed {
-                        self.drop_terminal().await?;
+                        self.drop_terminal(attachment).await?;
                         break;
                     }
                     if resize {
@@ -598,7 +615,7 @@ impl Session {
                 Ok(None) => {}
                 Err(message) => {
                     terminal_error(events, attachment, &message);
-                    self.drop_terminal().await?;
+                    self.drop_terminal(attachment).await?;
                     break;
                 }
             }
@@ -624,12 +641,12 @@ impl Session {
                     }
                 }
             }
-        } else if let Some(terminal) = self.terminal.take() {
+        } else if let Some(attachment) = self.terminal_attachment(request_id) {
+            self.terminals.remove(&attachment);
             let message = exit
                 .into_result()
                 .err()
                 .unwrap_or_else(|| "The terminal stream ended.".to_owned());
-            let attachment = terminal.intent.attachment;
             self.pending_terminal
                 .retain(|_, operation| !operation.kind.is_for_attachment(attachment));
             terminal_error(events, attachment, &message);
@@ -646,11 +663,8 @@ impl Session {
     ) -> Result<(), SessionStop> {
         let can_fallback = matches!(&exit, RpcExit::Failure { cause } if cause.iter().any(|cause| matches!(cause, RpcCause::Fail { .. })));
         let result = exit.into_result().map(|_| ());
-        let terminal = self
-            .terminal
-            .as_mut()
-            .filter(|term| Some(term.intent.attachment) == attachment);
-        let closed = result.is_ok() && terminal.is_some();
+        let terminal = attachment.and_then(|attachment| self.terminals.get_mut(&attachment));
+        let closed = attachment.filter(|_| result.is_ok() && terminal.is_some());
         if let Some(terminal) = terminal {
             let attachment = terminal.intent.attachment;
             match &result {
@@ -665,8 +679,8 @@ impl Session {
             }
         }
         terminal_close_settled(events, target.clone(), result);
-        if closed {
-            self.drop_terminal().await?;
+        if let Some(attachment) = closed {
+            self.drop_terminal(attachment).await?;
         } else if can_fallback && self.allows_terminal_target(&target) {
             let request = self.allocate_id();
             self.send_request(
@@ -683,27 +697,31 @@ impl Session {
         Ok(())
     }
 
-    pub(super) fn terminal_matches(&self, request_id: &str) -> bool {
-        self.terminal
-            .as_ref()
-            .is_some_and(|terminal| terminal.request_id == request_id)
+    pub(super) fn terminal_attachment(&self, request_id: &str) -> Option<u64> {
+        self.terminals.iter().find_map(|(&attachment, terminal)| {
+            (terminal.request_id == request_id).then_some(attachment)
+        })
     }
 
     pub(super) async fn expire_terminal(
         &mut self,
         events: &EventSender<impl Fn()>,
     ) -> Result<(), SessionStop> {
-        if let Some(terminal) = &self.terminal
-            && terminal.timed_out(REQUEST_TIMEOUT)
-        {
+        let expired: Vec<_> = self
+            .terminals
+            .values()
+            .filter(|terminal| terminal.timed_out(REQUEST_TIMEOUT))
+            .map(|terminal| terminal.intent.attachment)
+            .collect();
+        for attachment in expired {
             terminal_error(
                 events,
-                terminal.intent.attachment,
+                attachment,
                 "The environment did not attach the terminal in time.",
             );
-            self.drop_terminal().await?;
+            self.drop_terminal(attachment).await?;
         }
-        let active = &mut self.terminal;
+        let active = &mut self.terminals;
         self.pending_terminal.retain(|_, operation| {
             if operation.started.elapsed() < REQUEST_TIMEOUT {
                 return true;
@@ -718,10 +736,7 @@ impl Session {
                         target.clone(),
                         Err(CLOSE_UNCONFIRMED.to_owned()),
                     );
-                    if let Some(terminal) = active
-                        .as_mut()
-                        .filter(|term| Some(term.intent.attachment) == *attachment)
-                    {
+                    if let Some(terminal) = attachment.and_then(|id| active.get_mut(&id)) {
                         terminal.closing = false;
                         terminal_error(events, terminal.intent.attachment, CLOSE_UNCONFIRMED);
                     }
@@ -735,21 +750,29 @@ impl Session {
     pub(super) fn terminal_after_disconnect(
         &mut self,
         events: &EventSender<impl Fn()>,
-    ) -> Option<Intent> {
+    ) -> Vec<Intent> {
         let operations = std::mem::take(&mut self.pending_terminal);
         for operation in operations.values() {
             if let Operation::Close { target, .. } = &operation.kind {
                 terminal_close_settled(events, target.clone(), Err(CLOSE_UNCONFIRMED.to_owned()));
             }
         }
-        let terminal = self.terminal.take()?;
-        if operations.values().any(|operation| matches!(operation.kind, Operation::Active { attachment, action: Action::Write } if attachment == terminal.intent.attachment)) {
-            terminal_error(events, terminal.intent.attachment, Action::Write.unconfirmed());
-        }
-        if terminal.closing {
-            terminal_error(events, terminal.intent.attachment, CLOSE_UNCONFIRMED);
-        }
-        (!terminal.closing).then_some(terminal.intent)
+        std::mem::take(&mut self.terminals)
+            .into_values()
+            .filter_map(|terminal| {
+                let attachment_id = terminal.intent.attachment;
+                if operations.values().any(|operation| {
+                    matches!(operation.kind, Operation::Active { attachment, action: Action::Write }
+                        if attachment == attachment_id)
+                }) {
+                    terminal_error(events, attachment_id, Action::Write.unconfirmed());
+                }
+                if terminal.closing {
+                    terminal_error(events, attachment_id, CLOSE_UNCONFIRMED);
+                }
+                (!terminal.closing).then_some(terminal.intent)
+            })
+            .collect()
     }
 }
 

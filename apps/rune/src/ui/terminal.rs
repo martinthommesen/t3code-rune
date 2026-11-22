@@ -11,6 +11,7 @@ mod tabs;
 mod view;
 
 use control::TerminalControl;
+use tabs::SplitDirection;
 pub(super) use tabs::TabsByThread;
 
 const DEFAULT_COLS: u16 = 80;
@@ -143,37 +144,60 @@ impl State {
     }
 
     pub(super) fn update_terminal_focus(&mut self, tx: &Tx) {
-        let Some(terminal) = &mut self.terminal else {
-            return;
-        };
-        let focused = self.window_focused && tx.focused() == Some(INPUT_KEY);
-        if std::mem::replace(&mut terminal.focused, focused) != focused
-            && terminal.status == TerminalStatus::Running
-            && terminal.screen.callbacks().focus_reporting
-            && self
-                .workspace
-                .as_ref()
-                .is_some_and(|workspace| !workspace.reconnecting)
-            && let Some(connection) = &self.connection
+        let focus = self.window_focused && tx.focused() == Some(INPUT_KEY);
+        let can_report = self
+            .workspace
+            .as_ref()
+            .is_some_and(|workspace| !workspace.reconnecting);
+        for (terminal, focused) in self
+            .terminal
+            .iter_mut()
+            .map(|terminal| (terminal, focus))
+            .chain(
+                self.terminal_peers
+                    .iter_mut()
+                    .map(|terminal| (terminal, false)),
+            )
         {
-            connection.write_terminal(
-                terminal.attachment,
-                if focused { "\x1b[I" } else { "\x1b[O" }.into(),
-                false,
-                false,
-            );
+            if std::mem::replace(&mut terminal.focused, focused) != focused
+                && terminal.status == TerminalStatus::Running
+                && terminal.screen.callbacks().focus_reporting
+                && can_report
+                && let Some(connection) = &self.connection
+            {
+                connection.write_terminal(
+                    terminal.attachment,
+                    if focused { "\x1b[I" } else { "\x1b[O" }.into(),
+                    false,
+                    false,
+                );
+            }
         }
     }
 
-    pub(super) fn send_terminal_replies(&mut self) {
-        let Some(terminal) = &mut self.terminal else {
+    fn terminal_attachment_mut(&mut self, attachment: u64) -> Option<&mut Pane> {
+        self.terminal
+            .iter_mut()
+            .chain(&mut self.terminal_peers)
+            .find(|pane| pane.attachment == attachment)
+    }
+
+    pub(super) fn apply_terminal_update(&mut self, attachment: u64, update: TerminalUpdate) {
+        let Some(terminal) = self.terminal_attachment_mut(attachment) else {
             return;
         };
+        terminal.apply(update);
         let replies = terminal.screen.callbacks_mut().take_replies();
         if !replies.is_empty()
             && let Some(connection) = &self.connection
         {
-            connection.write_terminal(terminal.attachment, replies, false, true);
+            connection.write_terminal(attachment, replies, false, true);
+        }
+    }
+
+    pub(super) fn fail_terminal_attachment(&mut self, attachment: u64, message: String) {
+        if let Some(terminal) = self.terminal_attachment_mut(attachment) {
+            terminal.fail(message);
         }
     }
 
@@ -220,7 +244,6 @@ impl State {
             terminal_id: terminal_id.to_owned(),
         };
         if self.terminal_tabs.select_observed(&target, &script.name) {
-            self.detach_terminal_pane();
             self.attach_selected_terminal(tx);
         }
     }
@@ -251,49 +274,98 @@ impl State {
         }) else {
             return;
         };
+        if self.connection.is_none() {
+            return;
+        }
+        let thread_id = thread.id.clone();
+        let worktree = thread.worktree_path.as_ref();
+        let cwd = worktree.unwrap_or(&project.path);
+        let tabs = self.terminal_tabs.ensure(&thread_id);
+        let Some(group) = tabs.active_group() else {
+            return;
+        };
+        let selected = tabs.selected().id.clone();
+        let targets: Vec<_> = group
+            .members
+            .iter()
+            .filter_map(|id| tabs.tab(id))
+            .map(|tab| TerminalAttach {
+                target: TerminalTarget {
+                    thread_id: thread_id.clone(),
+                    terminal_id: tab.id.clone(),
+                },
+                cwd: tab.observed_label.is_none().then(|| cwd.clone()),
+                worktree_path: worktree.cloned(),
+                cols: DEFAULT_COLS,
+                rows: DEFAULT_ROWS,
+                resume: tab.resume,
+            })
+            .collect();
+        let mut visible = Vec::with_capacity(targets.len());
+        for pane in self
+            .terminal
+            .take()
+            .into_iter()
+            .chain(std::mem::take(&mut self.terminal_peers))
+        {
+            if pane.thread_id == thread_id
+                && targets
+                    .iter()
+                    .any(|target| target.target.terminal_id == pane.terminal_id)
+            {
+                visible.push(pane);
+            } else {
+                self.detach_one_terminal(pane);
+            }
+        }
         let Some(connection) = &self.connection else {
             return;
         };
-        let tab = self.terminal_tabs.ensure(&thread.id).selected();
-        let attachment = connection.attach_terminal(TerminalAttach {
-            target: TerminalTarget {
-                thread_id: thread.id.clone(),
-                terminal_id: tab.id.clone(),
-            },
-            cwd: tab.observed_label.is_none().then(|| {
-                thread
-                    .worktree_path
-                    .as_deref()
-                    .unwrap_or(&project.path)
-                    .to_owned()
-            }),
-            worktree_path: thread.worktree_path.clone(),
-            cols: DEFAULT_COLS,
-            rows: DEFAULT_ROWS,
-            resume: tab.resume,
-        });
-        self.terminal = Some(Pane::new(attachment, thread.id.clone(), tab.id.clone()));
-        tx.focus(INPUT_KEY, false);
+        for target in targets {
+            if visible
+                .iter()
+                .any(|pane| pane.terminal_id == target.target.terminal_id)
+            {
+                continue;
+            }
+            let id = target.target.terminal_id.clone();
+            let attachment = connection.attach_terminal(target);
+            visible.push(Pane::new(attachment, thread_id.clone(), id));
+        }
+        if let Some(index) = visible.iter().position(|pane| pane.terminal_id == selected) {
+            self.terminal = Some(visible.swap_remove(index));
+            self.terminal_peers = visible;
+            tx.focus_when_shown(INPUT_KEY, false);
+        }
     }
 
     pub(super) fn detach_terminal_pane(&mut self) {
-        if let Some(terminal) = self.terminal.take() {
-            if let Some(tabs) = self.terminal_tabs.get_mut(&terminal.thread_id) {
-                tabs.remember(&terminal);
+        for pane in self
+            .terminal
+            .take()
+            .into_iter()
+            .chain(std::mem::take(&mut self.terminal_peers))
+        {
+            self.detach_one_terminal(pane);
+        }
+    }
+
+    fn detach_one_terminal(&mut self, terminal: Pane) {
+        if let Some(tabs) = self.terminal_tabs.get_mut(&terminal.thread_id) {
+            tabs.remember(&terminal);
+        }
+        if let Some(connection) = &self.connection {
+            if terminal.focused
+                && terminal.status == TerminalStatus::Running
+                && terminal.screen.callbacks().focus_reporting
+                && self
+                    .workspace
+                    .as_ref()
+                    .is_some_and(|workspace| !workspace.reconnecting)
+            {
+                connection.write_terminal(terminal.attachment, "\x1b[O".into(), false, false);
             }
-            if let Some(connection) = &self.connection {
-                if terminal.focused
-                    && terminal.status == TerminalStatus::Running
-                    && terminal.screen.callbacks().focus_reporting
-                    && self
-                        .workspace
-                        .as_ref()
-                        .is_some_and(|workspace| !workspace.reconnecting)
-                {
-                    connection.write_terminal(terminal.attachment, "\x1b[O".into(), false, false);
-                }
-                connection.detach_terminal(terminal.attachment);
-            }
+            connection.detach_terminal(terminal.attachment);
         }
     }
 
@@ -313,8 +385,25 @@ impl State {
         if let Some(pane) = &self.terminal
             && self.terminal_tabs.append(&pane.thread_id)
         {
-            self.detach_terminal_pane();
             self.attach_selected_terminal(tx);
+        }
+    }
+
+    fn split_terminal(&mut self, direction: SplitDirection, tx: &mut Tx) {
+        if self.terminal_tab_actions_enabled()
+            && let Some(pane) = &self.terminal
+            && self.terminal_tabs.split(&pane.thread_id, direction)
+        {
+            self.attach_selected_terminal(tx);
+        }
+    }
+
+    fn activate_terminal_attachment(&mut self, attachment: u64, tx: &mut Tx) {
+        if let Some(id) = self
+            .terminal_attachment_mut(attachment)
+            .map(|pane| pane.terminal_id.clone())
+        {
+            self.select_terminal_tab(&id, tx);
         }
     }
 
@@ -326,7 +415,6 @@ impl State {
             && let Some(tabs) = self.terminal_tabs.get_mut(&pane.thread_id)
         {
             if tabs.select(id) {
-                self.detach_terminal_pane();
                 self.attach_selected_terminal(tx);
             } else if pane.terminal_id == id {
                 tx.focus(INPUT_KEY, false);
@@ -393,10 +481,11 @@ impl State {
             connection.close_terminal(prompt.target, true);
             if closing_selected {
                 pane.focused = false;
-                self.detach_terminal_pane();
             }
-            if closing_selected && self.terminal_tabs.get(&thread_id).is_some() {
+            if self.terminal_tabs.get(&thread_id).is_some() {
                 self.attach_selected_terminal(tx);
+            } else {
+                self.detach_terminal_pane();
             }
         }
     }
@@ -429,17 +518,15 @@ impl State {
     pub(super) fn terminal_view(&self, terminal: &Pane, palette: Palette) -> El {
         view::drawer(
             terminal,
+            &self.terminal_peers,
             self.terminal_tabs.get(&terminal.thread_id),
             palette,
             self.terminal_tab_actions_enabled(),
         )
     }
 
-    fn resize_terminal_pane(&mut self, [_, _, width, height]: [f32; 4]) {
-        let Some(terminal) = &mut self.terminal else {
-            return;
-        };
-        let Some(connection) = &self.connection else {
+    fn resize_terminal_pane(&mut self, attachment: u64, [_, _, width, height]: [f32; 4]) {
+        let Some(terminal) = self.terminal_attachment_mut(attachment) else {
             return;
         };
         if width <= 8.0 || height <= LINE_HEIGHT {
@@ -451,7 +538,9 @@ impl State {
         );
         if grid != terminal.requested_grid {
             terminal.requested_grid = grid;
-            connection.resize_terminal(terminal.attachment, grid.0, grid.1);
+            if let Some(connection) = &self.connection {
+                connection.resize_terminal(attachment, grid.0, grid.1);
+            }
         }
     }
 
@@ -532,6 +621,8 @@ impl State {
         match self.resolve_shortcut(event, tx) {
             Some("terminal.toggle") => self.detach_terminal_pane(),
             Some("terminal.new") => self.new_terminal_tab(tx),
+            Some("terminal.split") => self.split_terminal(SplitDirection::Horizontal, tx),
+            Some("terminal.splitVertical") => self.split_terminal(SplitDirection::Vertical, tx),
             Some("terminal.close") => {
                 if !tx.key_repeat() {
                     self.request_selected_terminal_close(tx);
@@ -588,7 +679,13 @@ fn key_input(event: &KeyEvent, application_cursor: bool) -> Option<String> {
     })
 }
 
-fn viewport(terminal: &Pane, palette: Palette) -> El {
+fn viewport(terminal: &Pane, active: bool, palette: Palette) -> El {
+    let attachment = terminal.attachment;
+    let key = if active {
+        INPUT_KEY.to_owned()
+    } else {
+        format!("{INPUT_KEY}-{attachment}")
+    };
     let (contents, spans) = screen_text(terminal, palette);
     let mut output = col().w_full().grow(1.0).min_h(0.0).clip_rounded(0.0).child(
         text(contents)
@@ -602,7 +699,7 @@ fn viewport(terminal: &Pane, palette: Palette) -> El {
     } else if terminal.status == TerminalStatus::Starting {
         output = output.child(text("Opening terminal…").font(SMALL).color(palette.muted));
     }
-    el().key(INPUT_KEY)
+    el().key(key)
         .role("group")
         .label("Terminal input")
         .w_full()
@@ -610,10 +707,12 @@ fn viewport(terminal: &Pane, palette: Palette) -> El {
         .min_w(0.0)
         .min_h(0.0)
         .px(4.0)
-        .focusable(true)
-        .on_press_tx(|_: &mut State, tx| tx.focus(INPUT_KEY, false))
+        .on_background_press_tx(move |state: &mut State, tx| {
+            state.activate_terminal_attachment(attachment, tx)
+        })
+        .focusable(active)
         .on_key(State::terminal_key)
-        .on_layout(State::resize_terminal_pane)
+        .on_layout(move |state: &mut State, rect| state.resize_terminal_pane(attachment, rect))
         .child(output)
 }
 

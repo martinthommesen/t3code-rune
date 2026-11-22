@@ -2,7 +2,11 @@ use rune::color::hex;
 use rune::{Color, El, Icon, Key, ScrollSpec, TextStyle, Tx, col, el, icon, row, text};
 
 use super::super::{Palette, State, button};
-use super::{Pane, TerminalStatus, tabs::Tabs, viewport};
+use super::{
+    Pane, TerminalStatus,
+    tabs::{MAX_TERMINALS_PER_GROUP, SplitDirection, Tabs},
+    viewport,
+};
 
 const GROUP_TEXT: TextStyle = TextStyle::new(11.0, 400.0).lh(14.0);
 const TAB_TEXT: TextStyle = TextStyle::new(12.0, 400.0).lh(16.0);
@@ -35,12 +39,42 @@ static SQUARE: Icon = glyph!(
     "square",
     r#"<rect width="18" height="18" x="3" y="3" rx="2"/>"#
 );
+static SPLIT_HORIZONTAL: Icon = glyph!(
+    "square-split-horizontal",
+    r#"<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M12 3v18"/>"#
+);
+static SPLIT_VERTICAL: Icon = glyph!(
+    "square-split-vertical",
+    r#"<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 12h18"/>"#
+);
 static SQUARE_TERMINAL: Icon = glyph!(
     "square-terminal",
     r#"<rect width="18" height="18" x="3" y="3" rx="2"/><path d="m7 11 2 2-2 2m5 0h4"/>"#
 );
 
-pub(super) fn drawer(terminal: &Pane, tabs: Option<&Tabs>, palette: Palette, enabled: bool) -> El {
+pub(super) fn drawer(
+    terminal: &Pane,
+    peers: &[Pane],
+    tabs: Option<&Tabs>,
+    palette: Palette,
+    enabled: bool,
+) -> El {
+    let group = tabs.and_then(Tabs::active_group);
+    let direction = group.map_or(SplitDirection::Horizontal, |group| group.direction);
+    let ordered: Vec<_> = group.map_or_else(
+        || vec![terminal],
+        |group| {
+            group
+                .members
+                .iter()
+                .filter_map(|id| {
+                    std::iter::once(terminal)
+                        .chain(peers)
+                        .find(|pane| &pane.terminal_id == id)
+                })
+                .collect()
+        },
+    );
     let mut drawer = row()
         .key("terminal-drawer")
         .w_full()
@@ -54,21 +88,51 @@ pub(super) fn drawer(terminal: &Pane, tabs: Option<&Tabs>, palette: Palette, ena
                 format!("Terminal: {}", terminal.label)
             },
         )
-        .child(
-            col()
-                .key(format!("terminal-surface-{}", terminal.attachment))
-                .grow(1.0)
-                .min_w(0.0)
-                .min_h(0.0)
-                .child(viewport(terminal, palette)),
-        );
+        .child(pane_group(
+            &ordered,
+            terminal.attachment,
+            direction,
+            palette,
+        ));
     let border = palette.canvas.mix(palette.line, 0.7);
+    let at_limit = ordered.len() >= MAX_TERMINALS_PER_GROUP;
+    let (side_label, stack_label) = if at_limit {
+        (
+            format!("Split Terminal Horizontally (max {MAX_TERMINALS_PER_GROUP} per group)"),
+            format!("Split Terminal Vertically (max {MAX_TERMINALS_PER_GROUP} per group)"),
+        )
+    } else {
+        (
+            "Split Terminal Horizontally".to_owned(),
+            "Split Terminal Vertically".to_owned(),
+        )
+    };
     let actions = row()
         .h(22.0)
         .child(action(
+            "terminal-split-horizontal",
+            &side_label,
+            (!at_limit).then_some("D"),
+            &SPLIT_HORIZONTAL,
+            palette,
+            enabled && !at_limit,
+            |state, tx| state.split_terminal(SplitDirection::Horizontal, tx),
+        ))
+        .child(el().w(1.0).h_full().fill(border))
+        .child(action(
+            "terminal-split-vertical",
+            &stack_label,
+            (!at_limit).then_some("Shift+D"),
+            &SPLIT_VERTICAL,
+            palette,
+            enabled && !at_limit,
+            |state, tx| state.split_terminal(SplitDirection::Vertical, tx),
+        ))
+        .child(el().w(1.0).h_full().fill(border))
+        .child(action(
             "terminal-new",
             "New Terminal",
-            'N',
+            Some("N"),
             &PLUS,
             palette,
             enabled,
@@ -78,7 +142,7 @@ pub(super) fn drawer(terminal: &Pane, tabs: Option<&Tabs>, palette: Palette, ena
         .child(action(
             "terminal-close",
             "Close Terminal",
-            'W',
+            Some("W"),
             &TRASH,
             palette,
             enabled,
@@ -100,10 +164,46 @@ pub(super) fn drawer(terminal: &Pane, tabs: Option<&Tabs>, palette: Palette, ena
     drawer
 }
 
+fn pane_group(panes: &[&Pane], active: u64, direction: SplitDirection, palette: Palette) -> El {
+    let mut surface = match direction {
+        SplitDirection::Horizontal => row(),
+        SplitDirection::Vertical => col(),
+    }
+    .key("terminal-split-panes")
+    .grow(1.0)
+    .min_w(0.0)
+    .min_h(0.0)
+    .h_full();
+    for (index, pane) in panes.iter().enumerate() {
+        let selected = pane.attachment == active;
+        let child = col()
+            .key(format!("terminal-surface-{}", pane.attachment))
+            .grow(1.0)
+            .min_w(0.0)
+            .min_h(0.0)
+            .child(viewport(pane, selected, palette));
+        let (child, edges) = match direction {
+            SplitDirection::Horizontal => (child.w(0.0).h_full(), [0.0, 0.0, 0.0, 1.0]),
+            SplitDirection::Vertical => (child.w_full().h(0.0), [1.0, 0.0, 0.0, 0.0]),
+        };
+        surface = surface.child(if index == 0 {
+            child
+        } else {
+            let border = if selected {
+                palette.line
+            } else {
+                palette.canvas.mix(palette.line, 0.7)
+            };
+            child.border_sides(edges, border)
+        });
+    }
+    surface
+}
+
 fn action(
     key: &str,
     label: &str,
-    shortcut: char,
+    shortcut: Option<&str>,
     glyph: &'static Icon,
     palette: Palette,
     enabled: bool,
@@ -113,7 +213,6 @@ fn action(
         .key(key)
         .role("button")
         .label(label)
-        .shortcut_hint(format!("{PRIMARY_SHORTCUT}+{shortcut}"))
         .w(22.0)
         .h_full()
         .center()
@@ -122,6 +221,10 @@ fn action(
                 .color(if enabled { palette.ink } else { palette.muted })
                 .a11y_hidden(),
         );
+    let action = match shortcut {
+        Some(shortcut) => action.shortcut_hint(format!("{PRIMARY_SHORTCUT}+{shortcut}")),
+        None => action,
+    };
     if enabled {
         action
             .focusable(true)
@@ -140,14 +243,25 @@ fn tab_sidebar(tabs: &Tabs, actions: El, palette: Palette, enabled: bool) -> El 
     let mut list = col().w_full().gap(2.0).px(4.0).py(4.0).scroll(ScrollSpec {
         stick_bottom: false,
     });
-    for tab in &tabs.entries {
-        let active = tab.id == tabs.selected().id;
-        let group_id = tab.id.clone();
-        let tab_id = tab.id.clone();
-        let tab_label = tab.label();
+    for group in &tabs.groups {
+        let selected = tabs.selected();
+        let active = group.members.contains(&selected.id);
+        let group_tab = if active {
+            selected.id.clone()
+        } else {
+            group.members[0].clone()
+        };
+        let (title, glyph) = if group.members.len() == 1 {
+            ("Single", &SQUARE)
+        } else {
+            match group.direction {
+                SplitDirection::Horizontal => ("Side by side", &SPLIT_HORIZONTAL),
+                SplitDirection::Vertical => ("Stacked", &SPLIT_VERTICAL),
+            }
+        };
         let ink = if active { palette.ink } else { palette.muted };
         let heading = row()
-            .key(format!("terminal-group-{}", tab.id))
+            .key(format!("terminal-group-{}", group.id))
             .role("button")
             .w_full()
             .h(22.0)
@@ -160,47 +274,60 @@ fn tab_sidebar(tabs: &Tabs, actions: El, palette: Palette, enabled: bool) -> El 
             } else {
                 Color::TRANSPARENT
             })
-            .child(icon(&SQUARE, 12.0).color(ink).a11y_hidden())
+            .child(icon(glyph, 12.0).color(ink).a11y_hidden())
             .child(
                 el().grow(1.0)
-                    .child(text("Single").font(GROUP_TEXT).color(ink)),
+                    .child(text(title).font(GROUP_TEXT).color(ink)),
             )
-            .child(text("1").font(GROUP_TEXT).color(palette.muted))
+            .child(
+                text(group.members.len().to_string())
+                    .font(GROUP_TEXT)
+                    .color(palette.muted),
+            )
             .disabled(!enabled)
             .focusable(enabled)
             .hover(palette.hover)
-            .on_press_tx(move |state: &mut State, tx| state.select_terminal_tab(&group_id, tx));
-        let tab_row = row()
-            .w_full()
-            .h(24.0)
-            .items_center()
-            .px(6.0)
-            .gap(2.0)
-            .radius(6.0)
-            .hover_group()
-            .fill(if active {
-                active_fill
-            } else {
-                Color::TRANSPARENT
-            })
-            .hover(active_fill)
-            .child(tab_close_button(&tab.id, &tab_label, ink, palette, enabled))
-            .child(
+            .on_press_tx(move |state: &mut State, tx| state.select_terminal_tab(&group_tab, tx));
+        let mut group_view = col().w_full().child(heading);
+        for tab in group.members.iter().filter_map(|id| tabs.tab(id)) {
+            let active = tab.id == selected.id;
+            let tab_id = tab.id.clone();
+            let tab_label = tab.label();
+            let ink = if active { palette.ink } else { palette.muted };
+            group_view = group_view.child(
                 row()
-                    .key(format!("terminal-tab-{}", tab.id))
-                    .role("button")
-                    .checked(active)
-                    .grow(1.0)
-                    .h_full()
+                    .w_full()
+                    .h(24.0)
                     .items_center()
-                    .disabled(!enabled)
-                    .focusable(enabled)
-                    .child(text(tab_label).font(TAB_TEXT).color(ink))
-                    .on_press_tx(move |state: &mut State, tx| {
-                        state.select_terminal_tab(&tab_id, tx)
-                    }),
+                    .px(6.0)
+                    .gap(2.0)
+                    .radius(6.0)
+                    .hover_group()
+                    .fill(if active {
+                        active_fill
+                    } else {
+                        Color::TRANSPARENT
+                    })
+                    .hover(active_fill)
+                    .child(tab_close_button(&tab.id, &tab_label, ink, palette, enabled))
+                    .child(
+                        row()
+                            .key(format!("terminal-tab-{}", tab.id))
+                            .role("button")
+                            .checked(active)
+                            .grow(1.0)
+                            .h_full()
+                            .items_center()
+                            .disabled(!enabled)
+                            .focusable(enabled)
+                            .child(text(tab_label).font(TAB_TEXT).color(ink))
+                            .on_press_tx(move |state: &mut State, tx| {
+                                state.select_terminal_tab(&tab_id, tx)
+                            }),
+                    ),
             );
-        list = list.child(col().w_full().child(heading).child(tab_row));
+        }
+        list = list.child(group_view);
     }
     col()
         .key("terminal-tabs")

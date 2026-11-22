@@ -269,6 +269,7 @@ struct State {
     settings: settings::Panel,
     terminal: Option<terminal::Pane>,
     terminal_tabs: terminal::TabsByThread,
+    terminal_peers: Vec<terminal::Pane>,
     thread_details: thread_details::Popover,
     file_preview: Option<file_preview::Preview>,
     thread_error_banner: thread_error_banner::Session,
@@ -307,6 +308,7 @@ impl Default for State {
             settings: settings::Panel::default(),
             terminal: None,
             terminal_tabs: terminal::TabsByThread::default(),
+            terminal_peers: Vec::new(),
             thread_details: thread_details::Popover::default(),
             file_preview: None,
             thread_error_banner: thread_error_banner::Session::default(),
@@ -357,6 +359,7 @@ impl State {
         self.added_project = None;
         self.scratch_request = None;
         self.terminal = None;
+        self.terminal_peers.clear();
     }
 
     fn select_project(&mut self, id: &str) {
@@ -470,11 +473,7 @@ impl State {
         self.thread_details.close();
         self.file_preview = None;
         self.thread_error_banner.reset_expansion();
-        if let Some(terminal) = self.terminal.take()
-            && let Some(connection) = &self.connection
-        {
-            connection.detach_terminal(terminal.attachment);
-        }
+        self.detach_terminal_pane();
         match &destination {
             Destination::Thread { thread, .. } => {
                 self.drafts.entry(thread.clone()).or_default();
@@ -494,6 +493,9 @@ impl State {
         let new_draft = match &destination {
             Destination::NewThread(id) => Some(id.clone()),
             _ => None,
+        };
+        let Some(workspace) = &mut self.workspace else {
+            return false;
         };
         workspace.selection = match destination {
             Destination::Home => None,
@@ -1429,27 +1431,12 @@ impl State {
             }
             Event::ProjectCloneError(message) => self.project_notice = Some(message),
             Event::Terminal { attachment, update } => {
-                if let Some(terminal) = self
-                    .terminal
-                    .as_mut()
-                    .filter(|terminal| terminal.attachment == attachment)
-                {
-                    terminal.apply(update);
-                    self.send_terminal_replies();
-                }
+                self.apply_terminal_update(attachment, update);
             }
             Event::TerminalFailed {
                 attachment,
                 message,
-            } => {
-                if let Some(terminal) = self
-                    .terminal
-                    .as_mut()
-                    .filter(|terminal| terminal.attachment == attachment)
-                {
-                    terminal.fail(message);
-                }
-            }
+            } => self.fail_terminal_attachment(attachment, message),
             Event::TerminalCloseSettled { target, result } => {
                 self.terminal_close_settled(target, result);
             }
@@ -1529,6 +1516,7 @@ impl State {
                 self.added_project = None;
                 self.scratch_request = None;
                 self.terminal = None;
+                self.terminal_peers.clear();
                 for draft in self.drafts.values_mut().filter(|draft| draft.pending) {
                     draft.pending = false;
                     draft.failure = Some(

@@ -9,7 +9,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tokio::time::timeout;
 
 use super::super::{Connection, Event, REQUEST_TIMEOUT};
-use super::{TerminalAttach, TerminalStatus, TerminalTarget, TerminalUpdate};
+use super::{Intent, Selection, TerminalAttach, TerminalStatus, TerminalTarget, TerminalUpdate};
 
 fn target(thread: &str) -> TerminalAttach {
     TerminalAttach {
@@ -23,6 +23,27 @@ fn target(thread: &str) -> TerminalAttach {
         rows: 24,
         resume: false,
     }
+}
+
+#[test]
+fn detached_and_replaced_terminals_are_not_restored_on_reconnect() {
+    let selection = Selection::default();
+    let left = target("same-thread");
+    let mut right = left.clone();
+    right.target.terminal_id = "term-2".to_owned();
+    selection.attach(&Intent::new(1, left));
+    selection.attach(&Intent::new(2, right.clone()));
+    selection.keep_thread(Some("same-thread"));
+    assert!(selection.includes(1));
+    assert!(selection.includes(2));
+    selection.detach(1);
+    assert!(!selection.includes(1));
+    assert!(selection.includes(2));
+    selection.attach(&Intent::new(3, right));
+    assert!(!selection.includes(2));
+    assert!(selection.includes(3));
+    selection.keep_thread(Some("another-thread"));
+    assert!(!selection.includes(3));
 }
 
 async fn next(connection: &Connection, wake: &mut UnboundedReceiver<()>) -> Event {

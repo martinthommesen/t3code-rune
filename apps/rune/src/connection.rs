@@ -21,7 +21,7 @@ mod workspace_settings;
 pub(crate) mod worktree_setup;
 
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
@@ -1263,7 +1263,7 @@ struct Session {
     clone_writes: bool,
     thread_visits: bool,
     terminals_enabled: bool,
-    terminal: Option<terminal::Subscription>,
+    terminals: BTreeMap<u64, terminal::Subscription>,
     pending_terminal: HashMap<String, terminal::PendingOperation>,
 }
 
@@ -1300,7 +1300,7 @@ impl Session {
     async fn open(
         environment: &Environment,
         thread_id: Option<String>,
-        terminal: Option<&terminal::Intent>,
+        terminals: &[terminal::Intent],
         terminal_selection: &terminal::Selection,
     ) -> Result<Self, String> {
         let capabilities = &environment.descriptor.capabilities;
@@ -1456,7 +1456,7 @@ impl Session {
                         .split_whitespace()
                         .any(|scope| scope == "terminal:operate")
                 }),
-            terminal: None,
+            terminals: BTreeMap::new(),
             pending_terminal: HashMap::new(),
         };
         let request_id = session.allocate_id();
@@ -1483,8 +1483,9 @@ impl Session {
                 .await
                 .map_err(SessionStop::into_message)?;
         }
-        if let Some(terminal) =
-            terminal.filter(|terminal| terminal_selection.includes(terminal.attachment))
+        for terminal in terminals
+            .iter()
+            .filter(|terminal| terminal_selection.includes(terminal.attachment))
         {
             session
                 .start_terminal(terminal.clone())
@@ -1570,11 +1571,11 @@ impl Session {
         self.close_command_outputs().await?;
         self.cancel_file_preview(None).await?;
         if self
-            .terminal
-            .as_ref()
-            .is_some_and(|terminal| terminal.intent.attach.target.thread_id != thread_id)
+            .terminals
+            .values()
+            .any(|terminal| terminal.intent.attach.target.thread_id != thread_id)
         {
-            self.drop_terminal().await?;
+            self.drop_terminals().await?;
         }
         let request_id = self.allocate_id();
         let setup_request_id = self.worktree_setup.then(|| self.allocate_id());
@@ -1636,7 +1637,7 @@ impl Session {
     async fn close_thread(&mut self) -> Result<(), SessionStop> {
         self.close_command_outputs().await?;
         self.cancel_file_preview(None).await?;
-        self.drop_terminal().await?;
+        self.drop_terminals().await?;
         if let Some(thread) = self.thread.take() {
             self.interrupt(&thread.request_id).await?;
             if let Some(setup) = thread.setup_request_id {
@@ -2499,8 +2500,8 @@ impl Session {
                     if let Some(providers) = provider_metadata::last_catalog(values) {
                         events.send(Event::Providers(providers));
                     }
-                } else if self.terminal_matches(&request_id) {
-                    self.terminal_chunk(values, events).await?;
+                } else if let Some(attachment) = self.terminal_attachment(&request_id) {
+                    self.terminal_chunk(attachment, values, events).await?;
                 } else if self.command_outputs.matches(&request_id) {
                     self.command_outputs.chunk(&request_id, values, events);
                 } else if let Some(thread) = self
@@ -2782,7 +2783,7 @@ impl Session {
                     events.send(response.finish(outcome));
                     return Ok(());
                 }
-                if self.terminal_matches(&request_id)
+                if self.terminal_attachment(&request_id).is_some()
                     || self.pending_terminal.contains_key(&request_id)
                 {
                     return self.terminal_exit(&request_id, exit, events).await;
@@ -2967,7 +2968,7 @@ async fn run(
     events: &EventSender<impl Fn()>,
 ) -> Result<(), String> {
     let environment = pair(server_url, pairing_code).await?;
-    let mut session = Session::open(&environment, None, None, terminal_selection).await?;
+    let mut session = Session::open(&environment, None, &[], terminal_selection).await?;
     events.send(Event::Connected {
         environment_id: environment.descriptor.environment_id.clone(),
         label: environment.descriptor.label.clone(),
@@ -3097,7 +3098,7 @@ async fn run(
         }
         let thread_id = session.thread.take().map(|thread| thread.thread_id);
         let command_outputs = session.command_outputs.inspections();
-        let terminal = session.terminal_after_disconnect(events);
+        let terminals = session.terminal_after_disconnect(events);
         drop(session);
         let mut last_error = reason;
         session = loop {
@@ -3109,7 +3110,7 @@ async fn run(
             match Session::open(
                 &environment,
                 thread_id.clone(),
-                terminal.as_ref(),
+                &terminals,
                 terminal_selection,
             )
             .await
