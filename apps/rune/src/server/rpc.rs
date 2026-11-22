@@ -893,11 +893,9 @@ async fn launch_thread(
     let (project_id, instance_id) = input.provider_project();
     let (project_id, instance_id) = (project_id.to_owned(), instance_id.to_owned());
     let settings = local.settings.clone();
-    let codex_enabled = tokio::task::spawn_blocking(move || {
+    let provider_enabled = tokio::task::spawn_blocking(move || {
         settings.read().is_ok_and(|settings| {
-            settings
-                .codex_instance(Some(&project_id), &instance_id)
-                .is_ok()
+            thread_launch::provider_enabled(&settings, &project_id, &instance_id)
         })
     })
     .await
@@ -907,7 +905,7 @@ async fn launch_thread(
     let context = LaunchContext {
         database: store.path(),
         scratch_root: &local.named_projects_root.with_file_name("scratch"),
-        codex_enabled,
+        provider_enabled,
         settings_path: Some(local.settings.path()),
         terminals: Some(Arc::clone(&local.terminals)),
     };
@@ -937,7 +935,7 @@ async fn retry_preparation(
     let context = LaunchContext {
         database: store.path(),
         scratch_root: &local.named_projects_root.with_file_name("scratch"),
-        codex_enabled: true,
+        provider_enabled: true,
         settings_path: Some(local.settings.path()),
         terminals: Some(Arc::clone(&local.terminals)),
     };

@@ -15,7 +15,9 @@ use super::{Error, wire::Incoming};
 
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+const RENAME_TIMEOUT: Duration = Duration::from_secs(10);
 const EARLY_MESSAGES: usize = 128;
+const EXPIRED_REPLIES: usize = 32;
 
 pub(super) struct Process {
     child: Child,
@@ -23,6 +25,7 @@ pub(super) struct Process {
     stdout: BufReader<ChildStdout>,
     stderr: JoinHandle<io::Result<u64>>,
     buffer: Vec<u8>,
+    expired_replies: VecDeque<String>,
 }
 
 impl Process {
@@ -45,6 +48,7 @@ impl Process {
             stdout: BufReader::new(stdout),
             stderr,
             buffer: Vec::new(),
+            expired_replies: VecDeque::new(),
         })
     }
 
@@ -54,6 +58,36 @@ impl Process {
         early: &mut VecDeque<Incoming>,
     ) -> Result<Value, Error> {
         let id = Uuid::new_v4().to_string();
+        self.request(&id, request, early).await
+    }
+
+    pub(super) async fn rename_session(
+        &mut self,
+        title: &str,
+        early: &mut VecDeque<Incoming>,
+    ) -> Result<bool, Error> {
+        let id = Uuid::new_v4().to_string();
+        let request = json!({"subtype":"rename_session","title":title,"source":"host"});
+        match timeout(RENAME_TIMEOUT, self.request(&id, request, early)).await {
+            Ok(Ok(_)) => Ok(true),
+            Ok(Err(Error::InitializationFailed)) => Ok(false),
+            Ok(Err(error)) => Err(error),
+            Err(_) => {
+                if self.expired_replies.len() == EXPIRED_REPLIES {
+                    self.expired_replies.pop_front();
+                }
+                self.expired_replies.push_back(id);
+                Ok(false)
+            }
+        }
+    }
+
+    async fn request(
+        &mut self,
+        id: &str,
+        request: Value,
+        early: &mut VecDeque<Incoming>,
+    ) -> Result<Value, Error> {
         self.write(json!({"type":"control_request", "request_id":id, "request":request}))
             .await?;
         loop {
@@ -74,6 +108,22 @@ impl Process {
     }
 
     pub(super) async fn read(&mut self) -> Result<Incoming, Error> {
+        loop {
+            let frame = self.read_frame().await?;
+            if let Incoming::Response { id, .. } = &frame
+                && let Some(index) = self
+                    .expired_replies
+                    .iter()
+                    .position(|expired| expired == id)
+            {
+                self.expired_replies.remove(index);
+                continue;
+            }
+            return Ok(frame);
+        }
+    }
+
+    async fn read_frame(&mut self) -> Result<Incoming, Error> {
         let found = ndjson::read_line(&mut self.stdout, &mut self.buffer, MAX_FRAME_BYTES)
             .await
             .map_err(|error| match error {

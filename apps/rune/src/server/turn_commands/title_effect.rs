@@ -2,6 +2,7 @@ use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::json;
 use t3_rune::providers::codex::ThreadId;
 use time::OffsetDateTime;
+use uuid::Uuid;
 
 use super::{TurnCommandError, TurnCommands, timestamp};
 
@@ -36,6 +37,7 @@ pub(in crate::server) struct ClaimedTitle {
     pub(in crate::server) thread_id: String,
     pub(in crate::server) title: String,
     pub(in crate::server) native_thread_id: Option<ThreadId>,
+    pub(in crate::server) native_claude_id: Option<Uuid>,
 }
 
 impl TurnCommands {
@@ -64,6 +66,9 @@ impl TurnCommands {
                     json_extract(candidate.payload_json, '$.title'),
                     CASE WHEN session.provider_session_id IS NOT NULL
                               AND provider.driver = 'codex' AND provider.provider_instance_id = 'codex'
+                         THEN json_extract(provider.payload_json, '$.nativeThreadRef.nativeId') END,
+                    CASE WHEN session.provider_session_id IS NOT NULL
+                              AND provider.driver = 'claudeAgent' AND provider.provider_instance_id = 'claudeAgent'
                          THEN json_extract(provider.payload_json, '$.nativeThreadRef.nativeId') END
              FROM orchestration_v2_effect_outbox AS candidate
              JOIN orchestration_v2_projection_threads AS thread ON thread.thread_id = candidate.thread_id
@@ -90,6 +95,7 @@ impl TurnCommands {
                 thread_id: row.get(1)?,
                 title: row.get(2)?,
                 native_thread_id: row.get::<_, Option<String>>(3)?.map(ThreadId::new),
+                native_claude_id: row.get::<_, Option<String>>(4)?.and_then(|id| Uuid::parse_str(&id).ok()),
             }),
         ).optional()?;
         if let Some(claim) = &claim {

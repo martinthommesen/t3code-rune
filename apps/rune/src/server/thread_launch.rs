@@ -24,14 +24,15 @@ use self::input::{Trimmed, WorkspaceStrategy};
 pub(super) use self::reservation::{cancel_worktree_setup, request_worktree_cancellation};
 pub(super) use self::retry::{COMMAND as RETRY_COMMAND, RetryInput, retry_preparation};
 pub(super) use self::setup_progress::subscribe_worktree_setup;
+use super::settings::{SettingsFile, SettingsSnapshot};
 use super::terminal::TerminalManager;
-use super::turn_commands::encode_id_part;
+use super::turn_commands::{NativeProvider, encode_id_part, supports_plain_claude_config};
 
 pub(super) struct LaunchContext<'a> {
     pub(super) database: &'a Path,
     pub(super) scratch_root: &'a Path,
     pub(super) settings_path: Option<&'a Path>,
-    pub(super) codex_enabled: bool,
+    pub(super) provider_enabled: bool,
     pub(super) terminals: Option<Arc<TerminalManager>>,
 }
 
@@ -117,6 +118,48 @@ impl LaunchInput {
         (&self.project_id.0, &self.model_selection.instance_id)
     }
 
+    fn native_provider(&self) -> Result<NativeProvider, LaunchError> {
+        match self.model_selection.instance_id.as_str() {
+            "codex" => Ok(NativeProvider::Codex),
+            "claudeAgent"
+                if self.model_selection.model.0 == "claude-sonnet-4-6"
+                    && self.model_selection.without_options()
+                    && matches!(self.runtime_mode, input::RuntimeMode::FullAccess)
+                    && matches!(self.interaction_mode, input::InteractionMode::Default)
+                    && matches!(self.workspace_strategy, WorkspaceStrategy::Root { .. })
+                    && self.reuse_existing_thread != Some(true)
+                    && self.initial_message.is_some() =>
+            {
+                Ok(NativeProvider::Claude)
+            }
+            "claudeAgent" => Err(self.fail(
+                "create-thread",
+                "A Claude Code launch requires a new root thread, a plain Sonnet 4.6 prompt, and Full access mode.",
+            )),
+            _ => Err(self.fail("create-thread", "This launch requires a supported built-in provider.")),
+        }
+    }
+
+    fn validate_claude_config(
+        &self,
+        path: &Path,
+        operation: &'static str,
+    ) -> Result<(), LaunchError> {
+        let snapshot = SettingsFile::new(path.to_owned())
+            .read()
+            .map_err(|cause| self.fail(operation, cause))?;
+        let Some(config) = snapshot.claude_instance(Some(&self.project_id.0), "claudeAgent") else {
+            return Err(self.fail(operation, self.provider_disabled().message));
+        };
+        if !supports_plain_claude_config(&config, &self.model_selection.model.0) {
+            return Err(self.fail(
+                operation,
+                "This Claude Code configuration is unavailable for plain text launches.",
+            ));
+        }
+        Ok(())
+    }
+
     fn fail(&self, operation: &'static str, cause: impl ToString) -> LaunchError {
         self.fail_with_defect(operation, Value::String(cause.to_string()))
     }
@@ -188,6 +231,14 @@ impl LaunchInput {
     }
 }
 
+pub(super) fn provider_enabled(settings: &SettingsSnapshot, project: &str, instance: &str) -> bool {
+    if instance == "claudeAgent" {
+        settings.claude_instance(Some(project), instance).is_some()
+    } else {
+        settings.codex_instance(Some(project), instance).is_ok()
+    }
+}
+
 async fn branch_for(strategy: &WorkspaceStrategy, workspace_root: &Path) -> Option<String> {
     match strategy {
         WorkspaceStrategy::Root { branch: None } => workspace::current_branch(workspace_root).await,
@@ -201,6 +252,7 @@ async fn branch_for(strategy: &WorkspaceStrategy, workspace_root: &Path) -> Opti
 
 pub(super) struct PreparedLaunch {
     input: LaunchInput,
+    provider: NativeProvider,
     database: PathBuf,
     settings_path: Option<PathBuf>,
     terminals: Option<Arc<TerminalManager>>,
@@ -307,8 +359,9 @@ pub(super) async fn prepare(
     let scratch_root = context.scratch_root.to_owned();
     let root_for_read = scratch_root.clone();
     let settings_path = context.settings_path.map(Path::to_owned);
+    let settings_for_read = settings_path.clone();
     let terminals = context.terminals;
-    let codex_enabled = context.codex_enabled;
+    let provider_enabled = context.provider_enabled;
     let read_error = input.fail("resolve-project", "The launch state read was interrupted.");
     let (
         mut input,
@@ -316,6 +369,7 @@ pub(super) async fn prepare(
             workspace_root,
             project_title,
             thread_id,
+            provider,
             had_launch_receipt,
             managed_scratch,
         },
@@ -325,8 +379,8 @@ pub(super) async fn prepare(
             &LaunchContext {
                 database: &reading_database,
                 scratch_root: &root_for_read,
-                settings_path: None,
-                codex_enabled,
+                settings_path: settings_for_read.as_deref(),
+                provider_enabled,
                 terminals: None,
             },
         )?;
@@ -424,6 +478,7 @@ pub(super) async fn prepare(
     });
     Ok(PreparedLaunch {
         input,
+        provider,
         database,
         settings_path,
         terminals,
@@ -441,6 +496,7 @@ struct ResolvedLaunch {
     workspace_root: PathBuf,
     project_title: String,
     thread_id: String,
+    provider: NativeProvider,
     had_launch_receipt: bool,
     managed_scratch: bool,
 }
@@ -467,14 +523,15 @@ fn resolve_launch(
     }
     let receipt = state::receipt(&snapshot, &input.command_id.0)
         .map_err(|cause| input.fail("read-receipt", cause))?;
-    if input.model_selection.instance_id != "codex" {
-        return Err(input.fail(
-            "create-thread",
-            "This launch requires the built-in Codex provider.",
-        ));
-    }
-    if receipt.is_none() && !context.codex_enabled {
+    let provider = input.native_provider()?;
+    if receipt.is_none() && !context.provider_enabled {
         return Err(input.provider_disabled());
+    }
+    if provider == NativeProvider::Claude
+        && receipt.is_none()
+        && let Some(path) = context.settings_path
+    {
+        input.validate_claude_config(path, "create-thread")?;
     }
     let recovered = receipt.as_ref().filter(|receipt| {
         input.thread_id.is_none() && receipt.accepted && receipt.command_type == "thread.create"
@@ -515,6 +572,22 @@ fn resolve_launch(
     let managed_scratch =
         workspace::is_scratch_project(&snapshot, &workspace_root, context.scratch_root)
             .map_err(|cause| input.fail("resolve-project", cause))?;
+    if provider == NativeProvider::Claude && receipt.is_none() {
+        let ordinary_root: bool = snapshot
+            .query_row(
+                "SELECT archived_at IS NULL AND COALESCE(json_array_length(tracked_folders_json), 0) = 0
+                 FROM projection_projects WHERE project_id = ?1",
+                [project_id],
+                |row| row.get(0),
+            )
+            .map_err(|cause| input.fail("resolve-project", cause))?;
+        if managed_scratch || !ordinary_root {
+            return Err(input.fail(
+                "resolve-project",
+                "Claude Code requires an active project root without tracked folders.",
+            ));
+        }
+    }
     let project_title = snapshot
         .query_row(
             "SELECT title FROM projection_projects WHERE project_id=?1",
@@ -526,6 +599,7 @@ fn resolve_launch(
         workspace_root,
         project_title,
         thread_id: candidate,
+        provider,
         had_launch_receipt: receipt.is_some(),
         managed_scratch,
     })
@@ -534,9 +608,9 @@ fn resolve_launch(
 impl PreparedLaunch {
     pub(super) fn persist_initial_claim(
         &self,
-        codex_enabled: bool,
+        provider_enabled: bool,
     ) -> Result<DispatchCommit, LaunchError> {
-        persist::initial_claim(self, codex_enabled)
+        persist::initial_claim(self, provider_enabled)
     }
 
     pub(super) fn claim_command(&self) -> Value {

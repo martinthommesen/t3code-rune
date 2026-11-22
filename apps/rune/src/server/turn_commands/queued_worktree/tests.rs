@@ -19,6 +19,7 @@ fn capability_uses_the_same_workspace_and_hold_checks_as_queue_intake() {
     let (_, first_run) = append_preparing_dispatch(
         &tx,
         PreparingDispatch {
+            provider: crate::server::turn_commands::NativeProvider::Codex,
             command_id: "launch",
             thread_id: THREAD,
             message_id: "message:first",
@@ -89,6 +90,7 @@ fn queueing_before_the_start_claim_preserves_the_first_runs_workspace() {
     append_preparing_dispatch(
         &transaction,
         PreparingDispatch {
+            provider: crate::server::turn_commands::NativeProvider::Codex,
             command_id: "launch",
             thread_id: THREAD,
             message_id: first_message,
@@ -232,6 +234,7 @@ fn stopping_preparation_holds_its_queue_and_rejects_resume_without_a_workspace()
     append_preparing_dispatch(
         &transaction,
         PreparingDispatch {
+            provider: crate::server::turn_commands::NativeProvider::Codex,
             command_id: "launch",
             thread_id: THREAD,
             message_id: "message:first",
@@ -302,6 +305,7 @@ fn selecting_a_later_held_prompt_starts_only_that_prompt() {
     append_preparing_dispatch(
         &setup,
         PreparingDispatch {
+            provider: crate::server::turn_commands::NativeProvider::Codex,
             command_id: "launch",
             thread_id: THREAD,
             message_id: "message:first",

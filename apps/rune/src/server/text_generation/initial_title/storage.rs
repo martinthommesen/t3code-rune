@@ -63,7 +63,15 @@ pub(super) fn claim(database: &Path, worker: &str) -> rusqlite::Result<Option<Cl
                AND CASE WHEN json_valid(thread.payload_json) THEN
                      json_extract(thread.payload_json, '$.forkedFrom') IS NULL
                      AND json_extract(thread.payload_json, '$.lineage.parentThreadId') IS NULL
-                     AND json_extract(thread.payload_json, '$.providerInstanceId') = 'codex'
+                     AND (json_extract(thread.payload_json, '$.providerInstanceId') = 'codex'
+                          OR (json_extract(thread.payload_json, '$.providerInstanceId') = 'claudeAgent'
+                              AND json_extract(thread.payload_json, '$.worktreePath') IS NULL
+                              AND EXISTS (
+                                  SELECT 1 FROM orchestration_command_receipts AS receipt
+                                  WHERE receipt.command_id = candidate.command_id AND receipt.aggregate_kind = 'thread'
+                                    AND receipt.aggregate_id = candidate.thread_id AND receipt.command_type = 'thread.create'
+                                    AND receipt.status = 'accepted'
+                              )))
                    ELSE 0 END
                AND (message.message_id IS NULL OR CASE WHEN json_valid(message.payload_json) THEN
                    coalesce(json_array_length(message.payload_json, '$.attachments'), 0) = 0 ELSE 0 END)

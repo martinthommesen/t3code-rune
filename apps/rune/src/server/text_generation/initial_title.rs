@@ -6,11 +6,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::Value;
+use t3_rune::providers::claude::{TitleRequest, run_title};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use crate::server::ProjectionChange;
+use crate::server::claude_worker::configured_process;
 use crate::server::settings::{CodexInstanceError, SettingsFile};
+use crate::server::turn_commands::supports_plain_claude_config;
 use crate::server::turn_worker::{TurnQueue, launch::process_config};
 
 use super::structured_codex;
@@ -134,23 +137,27 @@ async fn generate_title(settings: &SettingsFile, context: &Context) -> Result<Op
     let project_model = overrides.get("textGenerationModelSelection");
     let mut selection = project_model.unwrap_or(environment_model);
     let project = Some(context.project_id.as_str());
-    let instance_id = selection["instanceId"].as_str().ok_or(())?;
-    let instance = match snapshot.codex_instance(project, instance_id) {
-        Err(CodexInstanceError::Disabled) if project_model.is_some() => {
+    if let Some(override_model) = project_model {
+        let instance = override_model["instanceId"].as_str().ok_or(())?;
+        let disabled = if instance == "claudeAgent" {
+            snapshot.claude_instance(project, instance).is_none()
+        } else {
+            matches!(
+                snapshot.codex_instance(project, instance),
+                Err(CodexInstanceError::Disabled)
+            )
+        };
+        if disabled {
             selection = environment_model;
-            let instance = selection["instanceId"].as_str().ok_or(())?;
-            snapshot.codex_instance(project, instance)
         }
-        matched => matched,
     }
-    .map_err(|_| ())?;
+    let instance_id = selection["instanceId"].as_str().ok_or(())?;
     let workspace = context.workspace_root.as_ref().ok_or(())?;
     let cwd = context
         .worktree
         .as_deref()
         .filter(|path| Path::new(path).exists())
         .unwrap_or(workspace);
-    let launch = process_config(instance, PathBuf::from(cwd)).map_err(|_| ())?;
     let instructions = overrides["threadTitleInstructions"]
         .as_str()
         .or_else(|| public["threadTitleInstructions"].as_str())
@@ -160,12 +167,41 @@ async fn generate_title(settings: &SettingsFile, context: &Context) -> Result<Op
         context.project_title.as_deref().unwrap_or_default(),
         instructions,
     );
+    let model = selection["model"].as_str().ok_or(())?;
+    let schema = prompt::output_schema();
+    if instance_id == "claudeAgent" {
+        let instance = snapshot.claude_instance(project, instance_id).ok_or(())?;
+        if model != "claude-sonnet-4-6"
+            || selection.get("options").is_some()
+            || !supports_plain_claude_config(&instance, model)
+        {
+            return Err(());
+        }
+        let (_, process) = configured_process(instance, Path::new(cwd)).map_err(|_| ())?;
+        let output = run_title(
+            &process.executable,
+            &process.variables,
+            TitleRequest {
+                prompt: &prompt,
+                schema: &schema,
+                model,
+            },
+            GENERATION_DEADLINE,
+        )
+        .await
+        .map_err(|_| ())?;
+        return prompt::generated(output);
+    }
+    let instance = snapshot
+        .codex_instance(project, instance_id)
+        .map_err(|_| ())?;
+    let launch = process_config(instance, PathBuf::from(cwd)).map_err(|_| ())?;
     let result = structured_codex::run(
         &launch,
         structured_codex::Request {
             prompt: &prompt,
-            schema: &prompt::output_schema(),
-            model: selection["model"].as_str().ok_or(())?,
+            schema: &schema,
+            model,
             reasoning_effort: option(selection, "reasoningEffort").unwrap_or("low"),
             service_tier: option(selection, "serviceTier"),
         },

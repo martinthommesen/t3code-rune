@@ -1,3 +1,5 @@
+mod claude;
+
 use std::fs;
 use std::process::Command;
 
@@ -63,7 +65,7 @@ impl Fixture {
                 database: &self.database,
                 scratch_root: &self.folder.path().join("scratch"),
                 settings_path: None,
-                codex_enabled: enabled,
+                provider_enabled: enabled,
                 terminals: None,
             },
         )
@@ -586,7 +588,7 @@ async fn launch_returns_the_committed_projection_and_wakes_the_worker_once() {
             database: &fixture.database,
             scratch_root: &scratch,
             settings_path: None,
-            codex_enabled: true,
+            provider_enabled: true,
             terminals: None,
         },
         move |thread_id, released| {
@@ -613,7 +615,7 @@ async fn launch_returns_the_committed_projection_and_wakes_the_worker_once() {
             database: &fixture.database,
             scratch_root: &scratch,
             settings_path: None,
-            codex_enabled: false,
+            provider_enabled: false,
             terminals: None,
         },
         move |thread_id, released| track.lock().unwrap().push((thread_id.to_owned(), released)),
@@ -659,7 +661,7 @@ async fn launch_finishes_release_after_the_caller_disconnects() {
                 database: &task_database,
                 scratch_root: &scratch,
                 settings_path: None,
-                codex_enabled: true,
+                provider_enabled: true,
                 terminals: None,
             },
             move |_, released| {
@@ -729,7 +731,7 @@ async fn launch_returns_before_a_preparation_failure_is_recorded() {
                 database: &fixture.database,
                 scratch_root: &fixture.folder.path().join("scratch"),
                 settings_path: None,
-                codex_enabled: true,
+                provider_enabled: true,
                 terminals: None,
             },
             move |_, released| {
@@ -854,7 +856,7 @@ async fn existing_worktree_start_and_checkpoint_use_the_bound_workspace() {
             database: &fixture.database,
             scratch_root: &fixture.folder.path().join("scratch"),
             settings_path: None,
-            codex_enabled: true,
+            provider_enabled: true,
             terminals: None,
         },
         move |_, effect| {
@@ -992,7 +994,7 @@ async fn a_worktree_setup_script_does_not_get_silently_skipped() {
             database: &fixture.database,
             scratch_root: &fixture.folder.path().join("scratch"),
             settings_path: Some(&settings),
-            codex_enabled: true,
+            provider_enabled: true,
             terminals: None,
         },
         |_, _| panic!("No launch should commit when automatic setup cannot run"),
@@ -1085,7 +1087,7 @@ async fn a_new_worktree_uses_checkout_configuration_and_the_project_branch_prefi
             database: &fixture.database,
             scratch_root: &fixture.folder.path().join("scratch"),
             settings_path: Some(&settings),
-            codex_enabled: true,
+            provider_enabled: true,
             terminals: None,
         },
         |_, _| {},
@@ -1154,7 +1156,7 @@ async fn cancelling_a_new_worktree_terminates_its_checkout_and_prevents_release(
             database: &fixture.database,
             scratch_root: &scratch,
             settings_path: None,
-            codex_enabled: true,
+            provider_enabled: true,
             terminals: None,
         },
         |_, released| assert!(!released),
@@ -1276,7 +1278,7 @@ printf '%s' '{"branch":"New Café UI"}' > "$output"
             database: &fixture.database,
             scratch_root: &fixture.folder.path().join("scratch"),
             settings_path: Some(&settings),
-            codex_enabled: true,
+            provider_enabled: true,
             terminals: None,
         },
         move |_, released| {
@@ -1387,7 +1389,7 @@ async fn a_replayed_checkout_recovers_a_git_rename_before_its_receipt() {
             database: &fixture.database,
             scratch_root: &fixture.folder.path().join("scratch"),
             settings_path: None,
-            codex_enabled: true,
+            provider_enabled: true,
             terminals: None,
         },
         move |_, released| {

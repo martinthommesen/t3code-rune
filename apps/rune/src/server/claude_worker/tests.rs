@@ -131,7 +131,13 @@ async fn assert_two_turns(recording: &str, reopen: bool) {
         }
         tokio::time::timeout(
             Duration::from_secs(10),
-            runtimes.execute(&commands, &settings, &claim, |_| {}),
+            runtimes.execute(
+                &commands,
+                &settings,
+                &claim,
+                &TurnQueue::new(commands.clone(), tokio::sync::broadcast::channel(4).0),
+                |_| {},
+            ),
         )
         .await
         .unwrap()

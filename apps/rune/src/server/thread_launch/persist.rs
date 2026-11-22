@@ -4,8 +4,9 @@ use time::OffsetDateTime;
 
 use super::super::thread_commands::{CreateThread, append_thread_creation};
 use super::super::turn_commands::{
-    PreparingDispatch, ThreadEventStream, append_preparing_dispatch, encode_id_part,
-    record_projected_sequence, timestamp, validate_model_selection,
+    NativeProvider, PreparingDispatch, ThreadEventStream, append_preparing_dispatch,
+    claude_slash_command, encode_id_part, record_projected_sequence, timestamp,
+    validate_model_selection,
 };
 use super::{DispatchCommit, InitialDispatch, LaunchError, PreparedLaunch, input, state};
 
@@ -57,7 +58,7 @@ pub(super) fn reuse_claim(plan: &PreparedLaunch) -> Result<DispatchCommit, Launc
 pub(super) fn fallback_message(
     plan: &PreparedLaunch,
     dispatch: &InitialDispatch,
-    codex_enabled: bool,
+    provider_enabled: bool,
 ) -> Result<DispatchCommit, LaunchError> {
     let operation = "dispatch-message";
     let fail = |cause| plan.input.fail(operation, cause);
@@ -73,7 +74,7 @@ pub(super) fn fallback_message(
     if let Some(receipt) = ExistingClaim::read(&transaction, command_id).map_err(fail)? {
         return receipt.replay(&transaction, plan, command_id, thread_id, operation);
     }
-    if !codex_enabled {
+    if !provider_enabled {
         return Err(plan.input.provider_disabled());
     }
     let projection = empty_draft(&transaction, plan, thread_id, operation)?;
@@ -147,7 +148,7 @@ fn empty_draft(
 
 pub(super) fn initial_claim(
     plan: &PreparedLaunch,
-    codex_enabled: bool,
+    provider_enabled: bool,
 ) -> Result<DispatchCommit, LaunchError> {
     let Some(message) = plan.input.initial_message.as_ref() else {
         return Err(plan
@@ -181,7 +182,7 @@ pub(super) fn initial_claim(
             "create-thread",
         );
     }
-    if !codex_enabled {
+    if !provider_enabled {
         return Err(plan.input.provider_disabled());
     }
     let current_workspace = state::project_workspace(&transaction, &plan.input.project_id.0)
@@ -300,8 +301,19 @@ fn validate_message(
             .input
             .fail(operation, "This launch needs a regular web text prompt."));
     }
-    validate_model_selection(&json!(plan.input.model_selection))
-        .map_err(|cause| plan.input.fail(operation, cause))?;
+    match plan.provider {
+        NativeProvider::Codex => {
+            validate_model_selection(&json!(plan.input.model_selection))
+                .map_err(|cause| plan.input.fail(operation, cause))?;
+        }
+        NativeProvider::Claude if claude_slash_command(text) => {
+            return Err(plan.input.fail(
+                operation,
+                "A Claude Code launch requires a plain text prompt.",
+            ));
+        }
+        NativeProvider::Claude => {}
+    }
     Ok(())
 }
 
@@ -327,7 +339,7 @@ fn persist_initial_message(
         text,
     } = initial;
     let commands = ThreadEventStream::command(transaction, thread_id, command_id);
-    let metadata = json!({"providerInstanceId": "codex"});
+    let metadata = json!({"providerInstanceId": plan.provider.as_str()});
     if projection["lastVisitedAt"].is_null() {
         let visit = OffsetDateTime::now_utc();
         projection["lastVisitedAt"] = json!(timestamp(visit - time::Duration::milliseconds(1)));
@@ -365,6 +377,7 @@ fn persist_initial_message(
             message_id,
             text,
             model_selection: json!(plan.input.model_selection),
+            provider: plan.provider,
             workspace_strategy: &strategy,
             now: &now,
         },

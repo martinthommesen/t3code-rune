@@ -562,6 +562,7 @@ fn interrupts_a_preparing_root_run_before_an_outbox_start_exists() {
     let (_, run_id) = append_preparing_dispatch(
         &transaction,
         PreparingDispatch {
+            provider: crate::server::turn_commands::NativeProvider::Codex,
             command_id: "prepare-first",
             thread_id: THREAD,
             message_id: MESSAGE,

@@ -12,7 +12,9 @@ use t3_rune::providers::claude::{
 
 use super::settings::{ClaudeInstance, EnvironmentValue, SettingsError, SettingsFile};
 use super::turn_commands::claude::Claim;
+use super::turn_commands::title_effect::ClaimedTitle;
 use super::turn_commands::{TurnCommandError, TurnCommands};
+use super::turn_worker::TurnQueue;
 
 const KEEP_IDLE_FOR: Duration = Duration::from_secs(30 * 60);
 
@@ -94,6 +96,33 @@ struct Process {
     usage: ProcessLedger,
 }
 
+impl Process {
+    async fn apply_title(&mut self, claim: &ClaimedTitle) -> Result<(), Error> {
+        if claim.native_claude_id == Some(self.session.session_id())
+            && self.key.title != claim.title
+            && self.session.rename_session(&claim.title).await?
+        {
+            self.key.title.clone_from(&claim.title);
+        }
+        Ok(())
+    }
+
+    async fn apply_pending_title(
+        &mut self,
+        commands: &TurnCommands,
+        claim: &Claim,
+    ) -> Result<(), Error> {
+        if let Some(title) =
+            commands.claim_title_effect(Some(&claim.thread_id), &claim.worker_id)?
+        {
+            let result = self.apply_title(&title).await;
+            commands.finish_title_effect(&title, &claim.worker_id)?;
+            result?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(PartialEq, Eq)]
 struct ProcessKey {
     executable: PathBuf,
@@ -118,11 +147,21 @@ impl From<&Launch> for ProcessKey {
 }
 
 impl Runtimes {
+    pub(super) async fn apply_title(&mut self, claim: &ClaimedTitle) {
+        if let Some(idle) = self.idle.get_mut(&claim.thread_id)
+            && let Some(process) = &mut idle.process
+            && process.apply_title(claim).await.is_err()
+        {
+            idle.process = None;
+        }
+    }
+
     pub(super) async fn execute(
         &mut self,
         commands: &TurnCommands,
         settings: &SettingsFile,
         claim: &Claim,
+        queue: &TurnQueue,
         on_commit: impl Fn(i64),
     ) -> Result<i64, Error> {
         let launch = process_config(settings, claim)?;
@@ -151,11 +190,19 @@ impl Runtimes {
         on_commit(owned(commands.bind_claude_turn(claim, previous_context)?)?);
         process.session.offer_text(&claim.text, None).await?;
         on_commit(owned(commands.record_claude_offer(claim)?)?);
+        process.apply_pending_title(commands, claim).await?;
 
         let mut latest_assistant = None;
         let mut context_usage = None;
         let sequence = loop {
-            match process.session.next_message().await? {
+            let message = tokio::select! {
+                message = process.session.next_message() => message?,
+                () = queue.notified() => {
+                    process.apply_pending_title(commands, claim).await?;
+                    continue;
+                }
+            };
+            match message {
                 Message::Initialized(init) if init.session_id != claim.target.id() => {
                     return Err(Error::Unavailable(
                         "Claude Code opened a different session.",

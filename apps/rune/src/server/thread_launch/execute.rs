@@ -27,7 +27,7 @@ pub(in super::super) async fn launch(
     let scratch_root = context.scratch_root.to_owned();
     let settings_path = context.settings_path.map(std::path::Path::to_owned);
     let terminals = context.terminals;
-    let codex_enabled = context.codex_enabled;
+    let provider_enabled = context.provider_enabled;
     let interrupted = input.fail("create-thread", "The launch task was interrupted.");
     tokio::spawn(async move {
         let plan = prepare(
@@ -36,7 +36,7 @@ pub(in super::super) async fn launch(
                 database: &database,
                 scratch_root: &scratch_root,
                 settings_path: settings_path.as_deref(),
-                codex_enabled,
+                provider_enabled,
                 terminals,
             },
         )
@@ -45,10 +45,10 @@ pub(in super::super) async fn launch(
             .input
             .fail("create-thread", "The launch claim was interrupted.");
         tokio::task::spawn_blocking(move || {
-            let commit = commit_initial_actions(&plan, codex_enabled, on_commit.as_ref())?;
+            let commit = commit_initial_actions(&plan, provider_enabled, on_commit.as_ref())?;
             let projection = read_projection(&plan, &commit.thread_id);
             let result = projection.and_then(|projection| plan.result(&commit, projection));
-            schedule_preparation(plan, commit, codex_enabled, on_commit);
+            schedule_preparation(plan, commit, provider_enabled, on_commit);
             result
         })
         .await
@@ -61,7 +61,7 @@ pub(in super::super) async fn launch(
 pub(super) fn schedule_preparation(
     plan: PreparedLaunch,
     commit: LaunchCommit,
-    codex_enabled: bool,
+    provider_enabled: bool,
     on_commit: CommitObserver,
 ) {
     if commit.schedule_preparation
@@ -70,7 +70,7 @@ pub(super) fn schedule_preparation(
         tokio::spawn(prepare_in_background(
             plan,
             commit,
-            codex_enabled,
+            provider_enabled,
             on_commit,
             reservation,
         ));
@@ -80,14 +80,14 @@ pub(super) fn schedule_preparation(
 async fn prepare_in_background(
     plan: PreparedLaunch,
     commit: LaunchCommit,
-    codex_enabled: bool,
+    provider_enabled: bool,
     on_commit: CommitObserver,
     reservation: PreparationReservation,
 ) {
     let mut preparation = WorktreePreparation {
         plan: Arc::new(plan),
         commit: Arc::new(commit),
-        codex_enabled,
+        provider_enabled,
         on_commit,
         reservation,
         checkout: None,
@@ -147,7 +147,7 @@ async fn prepare_in_background(
 struct WorktreePreparation {
     plan: Arc<PreparedLaunch>,
     commit: Arc<LaunchCommit>,
-    codex_enabled: bool,
+    provider_enabled: bool,
     on_commit: CommitObserver,
     reservation: PreparationReservation,
     checkout: Option<worktree::LocalWorktree>,
@@ -324,10 +324,10 @@ impl WorktreePreparation {
                 .map_err(|error| self.plan.input.fail("update-thread", error))?;
         }
         if release_run {
-            let codex_enabled = self.codex_enabled;
+            let provider_enabled = self.provider_enabled;
             self.write(
                 "release-run",
-                move |plan, commit| release::record_release(plan, commit, codex_enabled),
+                move |plan, commit| release::record_release(plan, commit, provider_enabled),
                 true,
             )
             .await?;
@@ -527,13 +527,13 @@ async fn settle_failure(
 
 fn commit_initial_actions(
     plan: &PreparedLaunch,
-    codex_enabled: bool,
+    provider_enabled: bool,
     on_commit: &dyn Fn(&str, bool),
 ) -> Result<LaunchCommit, LaunchError> {
     let claim = if plan.input.reuse_existing_thread == Some(true) {
         persist::reuse_claim(plan)?
     } else if plan.input.initial_message.is_some() {
-        plan.persist_initial_claim(codex_enabled)?
+        plan.persist_initial_claim(provider_enabled)?
     } else {
         let threads = ThreadCommands::open(plan.database.clone())
             .map_err(|cause| plan.input.fail("create-thread", cause))?;
@@ -555,7 +555,7 @@ fn commit_initial_actions(
     match plan.after_claim(claim)? {
         AfterClaim::Complete(commit) => Ok(commit),
         AfterClaim::Dispatch(initial) => {
-            let dispatch = persist::fallback_message(plan, &initial, codex_enabled)?;
+            let dispatch = persist::fallback_message(plan, &initial, provider_enabled)?;
             if !dispatch.replayed {
                 on_commit(&initial.thread_id, false);
             }

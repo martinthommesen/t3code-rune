@@ -14,6 +14,7 @@ fn edits_and_cancels_held_worktree_prompts_with_canonical_receipts() {
     append_preparing_dispatch(
         &transaction,
         PreparingDispatch {
+            provider: crate::server::turn_commands::NativeProvider::Codex,
             command_id: "launch",
             thread_id: THREAD,
             message_id: "message:first",

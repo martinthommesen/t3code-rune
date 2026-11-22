@@ -5,8 +5,8 @@ use serde_json::{Value, json};
 use time::OffsetDateTime;
 
 use super::super::turn_commands::{
-    ThreadEventStream, allocate_turn_item_in_run, encode_id_part, record_projected_sequence,
-    timestamp, validate_model_selection,
+    NativeProvider, ThreadEventStream, allocate_turn_item_in_run, encode_id_part,
+    record_projected_sequence, timestamp, validate_model_selection,
 };
 use super::{LaunchCommit, LaunchError, PreparedLaunch, WorkspacePreparation, retry, state};
 
@@ -231,7 +231,7 @@ pub(super) fn record_progress(
 pub(super) fn record_release(
     plan: &PreparedLaunch,
     commit: &LaunchCommit,
-    codex_enabled: bool,
+    provider_enabled: bool,
 ) -> Result<bool, LaunchError> {
     let Some(run_id) = commit.run_id.as_deref() else {
         return Ok(false);
@@ -254,10 +254,15 @@ pub(super) fn record_release(
     )? {
         return Ok(false);
     }
-    if !codex_enabled {
+    if !provider_enabled {
         return Err(plan
             .input
             .fail(operation, plan.input.provider_disabled().message));
+    }
+    if plan.provider == NativeProvider::Claude
+        && let Some(path) = plan.settings_path.as_deref()
+    {
+        plan.input.validate_claude_config(path, operation)?;
     }
     let workspace_id = format!("{}:workspace", plan.input.command_id.0);
     let workspace_recorded = if let Some(reused) = &plan.reused_worktree {
@@ -287,8 +292,21 @@ pub(super) fn record_release(
             format!("Run {run_id} is not awaiting workspace preparation."),
         ));
     };
-    validate_model_selection(&prepared.run["modelSelection"])
-        .map_err(|cause| plan.input.fail(operation, cause))?;
+    match plan.provider {
+        NativeProvider::Codex => {
+            validate_model_selection(&prepared.run["modelSelection"])
+                .map_err(|cause| plan.input.fail(operation, cause))?;
+        }
+        NativeProvider::Claude
+            if prepared.run["modelSelection"] != json!(plan.input.model_selection) =>
+        {
+            return Err(plan.input.fail(
+                operation,
+                "The prepared Claude Code model selection changed.",
+            ));
+        }
+        NativeProvider::Claude => {}
+    }
     let now = timestamp(OffsetDateTime::now_utc());
     let scope = prepared.scope(thread_id, run_id, &now).map_err(fail)?;
     prepared.node["checkpointScopeId"] = scope["id"].clone();
@@ -386,7 +404,8 @@ pub(super) fn record_failure(
     prepared.run["status"] = json!("failed");
     prepared.run["completedAt"] = json!(now);
     let failure_item_id = format!(
-        "turn-item:provider:codex:native-item:{}",
+        "turn-item:provider:{}:native-item:{}",
+        plan.provider.as_str(),
         encode_id_part(&format!("workspace-preparation-failure:{run_id}"))
     );
     let ordinal = allocate_turn_item_in_run(&transaction, thread_id, &failure_item_id, 1)?;
@@ -486,7 +505,8 @@ impl PreparingRoot {
                     thread_id,
                     run_id,
                     plan.input.project_id.0,
-                    require_active_project
+                    require_active_project,
+                    plan.provider.as_str()
                 ],
                 |row| {
                     Ok(Self {
@@ -540,12 +560,16 @@ const PREPARING_ROOT_RUN: &str = "
          AND message.run_id = run.run_id AND message.thread_id = run.thread_id
     WHERE run.thread_id = ?1 AND run.run_id = ?2 AND thread.project_id = ?3
       AND (?4 = 0 OR (thread.archived_at IS NULL AND thread.deleted_at IS NULL
-                      AND project.project_id IS NOT NULL AND project.deleted_at IS NULL))
-      AND run.status = 'preparing' AND run.ordinal = 1 AND run.provider_instance_id = 'codex'
+                      AND project.project_id IS NOT NULL AND project.deleted_at IS NULL
+                      AND (?5 = 'codex' OR (project.archived_at IS NULL
+                           AND COALESCE(json_array_length(project.tracked_folders_json), 0) = 0
+                           AND json_extract(thread.payload_json, '$.worktreePath') IS NULL))))
+      AND run.status = 'preparing' AND run.ordinal = 1 AND run.provider_instance_id = ?5
       AND json_extract(run.payload_json, '$.workspacePreparation.type') IN ('root', 'existing_worktree', 'worktree')
+      AND (?5 = 'codex' OR json_extract(run.payload_json, '$.workspacePreparation.type') = 'root')
       AND node.kind = 'root_turn' AND node.status = 'pending'
       AND attempt.status = 'pending' AND attempt.attempt_ordinal = 1
-      AND provider.status = 'not_loaded' AND provider.driver = 'codex'
+      AND provider.status = 'not_loaded' AND provider.driver = ?5 AND provider.provider_instance_id = ?5
       AND item.type = 'command_execution' AND item.status = 'running'
       AND json_extract(item.payload_json, '$.input') = 'Preparing workspace'
       AND message.role = 'user'

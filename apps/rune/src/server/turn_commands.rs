@@ -165,13 +165,13 @@ struct ThreadLineage {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum NativeProvider {
+pub(super) enum NativeProvider {
     Codex,
     Claude,
 }
 
 impl NativeProvider {
-    fn as_str(self) -> &'static str {
+    pub(super) fn as_str(self) -> &'static str {
         match self {
             Self::Codex => CODEX_INSTANCE,
             Self::Claude => CLAUDE_INSTANCE,
@@ -191,6 +191,7 @@ struct TurnIds {
 }
 
 impl TurnIds {
+    #[cfg(test)]
     fn derive(thread_id: &str, message_id: &str) -> Self {
         Self::for_run(thread_id, message_id, FIRST_RUN_ORDINAL, None)
     }
@@ -626,17 +627,19 @@ fn validate_claude_turn(
         && thread.runtime_mode == RuntimeMode::FullAccess
         && thread.interaction_mode == InteractionMode::Default
         && supports_plain_claude_config(config, model);
-    if !supported
-        || text.split_whitespace().next().is_some_and(|word| {
-            word.strip_prefix('/')
-                .is_some_and(|command| !command.is_empty() && !command.contains('/'))
-        })
-    {
+    if !supported || claude_slash_command(text) {
         return Err(TurnCommandError::Unsupported(
             "This Claude Code turn requires a plain text prompt, a default model configuration, and Full access mode.",
         ));
     }
     Ok(())
+}
+
+pub(super) fn claude_slash_command(text: &str) -> bool {
+    text.split_whitespace().next().is_some_and(|word| {
+        word.strip_prefix('/')
+            .is_some_and(|command| !command.is_empty() && !command.contains('/'))
+    })
 }
 
 pub(super) fn supports_plain_claude_config(
@@ -739,6 +742,7 @@ pub(super) struct PreparingDispatch<'a> {
     pub(super) message_id: &'a str,
     pub(super) text: &'a str,
     pub(super) model_selection: Value,
+    pub(super) provider: NativeProvider,
     pub(super) workspace_strategy: &'a Value,
     pub(super) now: &'a str,
 }
@@ -747,9 +751,17 @@ pub(super) fn append_preparing_dispatch(
     transaction: &Transaction<'_>,
     dispatch: PreparingDispatch<'_>,
 ) -> rusqlite::Result<(i64, String)> {
-    let turn = TurnIds::derive(dispatch.thread_id, dispatch.message_id);
+    let turn = TurnIds::for_provider(
+        dispatch.thread_id,
+        dispatch.message_id,
+        FIRST_RUN_ORDINAL,
+        None,
+        dispatch.provider,
+        None,
+    );
     let preparation_item_id = format!(
-        "turn-item:provider:codex:native-item:{}",
+        "turn-item:provider:{}:native-item:{}",
+        dispatch.provider.as_str(),
         encode_id_part(&format!("workspace-preparation:{}", turn.run_id)),
     );
     let ordinal = allocate_turn_item_in_run(
@@ -892,7 +904,9 @@ fn append_dispatch(
                     "createdAt": now,
                     "updatedAt": now,
             });
-            if ids.provider == NativeProvider::Claude {
+            if ids.provider == NativeProvider::Claude
+                && !matches!(&start, DispatchStart::Preparing { .. })
+            {
                 provider["pendingBackgroundTasks"] = json!([]);
                 provider["contextUsage"] = Value::Null;
                 provider["nativeMetadata"] = Value::Null;

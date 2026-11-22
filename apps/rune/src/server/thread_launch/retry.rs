@@ -88,7 +88,7 @@ pub(in crate::server) async fn retry_preparation(
     let scratch_root = context.scratch_root.to_owned();
     let settings_path = context.settings_path.map(Path::to_owned);
     let terms = context.terminals;
-    let codex_enabled = context.codex_enabled;
+    let provider_enabled = context.provider_enabled;
     let interrupted = input.rejection("Workspace preparation retry could not be recorded.");
     let on_commit: CommitObserver = Arc::new(on_commit);
     tokio::task::spawn_blocking(move || {
@@ -116,7 +116,7 @@ pub(in crate::server) async fn retry_preparation(
                 settings_path.clone(),
                 terms,
             );
-            let codex_enabled = codex_enabled
+            let provider_enabled = provider_enabled
                 && settings_path.is_none_or(|path| {
                     SettingsFile::new(path).read().is_ok_and(|settings| {
                         let (project, instance) = plan.input.provider_project();
@@ -130,7 +130,7 @@ pub(in crate::server) async fn retry_preparation(
                 sequence: Some(sequence),
                 resumed,
             };
-            schedule_preparation(plan, preparation, codex_enabled, on_commit);
+            schedule_preparation(plan, preparation, provider_enabled, on_commit);
         }
         Ok(sequence)
     })
@@ -231,6 +231,7 @@ impl Preparation {
         };
         PreparedLaunch {
             input,
+            provider: super::NativeProvider::Codex,
             database,
             settings_path,
             terminals,

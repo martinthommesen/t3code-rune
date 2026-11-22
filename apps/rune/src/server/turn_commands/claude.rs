@@ -203,7 +203,17 @@ const READY: &str = "
     WHERE effect.effect_id = ?1 AND effect.available_at <= ?2
       AND effect.status = 'pending' AND effect.effect_type = 'provider-turn.start'
       AND json_extract(effect.payload_json, '$.type') = 'provider-turn.start'
-      AND receipt.command_type = 'message.dispatch' AND receipt.status = 'accepted'
+      AND receipt.status = 'accepted'
+      AND (receipt.command_type = 'message.dispatch'
+           OR (receipt.command_type = 'prepared-run.release'
+               AND run.ordinal = 1
+               AND json_extract(run.payload_json, '$.workspacePreparation.type') = 'root'
+               AND EXISTS (
+                   SELECT 1 FROM orchestration_command_receipts AS initial
+                   WHERE receipt.command_id = initial.command_id || ':release'
+                     AND initial.aggregate_kind = 'thread' AND initial.aggregate_id = thread.thread_id
+                     AND initial.command_type = 'thread.create' AND initial.status = 'accepted'
+               )))
       AND effect.effect_id = 'effect:' || receipt.command_id || ':provider-turn.start:' || run.run_id
       AND thread.archived_at IS NULL AND thread.deleted_at IS NULL
       AND project.archived_at IS NULL AND project.deleted_at IS NULL

@@ -69,8 +69,22 @@ pub(super) struct TurnQueue {
 }
 
 impl TurnQueue {
+    pub(super) fn new(
+        commands: TurnCommands,
+        changes: broadcast::Sender<ProjectionChange>,
+    ) -> Self {
+        Self {
+            wake: Arc::new(Notify::new()),
+            command_output: CommandOutputHub::new(commands, changes),
+        }
+    }
+
     pub(super) fn wake(&self) {
         self.wake.notify_one();
+    }
+
+    pub(super) async fn notified(&self) {
+        self.wake.notified().await;
     }
 
     pub(super) fn subscribe_command_output(
@@ -169,10 +183,7 @@ impl TurnWorker {
         settings: SettingsFile,
         changes: broadcast::Sender<ProjectionChange>,
     ) -> Self {
-        let queue = TurnQueue {
-            wake: Arc::new(Notify::new()),
-            command_output: CommandOutputHub::new(commands.clone(), changes.clone()),
-        };
+        let queue = TurnQueue::new(commands.clone(), changes.clone());
         let (stop, signal) = oneshot::channel();
         let task = tokio::spawn(
             Worker {
@@ -242,7 +253,7 @@ impl Worker {
                 let titles_remain = tokio::select! {
                     biased;
                     _ = &mut *stop => return Ok(()),
-                    result = self.drain_titles(runtime.as_ref(), queue) => result?,
+                    result = self.drain_titles(runtime.as_ref(), claude, queue) => result?,
                 };
                 let pending = self.commands.pending_effects(cursor, EFFECT_BATCH_SIZE)?;
                 if pending.is_empty() {
@@ -276,6 +287,7 @@ impl Worker {
     async fn drain_titles(
         &self,
         runtime: Option<&ActiveRuntime>,
+        claude: &mut claude_worker::Runtimes,
         queue: &TurnQueue,
     ) -> Result<bool, WorkerError> {
         for _ in 0..EFFECT_BATCH_SIZE {
@@ -284,6 +296,7 @@ impl Worker {
             };
             let loaded = runtime.and_then(|runtime| runtime.loaded.get(&claim.thread_id));
             let client = runtime.map(|runtime| runtime.session.client());
+            claude.apply_title(&claim).await;
             self.apply_title_effect(claim, loaded, client).await?;
             queue.wake();
         }
@@ -359,10 +372,11 @@ impl Worker {
                 return Ok(None);
             };
             let result = claude
-                .execute(&self.commands, &self.settings, &claim, |sequence| {
+                .execute(&self.commands, &self.settings, &claim, queue, |sequence| {
                     self.publish(&claim.thread_id, sequence)
                 })
                 .await;
+            queue.wake();
             return match result {
                 Ok(sequence) => Ok(Some(sequence)),
                 Err(error) => {

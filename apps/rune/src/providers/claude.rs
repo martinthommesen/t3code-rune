@@ -1,6 +1,7 @@
 mod launch;
 mod probe;
 mod process;
+mod title;
 mod usage;
 mod wire;
 
@@ -18,6 +19,7 @@ use wire::Incoming;
 
 pub use launch::{Launch, PermissionMode, SessionTarget};
 pub use probe::{Probe, ProbeAccount, ProbeLaunch, ProbeModel};
+pub use title::{TitleRequest, run_title};
 pub use usage::{ContextUsage, ProcessLedger, TurnUsage};
 pub use wire::{
     AssistantBlock, AssistantMessage, AssistantSnapshot, CacheCreation, Initialization, Message,
@@ -95,6 +97,10 @@ impl Session {
 
     pub fn session_id(&self) -> Uuid {
         self.session_id
+    }
+
+    pub async fn rename_session(&mut self, title: &str) -> Result<bool, Error> {
+        self.process.rename_session(title, &mut self.early).await
     }
 
     pub async fn offer_text(&mut self, text: &str, prompt_id: Option<Uuid>) -> Result<(), Error> {

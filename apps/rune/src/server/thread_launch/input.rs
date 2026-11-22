@@ -223,9 +223,15 @@ fn javascript_property_index(key: &str) -> u32 {
 #[serde(rename_all = "camelCase", try_from = "ModelSelectionSource")]
 pub(super) struct ModelSelection {
     pub(super) instance_id: String,
-    model: Trimmed,
+    pub(super) model: Trimmed,
     #[serde(skip_serializing_if = "Option::is_none")]
     options: Option<Vec<Selection>>,
+}
+
+impl ModelSelection {
+    pub(super) fn without_options(&self) -> bool {
+        self.options.is_none()
+    }
 }
 
 impl TryFrom<ModelSelectionSource> for ModelSelection {
