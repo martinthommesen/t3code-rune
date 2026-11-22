@@ -17,6 +17,7 @@ use super::{Palette, ProjectSelection, ProjectView, SMALL, State, conversation::
 mod control;
 mod history;
 mod menu;
+mod mouse;
 mod selection;
 mod tabs;
 mod view;
@@ -57,6 +58,7 @@ pub(super) struct Pane {
     received_snapshot: bool,
     close_prompt: Option<ClosePrompt>,
     menu: Option<menu::Menu>,
+    mouse: mouse::Mouse,
     resize_preview: Option<f32>,
     wheel_remainder: f32,
     viewport_height: f32,
@@ -83,6 +85,7 @@ impl Pane {
             received_snapshot: false,
             close_prompt: None,
             menu: None,
+            mouse: mouse::Mouse::default(),
             resize_preview: None,
             wheel_remainder: 0.0,
             viewport_height: 0.0,
@@ -136,6 +139,7 @@ impl Pane {
         self.screen =
             TerminalScreen::new(snapshot.rows.unwrap_or(rows), snapshot.cols.unwrap_or(cols));
         self.wheel_remainder = 0.0;
+        self.mouse = mouse::Mouse::default();
         self.screen.process(snapshot.history.as_bytes());
         self.screen.take_replies();
         self.status = snapshot.status;
@@ -913,7 +917,10 @@ fn viewport(terminal: &Pane, active: bool, palette: Palette) -> El {
             state.open_terminal_menu(attachment, point, tx);
         })
         .on_drag(move |state: &mut State, drag, tx| {
-            state.drag_terminal_selection(attachment, drag, tx)
+            state.terminal_pointer_drag(attachment, drag, tx)
+        })
+        .on_pointer_move_local(move |state: &mut State, event, tx| {
+            state.terminal_pointer_move(attachment, event, tx)
         })
         .on_key(State::terminal_key)
         .on_wheel(move |state: &mut State, event, _| state.terminal_wheel(attachment, event))

@@ -4,7 +4,7 @@ use alacritty_terminal::{
 };
 use rune::{Color, Drag, El, Key, KeyEvent, Phase, WheelEvent, el};
 
-use super::{CELL_PADDING, CELL_WIDTH, LINE_HEIGHT, Palette, Pane, State, terminal_rgb};
+use super::{CELL_PADDING, LINE_HEIGHT, Palette, Pane, State, mouse, terminal_rgb};
 
 const TRACK_WIDTH: f32 = 6.0;
 const MIN_THUMB_HEIGHT: f32 = 18.0;
@@ -60,14 +60,10 @@ impl State {
             && !event.mods.logo
             && !event.mods.cmd
         {
-            let col = ((event.x - CELL_PADDING) / CELL_WIDTH)
-                .clamp(0.0, (term.columns() - 1) as f32) as u16
-                + 1;
-            let line = ((event.y - CELL_PADDING) / LINE_HEIGHT)
-                .clamp(0.0, (term.screen_lines() - 1) as f32) as u16
-                + 1;
-            let button = if rows > 0 { 64 } else { 65 } + if event.mods.alt { 8 } else { 0 };
-            if let Some((data, binary)) = mouse_report(modes, button, col, line) {
+            let button = if rows > 0 { 64 } else { 65 };
+            let position = mouse::cell_at(pane, event.x, event.y);
+            if let Some((data, binary)) = mouse::encode(modes, button, false, position, event.mods)
+            {
                 self.write_terminal_input_at(attachment, data.repeat(wheel_steps(rows)), binary);
             }
         } else if modes.contains(TermMode::ALT_SCREEN) {
@@ -120,19 +116,6 @@ impl State {
             .term
             .scroll_display(Scroll::Delta(geometry.from_top as i32 - target));
     }
-}
-
-fn mouse_report(modes: TermMode, button: u16, col: u16, line: u16) -> Option<(String, bool)> {
-    if modes.contains(TermMode::SGR_MOUSE) {
-        return Some((format!("\x1b[<{button};{col};{line}M"), false));
-    }
-    let utf8 = modes.contains(TermMode::UTF8_MOUSE);
-    if !utf8 && (col > 223 || line > 223) {
-        return None;
-    }
-    let mut data = "\x1b[M".to_owned();
-    data.extend([button, col, line].map(|n| char::from_u32(u32::from(32 + n)).unwrap()));
-    Some((data, !utf8))
 }
 
 fn wheel_steps(rows: i32) -> usize {
