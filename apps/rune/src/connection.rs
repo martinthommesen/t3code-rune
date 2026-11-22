@@ -219,6 +219,10 @@ pub(crate) enum Event {
         browse_id: Uuid,
         result: Result<FolderListing, String>,
     },
+    ProjectImages {
+        search_id: Uuid,
+        result: Result<ProjectImages, String>,
+    },
     Terminal {
         attachment: u64,
         update: TerminalUpdate,
@@ -311,6 +315,11 @@ enum Command {
         partial_path: String,
         cwd: Option<String>,
     },
+    SearchProjectImages {
+        search_id: Uuid,
+        cwd: String,
+        query: String,
+    },
     Terminal(terminal::Command),
 }
 
@@ -320,6 +329,23 @@ pub(crate) struct Connection {
     next_terminal_attachment: Cell<u64>,
     terminal_selection: Arc<terminal::Selection>,
     _shutdown: oneshot::Sender<()>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ProjectImages {
+    pub(crate) entries: Vec<ProjectImageEntry>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ProjectImageEntry {
+    pub(crate) path: String,
+    kind: String,
+}
+
+impl ProjectImageEntry {
+    pub(crate) fn is_file(&self) -> bool {
+        self.kind == "file"
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -335,6 +361,7 @@ pub(crate) enum ProjectEdit {
     Pinned(bool),
     Archived(bool),
     Icon(Option<ProjectIcon>),
+    IconFile(String),
 }
 
 impl ProjectEdit {
@@ -343,7 +370,7 @@ impl ProjectEdit {
             Self::Title(_) => ProjectEditKind::Title,
             Self::Pinned(_) => ProjectEditKind::Pinned,
             Self::Archived(_) => ProjectEditKind::Archived,
-            Self::Icon(_) => ProjectEditKind::Icon,
+            Self::Icon(_) | Self::IconFile(_) => ProjectEditKind::Icon,
         }
     }
 
@@ -355,6 +382,10 @@ impl ProjectEdit {
             Self::Icon(icon) => {
                 payload["projectIcon"] = json!(icon);
                 payload["faviconPath"] = Value::Null;
+            }
+            Self::IconFile(path) => {
+                payload["projectIcon"] = Value::Null;
+                payload["faviconPath"] = json!(path);
             }
         }
     }
@@ -613,6 +644,14 @@ impl Connection {
             command_id,
             workspace_root,
             title,
+        });
+    }
+
+    pub(crate) fn search_project_images(&self, search_id: Uuid, cwd: String, query: String) {
+        let _ = self.commands.send(Command::SearchProjectImages {
+            search_id,
+            cwd,
+            query,
         });
     }
 
@@ -1106,6 +1145,7 @@ struct Session {
     pending_projects: HashMap<String, (String, Instant, ProjectCreation)>,
     pending_project_edits: HashMap<String, (String, ProjectEditKind, Instant)>,
     pending_folder: Option<(String, Uuid, Instant)>,
+    pending_project_images: Option<(String, Uuid, Instant)>,
     pending_launches: HashMap<String, (LaunchStage, Instant)>,
     pending_git_refs: HashMap<String, GitRefsRequest>,
     pending_git_checkouts: HashMap<String, String>,
@@ -1217,6 +1257,7 @@ impl Session {
             pending_projects: HashMap::new(),
             pending_project_edits: HashMap::new(),
             pending_folder: None,
+            pending_project_images: None,
             pending_launches: HashMap::new(),
             pending_git_refs: HashMap::new(),
             pending_git_checkouts: HashMap::new(),
@@ -1636,6 +1677,35 @@ impl Session {
             Command::ObserveOutput(command) => self.command_output(command, events).await?,
             Command::RespondToRuntimeRequest(response) => {
                 self.respond_to_runtime_request(response, events).await?
+            }
+            Command::SearchProjectImages {
+                search_id,
+                cwd,
+                query,
+            } => {
+                if self.filesystem_read {
+                    if let Some((previous, ..)) = self.pending_project_images.take() {
+                        self.interrupt(&previous).await?;
+                    }
+                    let id = self.allocate_id();
+                    self.pending_project_images = Some((id.clone(), search_id, Instant::now()));
+                    self.send_request(
+                        &id,
+                        "projects.searchEntries",
+                        json!({
+                            "cwd": cwd,
+                            "query": query,
+                            "limit": 200,
+                            "imageOnly": true,
+                        }),
+                    )
+                    .await?;
+                } else {
+                    events.send(Event::ProjectImages {
+                        search_id,
+                        result: Err("This connection cannot search host files.".into()),
+                    });
+                }
             }
             Command::BrowseFolder {
                 browse_id,
@@ -2483,6 +2553,23 @@ impl Session {
                     return Ok(());
                 }
                 if self
+                    .pending_project_images
+                    .as_ref()
+                    .is_some_and(|(id, ..)| *id == request_id)
+                {
+                    let (_, search_id, _) = self
+                        .pending_project_images
+                        .take()
+                        .expect("matched search request");
+                    let result = exit.into_result().and_then(|value| {
+                        serde_json::from_value(value).map_err(|_| {
+                            "The environment returned an invalid image search result.".to_owned()
+                        })
+                    });
+                    events.send(Event::ProjectImages { search_id, result });
+                    return Ok(());
+                }
+                if self
                     .pending_folder
                     .as_ref()
                     .is_some_and(|(id, ..)| *id == request_id)
@@ -2711,6 +2798,12 @@ async fn run(
                 result: Err("The connection closed before confirming the project change.".into()),
             });
         }
+        if let Some((_, search_id, _)) = session.pending_project_images.take() {
+            events.send(Event::ProjectImages {
+                search_id,
+                result: Err("The connection closed before the search finished.".into()),
+            });
+        }
         if let Some((_, browse_id, _)) = session.pending_folder.take() {
             events.send(Event::FolderBrowsed {
                 browse_id,
@@ -2825,6 +2918,13 @@ async fn run_socket(
                     events.send(Event::ThreadStopFailed {thread_id:thread_id.clone(), message:"Stop could not be confirmed.".into()});
                     false
                 });
+                if session.pending_project_images.as_ref().is_some_and(|(_, _, started)| started.elapsed() >= REQUEST_TIMEOUT)
+                    && let Some((id, search_id, _)) = session.pending_project_images.take()
+                {
+                    session.interrupt(&id).await?;
+                    events.send(Event::ProjectImages { search_id,
+                        result: Err("The environment did not return the image search in time.".into()) });
+                }
                 if session.pending_folder.as_ref().is_some_and(|(_, _, started)| started.elapsed() >= REQUEST_TIMEOUT)
                     && let Some((id, browse_id, _)) = session.pending_folder.take()
                 {

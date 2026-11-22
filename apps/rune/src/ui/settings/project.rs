@@ -10,8 +10,11 @@ use crate::ui::sidebar::project_badge;
 use super::super::{Palette, State, Workspace, error_text};
 use super::{CONTROL, DESCRIPTION, DIALOG, GEAR, Page, RESET, icon_button};
 
+mod icon_files;
 mod icon_picker;
 
+pub(super) use icon_files::overlay as file_overlay;
+pub(in crate::ui) use icon_files::{poll as poll_files, settle as settle_files};
 pub(super) use icon_picker::overlay as icon_overlay;
 
 const PROJECT_NAME: &str = "project-settings-name";
@@ -31,6 +34,7 @@ pub(super) struct Form {
     dirty: bool,
     pending: HashSet<ProjectEditKind>,
     icon_picker: Option<icon_picker::Picker>,
+    file_picker: Option<icon_files::Picker>,
 }
 
 impl Form {
@@ -45,6 +49,7 @@ impl Form {
             dirty: false,
             pending: HashSet::new(),
             icon_picker: None,
+            file_picker: None,
         }
     }
 
@@ -594,7 +599,11 @@ fn icon_setting(
             palette.dark,
             24.0,
         ))
-        .child(icon_picker::opener(palette, enabled));
+        .child(icon_picker::opener(palette, enabled))
+        .child(icon_files::opener(
+            palette,
+            enabled && workspace.filesystem_read,
+        ));
     setting_row(
         "Project icon",
         &description,

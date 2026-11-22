@@ -7,6 +7,7 @@ use crate::connection::{Connection, FaviconBytes, FaviconTarget, Project, Projec
 #[derive(Default)]
 pub(super) struct ProjectFavicons {
     targets: HashMap<String, FaviconTarget>,
+    previews: HashSet<FaviconTarget>,
     images: HashMap<FaviconTarget, Favicon>,
 }
 
@@ -30,7 +31,17 @@ impl ProjectFavicons {
                 (project.id.clone(), target)
             })
             .collect();
-        let targets: HashSet<&FaviconTarget> = self.targets.values().collect();
+        self.reconcile(connection);
+    }
+
+    pub(super) fn previews(&mut self, targets: Vec<FaviconTarget>, connection: &Connection) {
+        self.previews = targets.into_iter().collect();
+        self.reconcile(connection);
+    }
+
+    fn reconcile(&mut self, connection: &Connection) {
+        let targets: HashSet<&FaviconTarget> =
+            self.targets.values().chain(&self.previews).collect();
         self.images.retain(|target, _| targets.contains(target));
         connection.load_project_favicons(
             targets
@@ -85,7 +96,10 @@ impl ProjectFavicons {
     }
 
     pub(super) fn image(&self, project: &Project) -> Option<&Image> {
-        let target = self.targets.get(&project.id)?;
+        self.preview(self.targets.get(&project.id)?)
+    }
+
+    pub(super) fn preview(&self, target: &FaviconTarget) -> Option<&Image> {
         match self.images.get(target)? {
             Favicon::Ready(image) => Some(image),
             _ => None,

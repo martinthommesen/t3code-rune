@@ -590,6 +590,13 @@ fn field(edit: &TextEdit, key: &str, label: &str, palette: Palette) -> El {
         .color(palette.ink)
         .border(1.0, palette.line)
         .focus_ring(1.0, 1.0, palette.accent)
+        .on_input_key(|state: &mut State, event, tx| {
+            if event.key != Key::Escape {
+                return false;
+            }
+            state.close_project_icon(tx);
+            true
+        })
 }
 
 fn button(key: &str, label: &str, width: f32, height: f32, palette: Palette) -> El {

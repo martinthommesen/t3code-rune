@@ -254,6 +254,7 @@ struct State {
     connection: Option<Connection>,
     connection_error: Option<String>,
     workspace: Option<Workspace>,
+    local_environment: bool,
     draft_environment: Option<String>,
     drafts: HashMap<String, Draft>,
     new_thread_drafts: HashMap<String, Draft>,
@@ -288,6 +289,7 @@ impl Default for State {
             connection: None,
             connection_error: None,
             workspace: None,
+            local_environment: false,
             draft_environment: None,
             drafts: HashMap::new(),
             new_thread_drafts: HashMap::new(),
@@ -914,6 +916,7 @@ impl State {
         changed |= self.poll_question(clock);
         changed |= sidebar::poll_rename(self);
         changed |= settings::poll_project(self);
+        changed |= settings::poll_project_files(self, tx);
         changed |= worktree_setup::poll(self, tx);
         if self.sidebar_open
             && self
@@ -1025,6 +1028,9 @@ impl State {
                 result,
             } => settings::settle_project_edit(self, &project_id, kind, result),
             Event::FolderBrowsed { browse_id, result } => self.folder_browsed(browse_id, result),
+            Event::ProjectImages { search_id, result } => {
+                settings::settle_project_files(self, search_id, result)
+            }
             Event::Thread { thread_id, entries } => {
                 conversation::command_row::entries_changed(self, &thread_id, &entries);
                 if let Some(conversation) = self.conversation_mut(&thread_id) {
@@ -1658,7 +1664,7 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
     } else {
         state
             .terminal_close_dialog(palette)
-            .or_else(|| settings::overlay(state, palette, width))
+            .or_else(|| settings::overlay(state, palette, width, height))
     };
     let modal_open = modal.is_some();
     let mut body = col()
@@ -2195,6 +2201,7 @@ pub(crate) fn run(
         poll: Some(State::poll),
         ..AppSpec::new("T3 Code", (1100.0, 780.0), State::default, view)
     };
+    let local_environment = state_dir.is_some();
     let app = App::new(spec)
         .titlebar(rune::Titlebar::new(sidebar_header::HEIGHT))
         .chrome(rune::Chrome {
@@ -2205,6 +2212,7 @@ pub(crate) fn run(
             let onboarding = onboarding::Onboarding::new(&client_settings);
             let mut state = State {
                 client_settings,
+                local_environment,
                 onboarding,
                 ..State::default()
             };

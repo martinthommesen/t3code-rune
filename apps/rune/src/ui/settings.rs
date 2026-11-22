@@ -8,6 +8,7 @@ mod project;
 pub(super) use project::{
     gear as project_settings_gear, poll as poll_project, settle as settle_project_edit,
 };
+pub(super) use project::{poll_files as poll_project_files, settle_files as settle_project_files};
 
 const CONTROL: TextStyle = TextStyle::new(14.0, 500.0).lh(20.0);
 const SECTION: TextStyle = TextStyle::new(16.0, 600.0).lh(24.0);
@@ -132,7 +133,7 @@ pub(super) fn opener(palette: Palette) -> El {
     )
 }
 
-pub(super) fn overlay(state: &State, palette: Palette, width: f32) -> Option<El> {
+pub(super) fn overlay(state: &State, palette: Palette, width: f32, height: f32) -> Option<El> {
     if !state.settings.open {
         return None;
     }
@@ -160,7 +161,8 @@ pub(super) fn overlay(state: &State, palette: Palette, width: f32) -> Option<El>
         Page::Appearance => appearance::page(state, palette, content_width),
         Page::Projects => project::page(state, palette, content_width),
     };
-    let icon_picker = project::icon_overlay(state, palette, width);
+    let picker = project::icon_overlay(state, palette, width)
+        .or_else(|| project::file_overlay(state, palette, width, height));
     let dialog = row()
         .key(DIALOG)
         .hit()
@@ -192,7 +194,7 @@ pub(super) fn overlay(state: &State, palette: Palette, width: f32) -> Option<El>
                 .child(header(page, palette, color.border))
                 .child(content),
         );
-    let dialog = if icon_picker.is_some() {
+    let dialog = if picker.is_some() {
         dialog.inert()
     } else {
         dialog
@@ -210,7 +212,7 @@ pub(super) fn overlay(state: &State, palette: Palette, width: f32) -> Option<El>
                 .on_press_tx(State::close_client_settings),
         )
         .child(dialog);
-    if let Some(picker) = icon_picker {
+    if let Some(picker) = picker {
         overlay = overlay.child(picker);
     }
     Some(overlay)
