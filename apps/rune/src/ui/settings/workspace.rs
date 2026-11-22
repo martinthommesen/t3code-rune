@@ -4,7 +4,7 @@ use rune::{
 };
 use uuid::Uuid;
 
-use crate::connection::{WorkspaceMode, WorkspaceSetting};
+use crate::connection::{WorkspaceMode, WorkspaceSetting, WorktreeLocation};
 use t3_rune::providers::codex::RuntimeMode;
 
 use super::{CONTROL, DESCRIPTION, Palette, RESET, SECTION, State, error_text};
@@ -137,6 +137,20 @@ impl Panel {
             managed_by: origin.managed_by.as_deref(),
         })
     }
+    pub(super) fn worktree_location(&self) -> Option<&WorktreeLocation> {
+        if self.project_selected() {
+            return None;
+        }
+        self.current.as_ref()?.worktree_location.as_ref()
+    }
+
+    pub(super) fn can_edit_worktree_location(&self, state: &State) -> bool {
+        self.pending.is_none()
+            && self
+                .worktree_location()
+                .is_some_and(|setting| self.scoped_writable(state, setting.writable))
+    }
+
     fn effective(&self) -> Option<WorkspaceMode> {
         let setting = self.current.as_ref()?;
         Some(
@@ -175,6 +189,22 @@ pub(super) fn save_origin(state: &mut State, enabled: Option<bool>) {
         .connection
         .as_ref()
         .and_then(|connection| connection.update_worktree_origin(project, enabled));
+    start_write(&mut state.settings.workspace, operation);
+}
+
+pub(super) fn save_worktree_location(state: &mut State, path: String) {
+    let panel = &state.settings.workspace;
+    if !panel.can_edit_worktree_location(state)
+        || panel
+            .worktree_location()
+            .is_some_and(|setting| setting.path == path)
+    {
+        return;
+    }
+    let operation = state
+        .connection
+        .as_ref()
+        .and_then(|connection| connection.update_worktree_location(path));
     start_write(&mut state.settings.workspace, operation);
 }
 

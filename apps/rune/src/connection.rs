@@ -70,7 +70,7 @@ pub(crate) use terminal::{
     TerminalAttach, TerminalSnapshot, TerminalStatus, TerminalTarget, TerminalUpdate,
 };
 pub(crate) use workspace_retry::WorkspaceRetry;
-pub(crate) use workspace_settings::{PermissionSetting, WorkspaceSetting};
+pub(crate) use workspace_settings::{PermissionSetting, WorkspaceSetting, WorktreeLocation};
 pub(crate) use worktree_setup::WorktreeSetup;
 
 const PROTOCOL_VERSION: u32 = 2;

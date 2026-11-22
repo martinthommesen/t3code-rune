@@ -938,6 +938,7 @@ impl State {
         changed |= self.poll_project_browse();
         changed |= self.poll_question(clock);
         changed |= sidebar::poll_rename(self);
+        changed |= settings::poll_worktree_location(self, tx);
         changed |= settings::poll_project(self);
         changed |= settings::poll_project_files(self, tx);
         changed |= worktree_setup::poll(self, tx);

@@ -31,6 +31,7 @@ macro_rules! glyph {
 mod archive;
 mod keybindings;
 pub(super) use archive::settle as settle_archive_action;
+pub(super) use worktrees::poll_location as poll_worktree_location;
 
 static GEAR: Icon = glyph!(
     "settings",
@@ -70,6 +71,7 @@ pub(super) struct Panel {
     page: Page,
     project: Option<project::Form>,
     workspace: workspace::Panel,
+    worktree_location: worktrees::LocationPanel,
     keybindings: keybindings::Panel,
     return_focus: &'static str,
 }
@@ -89,6 +91,7 @@ impl Default for Panel {
             page: Page::General,
             project: None,
             workspace: workspace::Panel::default(),
+            worktree_location: worktrees::LocationPanel::default(),
             keybindings: keybindings::Panel::default(),
             return_focus: "open-client-settings",
         }
@@ -174,6 +177,11 @@ impl State {
         &mut self,
         setting: Option<crate::connection::WorkspaceSetting>,
     ) {
+        self.settings.worktree_location.update(
+            setting
+                .as_ref()
+                .and_then(|settings| settings.worktree_location.as_ref()),
+        );
         self.settings.workspace.current = setting;
     }
 
@@ -186,6 +194,7 @@ impl State {
     }
 
     pub(super) fn workspace_settings_disconnected(&mut self, final_disconnect: bool) {
+        self.settings.worktree_location.update(None);
         if final_disconnect {
             self.settings.workspace.stop();
         } else {

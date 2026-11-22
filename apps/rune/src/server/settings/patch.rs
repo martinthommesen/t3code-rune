@@ -1,8 +1,8 @@
 use std::sync::OnceLock;
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
-use super::{Fields, project_overrides::ProjectPatch};
+use super::{Fields, project_overrides::ProjectPatch, text, worktree_location_history};
 
 const RUNTIME_MODES: &str =
     "Expected \"approval-required\" | \"auto-accept-edits\" | \"auto\" | \"full-access\"";
@@ -63,7 +63,12 @@ impl Patch {
                 return Err(format!("{expected}\n  at [\"patch\"][\"{key}\"]"));
             }
             if supported(key) {
-                patch.fields.insert(key.to_owned(), value.clone());
+                let value = if key == "worktreesDirectory" {
+                    text(value).expect("worktree location is a string").into()
+                } else {
+                    value.clone()
+                };
+                patch.fields.insert(key.to_owned(), value);
             } else if patch.unsupported.is_none() {
                 patch.unsupported = Some(key.to_owned());
             }
@@ -103,6 +108,9 @@ impl Patch {
             projects.apply(stored)?;
         }
         for (key, value) in self.fields {
+            if key == "worktreesDirectory" {
+                update_worktree_location_history(stored, value.as_str().expect("decoded location"));
+            }
             if value == defaults[&key] {
                 stored.shift_remove(&key);
             } else {
@@ -110,6 +118,29 @@ impl Patch {
             }
         }
         Ok(())
+    }
+}
+
+fn update_worktree_location_history(stored: &mut Fields, next: &str) {
+    let previous = stored
+        .get("worktreesDirectory")
+        .and_then(text)
+        .unwrap_or("");
+    if previous == next {
+        return;
+    }
+    let history = worktree_location_history(stored).unwrap_or_default();
+    let remember_previous = !previous.is_empty() && !history.contains(&previous);
+    let history: Vec<_> = history
+        .into_iter()
+        .filter(|directory| *directory != next)
+        .chain(remember_previous.then_some(previous))
+        .collect();
+    let key = "previousWorktreesDirectories";
+    if history.is_empty() {
+        stored.shift_remove(key);
+    } else {
+        stored.insert(key.to_owned(), json!(history));
     }
 }
 
@@ -129,11 +160,13 @@ fn supported(key: &str) -> bool {
             | "defaultRuntimeMode"
             | "defaultThreadEnvMode"
             | "newWorktreesStartFromOrigin"
+            | "worktreesDirectory"
     )
 }
 
 pub(super) fn invalid_value(key: &str, value: &Value) -> Option<&'static str> {
     match key {
+        "worktreesDirectory" if !value.is_string() => Some("Expected string"),
         "continueThreadsAfterServerUpdate"
         | "defaultAutoPull"
         | "newWorktreesStartFromOrigin"

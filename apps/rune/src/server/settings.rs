@@ -292,6 +292,15 @@ fn text(value: &Value) -> Option<&str> {
     value.as_str().map(trim)
 }
 
+fn worktree_location_history(fields: &Fields) -> Option<Vec<&str>> {
+    fields
+        .get("previousWorktreesDirectories")?
+        .as_array()?
+        .iter()
+        .map(text)
+        .collect()
+}
+
 fn nonblank(value: &Value) -> Option<&str> {
     text(value).filter(|value| !value.is_empty())
 }

@@ -14,12 +14,14 @@ use super::{
 const KEY: &str = "defaultThreadEnvMode";
 const ORIGIN: &str = "newWorktreesStartFromOrigin";
 const PERMISSIONS: &str = "defaultRuntimeMode";
+const DIRECTORY: &str = "worktreesDirectory";
 const PROJECT_OVERRIDES: &str = "projectSettingsOverrides";
 
 pub(super) enum Edit {
     Mode(Option<WorkspaceMode>),
     StartFromRemote(Option<bool>),
     Permissions(Option<RuntimeMode>),
+    WorktreesDirectory(String),
 }
 
 impl Edit {
@@ -32,6 +34,7 @@ impl Edit {
             Self::Permissions(Some(mode)) => (PERMISSIONS, json!(mode)),
             Self::Permissions(None) if project_scope => (PERMISSIONS, Value::Null),
             Self::Permissions(None) => (PERMISSIONS, json!(RuntimeMode::FullAccess)),
+            Self::WorktreesDirectory(path) => (DIRECTORY, json!(path)),
         }
     }
 }
@@ -113,10 +116,18 @@ impl PermissionSetting {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+pub(crate) struct WorktreeLocation {
+    pub(crate) path: String,
+    pub(crate) writable: bool,
+    pub(crate) managed_by: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct WorkspaceSetting {
     pub(crate) configured: Option<WorkspaceMode>,
     pub(crate) origin: OriginSetting,
     pub(crate) permission: PermissionSetting,
+    pub(crate) worktree_location: Option<WorktreeLocation>,
     pub(crate) projects: HashMap<String, WorkspaceMode>,
     pub(crate) writable: bool,
     pub(crate) managed_by: Option<String>,
@@ -127,6 +138,8 @@ pub(super) struct Subscription {
     managed_by: Option<String>,
     origin_managed_by: Option<String>,
     permission_policy: PermissionPolicy,
+    directory_supported: bool,
+    directory_managed_by: Option<String>,
     pending: Option<Pending>,
     overrides: Map<String, Value>,
     pending_file: Option<Pending>,
@@ -145,6 +158,8 @@ impl Subscription {
             managed_by: None,
             origin_managed_by: None,
             permission_policy: PermissionPolicy::default(),
+            directory_supported: false,
+            directory_managed_by: None,
             pending: None,
             overrides: Map::new(),
             pending_file: None,
@@ -163,6 +178,10 @@ impl Subscription {
                     self.managed_by = managed_by(&config["managedPolicy"], KEY);
                     self.origin_managed_by = managed_by(&config["managedPolicy"], ORIGIN);
                     self.permission_policy = PermissionPolicy::read(&config["managedPolicy"]);
+                    self.directory_supported =
+                        config["environment"]["capabilities"][DIRECTORY].as_bool() == Some(true);
+                    self.directory_managed_by = managed_by(&config["managedPolicy"], DIRECTORY);
+
                     &config["settings"]
                 }
                 Some("settingsUpdated") => &event["payload"]["settings"],
@@ -178,11 +197,18 @@ impl Subscription {
                     settings[ORIGIN].as_bool().unwrap_or(true),
                     RuntimeMode::deserialize(&settings[PERMISSIONS])
                         .unwrap_or(RuntimeMode::FullAccess),
+                    settings[DIRECTORY].as_str().unwrap_or(""),
                 ));
             }
         }
-        current.map(|(configured, origin, permissions)| WorkspaceSetting {
+        current.map(|(configured, origin, permissions, path)| WorkspaceSetting {
             configured,
+            worktree_location: self.directory_supported.then(|| WorktreeLocation {
+                path: path.to_owned(),
+                writable: self.can_write && self.directory_managed_by.is_none(),
+                managed_by: self.directory_managed_by.clone(),
+            }),
+
             origin: OriginSetting {
                 enabled: origin,
                 projects: self
@@ -296,6 +322,10 @@ impl Connection {
         self.update_workspace_setting(project_id, Edit::Permissions(mode))
     }
 
+    pub(crate) fn update_worktree_location(&self, path: String) -> Option<Uuid> {
+        self.update_workspace_setting(None, Edit::WorktreesDirectory(path))
+    }
+
     fn update_workspace_setting(&self, project_id: Option<String>, edit: Edit) -> Option<Uuid> {
         let operation = Uuid::new_v4();
         self.commands
@@ -333,8 +363,13 @@ impl Session {
             Edit::Mode(_) => &settings.managed_by,
             Edit::StartFromRemote(_) => &settings.origin_managed_by,
             Edit::Permissions(_) => &settings.permission_policy.managed_by,
+            Edit::WorktreesDirectory(_) => &settings.directory_managed_by,
         };
-        let denied = if let Some(organization) = managed_by {
+        let denied = if matches!(edit, Edit::WorktreesDirectory(_))
+            && (project_id.is_some() || !settings.directory_supported)
+        {
+            Some("Worktree location is unavailable for this scope.".into())
+        } else if let Some(organization) = managed_by {
             Some(format!("Managed by {organization}."))
         } else if !settings.can_write {
             Some("This connection lacks permission to change environment settings.".into())

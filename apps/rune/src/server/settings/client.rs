@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 use super::providers::{ProviderInstance, driver_default};
 use super::{
     Fields, nonblank, project_overrides as overrides, project_scripts, secret_slug, slug, text,
-    trim,
+    trim, worktree_location_history,
 };
 
 const MODEL_SELECTIONS: &[&str] = &[
@@ -72,6 +72,9 @@ pub(super) fn project(
         if let Some(value) = raw.get(key).and_then(text) {
             fields.insert(key.to_owned(), value.into());
         }
+    }
+    if let Some(history) = worktree_location_history(raw) {
+        fields.insert("previousWorktreesDirectories".to_owned(), json!(history));
     }
     if let Some(retention) = raw.get("usageHistoryRetentionDays")
         && (retention == "unlimited" || retention.as_u64().is_some_and(|value| value > 0))

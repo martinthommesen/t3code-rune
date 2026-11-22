@@ -6,6 +6,11 @@ use super::{
     workspace,
 };
 
+mod location;
+
+pub(super) use location::LocationPanel;
+pub(in crate::ui) use location::poll as poll_location;
+
 const SWITCH: &str = "start-from-remote";
 const LABEL: &str = "Start new worktrees from remote by default";
 const DESCRIPTION_COPY: &str = concat!(
@@ -98,26 +103,24 @@ pub(super) fn page(state: &State, palette: Palette, width: f32, large: bool) -> 
     } else {
         col().gap(12.0).child(label).child(switch)
     };
-    let mut section = col()
-        .key("worktree-creation")
+    let mut section = col().key("worktree-creation").w_full().gap(10.0).child(
+        text("Creation")
+            .font(SECTION)
+            .color(palette.ink)
+            .role("heading")
+            .px(16.0),
+    );
+    let mut rows = col()
         .w_full()
-        .gap(10.0)
-        .child(
-            text("Creation")
-                .font(SECTION)
-                .color(palette.ink)
-                .role("heading")
-                .px(16.0),
-        )
-        .child(
-            row.key("start-from-origin")
-                .w_full()
-                .px(16.0)
-                .py(12.0)
-                .radius(12.0)
-                .border(1.0, palette.line)
-                .border_layout(),
-        );
+        .radius(12.0)
+        .border(1.0, palette.line)
+        .border_layout();
+    if let Some(location) = location::view(state, palette, width) {
+        rows = rows
+            .child(location)
+            .child(rune::el().w_full().h(1.0).fill(palette.line));
+    }
+    section = section.child(rows.child(row.key("start-from-origin").w_full().px(16.0).py(12.0)));
     if let Some(error) = settings.error() {
         section = section.child(error_text(error, palette));
     }
