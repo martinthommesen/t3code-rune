@@ -4,7 +4,7 @@ use rune::{
 };
 use uuid::Uuid;
 
-use crate::connection::{Project, WorkspaceMode};
+use crate::connection::{Project, ProjectFileWorkspaceSettings};
 use crate::ui::sidebar::project_badge;
 
 use super::{CHEVRON, CONTROL, ITEM, Palette, State, surface};
@@ -16,17 +16,17 @@ const SEARCH: &str = "threads-project-scope-search";
 #[derive(Default)]
 pub(super) struct Scope {
     pub(super) id: Option<String>,
-    pub(super) file_mode: Option<WorkspaceMode>,
+    pub(super) file: ProjectFileWorkspaceSettings,
     file_request: Option<Uuid>,
     highlight: Option<usize>,
     query: TextEdit,
 }
 
 impl Scope {
-    pub(super) fn apply_file(&mut self, operation: Uuid, mode: Option<WorkspaceMode>) {
+    pub(super) fn apply_file(&mut self, operation: Uuid, settings: ProjectFileWorkspaceSettings) {
         if self.file_request == Some(operation) {
             self.file_request = None;
-            self.file_mode = mode;
+            self.file = settings;
         }
     }
 
@@ -36,7 +36,10 @@ impl Scope {
     }
 
     pub(super) fn reload(state: &mut State) {
-        if state.settings.page != super::super::Page::Threads {
+        if !matches!(
+            state.settings.page,
+            super::super::Page::Threads | super::super::Page::Worktrees
+        ) {
             return;
         }
         let scope = &mut state.settings.workspace.scope;
@@ -340,8 +343,11 @@ fn close(state: &mut State, tx: &mut Tx) {
 pub(super) fn choose(state: &mut State, id: Option<String>, tx: &mut Tx) {
     close(state, tx);
     let settings = &mut state.settings.workspace;
+    if settings.scope.id != id {
+        settings.submodules.collapse();
+    }
     settings.scope.id = id;
-    settings.scope.file_mode = None;
+    settings.scope.file = ProjectFileWorkspaceSettings::default();
     settings.scope.file_request = None;
     settings.error = None;
     Scope::reload(state);

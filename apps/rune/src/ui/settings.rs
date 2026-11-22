@@ -145,6 +145,7 @@ impl State {
         self.settings.open = false;
         self.settings.keybindings.clear_view();
         self.settings.archive.leave();
+        self.settings.workspace.submodules.collapse();
         self.settings.workspace.close_popups();
         self.settings.error = None;
         tx.focus(self.settings.return_focus, tx.focus_visible());
@@ -179,6 +180,9 @@ impl State {
         self.save_project_name();
         if self.settings.page == Page::Keybindings && page != Page::Keybindings {
             self.settings.keybindings.clear_view();
+        }
+        if self.settings.page != page {
+            self.settings.workspace.submodules.collapse();
         }
         self.settings.page = page;
         if page != Page::Archive {
@@ -258,9 +262,11 @@ impl State {
     pub(super) fn set_workspace_project_file(
         &mut self,
         operation: uuid::Uuid,
-        mode: Option<crate::connection::WorkspaceMode>,
+        settings: crate::connection::ProjectFileWorkspaceSettings,
     ) {
-        self.settings.workspace.apply_project_file(operation, mode);
+        self.settings
+            .workspace
+            .apply_project_file(operation, settings);
     }
 
     pub(super) fn ensure_open_workspace_settings(&mut self) {

@@ -5,7 +5,8 @@ use rune::{
 use uuid::Uuid;
 
 use crate::connection::{
-    BranchNamingMode, BranchTextField, WorkspaceMode, WorkspaceSetting, WorktreeLocation,
+    BranchNamingMode, BranchTextField, ProjectFileWorkspaceSettings, SubmoduleMode, WorkspaceMode,
+    WorkspaceSetting, WorktreeLocation,
 };
 use t3_rune::providers::codex::RuntimeMode;
 
@@ -49,6 +50,7 @@ pub(super) struct Panel {
     scope: scope::Scope,
     pub(super) snooze: snooze::Panel,
     pub(super) project_start: project_start::Panel,
+    pub(super) submodules: super::worktrees::SubmodulesPanel,
     pending: Option<Uuid>,
     error: Option<String>,
 }
@@ -63,6 +65,13 @@ pub(super) struct BranchTextView<'a> {
 
 pub(super) struct BranchNamingView<'a> {
     pub(super) mode: BranchNamingMode,
+    pub(super) may_reset: bool,
+    pub(super) writable: bool,
+    pub(super) managed_by: Option<&'a str>,
+}
+
+pub(super) struct SubmodulesView<'a> {
+    pub(super) mode: SubmoduleMode,
     pub(super) may_reset: bool,
     pub(super) writable: bool,
     pub(super) managed_by: Option<&'a str>,
@@ -93,6 +102,7 @@ impl Panel {
     pub(super) fn stop(&mut self) {
         self.disconnect();
         self.scope = scope::Scope::default();
+        self.submodules.collapse();
         self.pending = None;
         self.error = None;
     }
@@ -107,10 +117,15 @@ impl Panel {
         self.permission_typeahead.clear();
         self.scope.close();
         self.snooze.close_menu();
+        self.submodules.dismiss();
     }
 
-    pub(super) fn apply_project_file(&mut self, operation: Uuid, mode: Option<WorkspaceMode>) {
-        self.scope.apply_file(operation, mode);
+    pub(super) fn apply_project_file(
+        &mut self,
+        operation: Uuid,
+        settings: ProjectFileWorkspaceSettings,
+    ) {
+        self.scope.apply_file(operation, settings);
     }
 
     pub(super) fn refresh_project_file(state: &mut State) {
@@ -203,6 +218,29 @@ impl Panel {
         self.pending.is_some()
     }
 
+    pub(super) fn submodules_view(&self, state: &State) -> Option<SubmodulesView<'_>> {
+        let setting = &self.current.as_ref()?.submodules;
+        let project_mode = self
+            .scope
+            .id
+            .as_ref()
+            .and_then(|id| setting.projects.get(id))
+            .copied();
+        let configured = project_mode.or(setting.environment);
+        Some(SubmodulesView {
+            mode: configured
+                .or(self.scope.file.submodules)
+                .unwrap_or_default(),
+            may_reset: if self.project_selected() {
+                project_mode.is_some()
+            } else {
+                setting.environment.is_some()
+            },
+            writable: self.scoped_writable(state, setting.writable),
+            managed_by: setting.managed_by.as_deref(),
+        })
+    }
+
     pub(super) fn origin_view(&self, state: &State) -> Option<OriginView<'_>> {
         let origin = &self.current.as_ref()?.origin;
         let project = self
@@ -241,7 +279,7 @@ impl Panel {
         Some(
             self.configured()
                 .or(setting.configured)
-                .or(self.scope.file_mode)
+                .or(self.scope.file.mode)
                 .unwrap_or_default(),
         )
     }
@@ -254,6 +292,10 @@ pub(super) fn inheritance_marker(label: String, palette: Palette) -> El {
         .role("img")
         .label(label)
         .child(icon(&LAYERS, 12.0).color(palette.muted).a11y_hidden())
+}
+
+pub(super) fn submodules_inheritance_marker(state: &State, palette: Palette) -> El {
+    inheritance::marker(state, inheritance::Setting::Submodules, palette)
 }
 
 pub(super) fn scope_header(state: &State, palette: Palette) -> El {
@@ -292,6 +334,23 @@ pub(super) fn save_branch_naming(state: &mut State, mode: Option<BranchNamingMod
         .connection
         .as_ref()
         .and_then(|connection| connection.update_branch_naming_mode(panel.scope.id.clone(), mode));
+    start_write(&mut state.settings.workspace, operation);
+}
+
+pub(super) fn save_submodules(state: &mut State, mode: Option<SubmoduleMode>) {
+    let panel = &state.settings.workspace;
+    if panel.pending.is_some()
+        || !panel
+            .submodules_view(state)
+            .is_some_and(|setting| setting.writable)
+    {
+        return;
+    }
+    let project = panel.scope.id.clone();
+    let operation = state
+        .connection
+        .as_ref()
+        .and_then(|connection| connection.update_worktree_submodules(project, mode));
     start_write(&mut state.settings.workspace, operation);
 }
 

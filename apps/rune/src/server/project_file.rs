@@ -21,7 +21,7 @@ pub(crate) fn workspace_mode(source: &str) -> Option<WorkspaceMode> {
     }
 }
 
-pub(super) fn parse(source: &str) -> Option<Map<String, Value>> {
+pub(crate) fn parse(source: &str) -> Option<Map<String, Value>> {
     let Value::Object(file) = parse_settings_json(source)? else {
         return None;
     };

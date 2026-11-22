@@ -1237,8 +1237,11 @@ impl State {
                 }
                 self.set_workspace_configuration(settings.map(|snapshot| *snapshot));
             }
-            Event::WorkspaceProjectFile { operation, mode } => {
-                self.set_workspace_project_file(operation, mode);
+            Event::WorkspaceProjectFile {
+                operation,
+                settings,
+            } => {
+                self.set_workspace_project_file(operation, settings);
             }
             Event::WorkspaceSettingSettled { operation, result } => {
                 if let Some(workspace) = &mut self.workspace {

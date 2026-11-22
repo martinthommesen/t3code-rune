@@ -3,7 +3,7 @@ use rune::{
 };
 use t3_rune::providers::codex::RuntimeMode;
 
-use crate::connection::{Project, ResetWorkspaceOverride, WorkspaceSetting};
+use crate::connection::{Project, ResetWorkspaceOverride, SubmoduleMode, WorkspaceSetting};
 use crate::snooze;
 
 use super::super::archive::press;
@@ -25,6 +25,7 @@ const CHECK: Icon = Icon {
 pub(super) enum Setting {
     Permissions,
     Workspace,
+    Submodules,
     Snooze,
     ProjectBase,
 }
@@ -34,6 +35,7 @@ impl Setting {
         match self {
             Self::Permissions => "default-permissions-inheritance",
             Self::Workspace => "default-workspace-inheritance",
+            Self::Submodules => "worktree-submodules-inheritance",
             Self::Snooze => "snooze-options-inheritance",
             Self::ProjectBase => "add-project-base-inheritance",
         }
@@ -43,6 +45,7 @@ impl Setting {
         match self {
             Self::Permissions => "default-permissions",
             Self::Workspace => "default-workspace",
+            Self::Submodules => "worktree-submodules",
             Self::Snooze => super::snooze::ADD,
             Self::ProjectBase => super::project_start::INPUT,
         }
@@ -52,6 +55,7 @@ impl Setting {
         match self {
             Self::Permissions => "reset-default-permissions",
             Self::Workspace => "reset-default-workspace",
+            Self::Submodules => "reset-worktree-submodules",
             Self::Snooze => "reset-snooze-options",
             Self::ProjectBase => super::project_start::RESET_INPUT,
         }
@@ -66,6 +70,12 @@ impl Setting {
                 .copied()
                 .map(permission),
             Self::Workspace => settings.projects.get(id).copied().map(super::label),
+            Self::Submodules => settings
+                .submodules
+                .projects
+                .get(id)
+                .copied()
+                .map(SubmoduleMode::label),
             Self::Snooze | Self::ProjectBase => None,
         }
     }
@@ -77,6 +87,7 @@ impl Setting {
                 (mode != RuntimeMode::FullAccess).then(|| permission(mode))
             }
             Self::Workspace => settings.configured.map(super::label),
+            Self::Submodules => settings.submodules.environment.map(SubmoduleMode::label),
             Self::Snooze => settings
                 .snooze
                 .as_ref()
@@ -94,6 +105,7 @@ impl Setting {
         match self {
             Self::Permissions => permission(RuntimeMode::FullAccess),
             Self::Workspace => super::label(crate::connection::WorkspaceMode::Local),
+            Self::Submodules => SubmoduleMode::Recursive.label(),
             Self::Snooze => OPTIONS_COUNT[snooze::defaults().len()],
             Self::ProjectBase => "Empty",
         }
@@ -173,7 +185,12 @@ fn resolve_inheritance(state: &State, setting: Setting) -> Option<Inheritance<'_
         .scope
         .id
         .as_deref()
-        .filter(|_| matches!(setting, Setting::Permissions | Setting::Workspace))
+        .filter(|_| {
+            matches!(
+                setting,
+                Setting::Permissions | Setting::Workspace | Setting::Submodules
+            )
+        })
         .map(|id| setting.project_value(current, id));
     let mut layers = Vec::with_capacity(4);
     if let Some(value) = project {
@@ -188,12 +205,16 @@ fn resolve_inheritance(state: &State, setting: Setting) -> Option<Inheritance<'_
         label: "Environment",
         value: environment,
     });
-    if setting == Setting::Workspace && project.is_some() {
+    if matches!(setting, Setting::Workspace | Setting::Submodules) && project.is_some() {
         layers.push(Layer {
             source: Source::Repository,
             label: "t3.json",
             value: if project.flatten().is_none() && environment.is_none() {
-                panel.scope.file_mode.map(super::label)
+                match setting {
+                    Setting::Workspace => panel.scope.file.mode.map(super::label),
+                    Setting::Submodules => panel.scope.file.submodules.map(SubmoduleMode::label),
+                    _ => None,
+                }
             } else {
                 None
             },
@@ -220,6 +241,7 @@ fn resolve_inheritance(state: &State, setting: Setting) -> Option<Inheritance<'_
     let writable = match setting {
         Setting::Permissions => current.permission.writable,
         Setting::Workspace => current.writable,
+        Setting::Submodules => current.submodules.writable,
         Setting::Snooze => current
             .snooze
             .as_ref()
@@ -500,6 +522,9 @@ fn tab(state: &mut State, setting: Setting, backwards: bool, tx: &mut Tx) -> boo
     } else if match setting {
         Setting::Permissions => super::permissions::resettable(state),
         Setting::Workspace => panel.configured().is_some() && panel.writable(state),
+        Setting::Submodules => panel
+            .submodules_view(state)
+            .is_some_and(|setting| setting.writable && setting.may_reset),
         Setting::Snooze => super::snooze::can_reset(state),
         Setting::ProjectBase => super::project_start::resettable(state),
     } {
@@ -531,6 +556,7 @@ fn clear(state: &mut State, setting: Setting, tx: &mut Tx) {
     let setting = match setting {
         Setting::Permissions => ResetWorkspaceOverride::Permissions,
         Setting::Workspace => ResetWorkspaceOverride::Mode,
+        Setting::Submodules => ResetWorkspaceOverride::WorktreeSubmodules,
         Setting::Snooze | Setting::ProjectBase => return,
     };
     let operation = state

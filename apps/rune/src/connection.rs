@@ -77,7 +77,8 @@ pub(crate) use terminal::{
 pub(crate) use workspace_retry::WorkspaceRetry;
 pub(crate) use workspace_settings::{
     AddProjectBaseDirectory, BranchNamingMode, BranchTextField, FavoriteSetting, ModelFavorite,
-    PermissionSetting, ResetWorkspaceOverride, SnoozeSetting, WorkspaceSetting, WorktreeLocation,
+    PermissionSetting, ProjectFileWorkspaceSettings, ResetWorkspaceOverride, SnoozeSetting,
+    SubmoduleMode, WorkspaceSetting, WorktreeLocation,
 };
 pub(crate) use worktree_setup::WorktreeSetup;
 
@@ -160,7 +161,7 @@ pub(crate) enum Event {
     WorkspaceConfiguration(Option<Box<WorkspaceSetting>>),
     WorkspaceProjectFile {
         operation: Uuid,
-        mode: Option<WorkspaceMode>,
+        settings: ProjectFileWorkspaceSettings,
     },
     WorkspaceSettingSettled {
         operation: Uuid,

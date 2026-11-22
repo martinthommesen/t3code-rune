@@ -18,6 +18,7 @@ const ORIGIN: &str = "newWorktreesStartFromOrigin";
 const PERMISSIONS: &str = "defaultRuntimeMode";
 const DIRECTORY: &str = "worktreesDirectory";
 const ADD_PROJECT_BASE: &str = "addProjectBaseDirectory";
+const SUBMODULES: &str = "worktreeSubmodules";
 const BRANCH_NAMING: &str = "branchNamingMode";
 const FAVORITES: &str = "favorites";
 const PROJECT_OVERRIDES: &str = "projectSettingsOverrides";
@@ -32,11 +33,13 @@ pub(super) enum Target {
 pub(crate) enum ResetWorkspaceOverride {
     Mode,
     Permissions,
+    WorktreeSubmodules,
 }
 
 pub(super) enum Edit {
     Mode(Option<WorkspaceMode>),
     StartFromRemote(Option<bool>),
+    WorktreeSubmodules(Option<SubmoduleMode>),
     Permissions(Option<RuntimeMode>),
     WorktreesDirectory(String),
     AddProjectBaseDirectory(String),
@@ -56,6 +59,7 @@ impl Edit {
             Self::StartFromRemote(Some(enabled)) => (ORIGIN, json!(enabled)),
             Self::StartFromRemote(None) if project_scope => (ORIGIN, Value::Null),
             Self::StartFromRemote(None) => (ORIGIN, Value::Bool(true)),
+            Self::WorktreeSubmodules(mode) => (SUBMODULES, json!(mode)),
             Self::Permissions(Some(mode)) => (PERMISSIONS, json!(mode)),
             Self::Permissions(None) if project_scope => (PERMISSIONS, Value::Null),
             Self::Permissions(None) => (PERMISSIONS, json!(RuntimeMode::FullAccess)),
@@ -72,6 +76,34 @@ impl Edit {
                 "setModelFavorites",
                 json!([{"provider":model.provider,"model":model.model,"favorite":favorite}]),
             ),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct SubmoduleSetting {
+    pub(crate) environment: Option<SubmoduleMode>,
+    pub(crate) projects: HashMap<String, SubmoduleMode>,
+    pub(crate) writable: bool,
+    pub(crate) managed_by: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum SubmoduleMode {
+    #[default]
+    Recursive,
+    TopLevel,
+    #[serde(rename = "none")]
+    Skip,
+}
+
+impl SubmoduleMode {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Recursive => "Recursive",
+            Self::TopLevel => "Top level only",
+            Self::Skip => "Skip",
         }
     }
 }
@@ -254,6 +286,7 @@ pub(crate) struct AddProjectBaseDirectory {
 pub(crate) struct WorkspaceSetting {
     pub(crate) configured: Option<WorkspaceMode>,
     pub(crate) origin: OriginSetting,
+    pub(crate) submodules: SubmoduleSetting,
     pub(crate) permission: PermissionSetting,
     pub(crate) worktree_location: Option<WorktreeLocation>,
     pub(crate) add_project_base: Option<AddProjectBaseDirectory>,
@@ -266,10 +299,34 @@ pub(crate) struct WorkspaceSetting {
     pub(crate) managed_by: Option<String>,
 }
 
+#[derive(Default)]
+pub(crate) struct ProjectFileWorkspaceSettings {
+    pub(crate) mode: Option<WorkspaceMode>,
+    pub(crate) submodules: Option<SubmoduleMode>,
+}
+
+impl ProjectFileWorkspaceSettings {
+    fn read(file: &Value) -> Option<Self> {
+        if file["exists"] == false || file["truncated"] == true {
+            return None;
+        }
+        let fields = crate::server::project_file::parse(file["contents"].as_str()?)?;
+        Some(Self {
+            mode: fields
+                .get(KEY)
+                .and_then(|value| WorkspaceMode::deserialize(value).ok()),
+            submodules: fields
+                .get(SUBMODULES)
+                .and_then(|value| SubmoduleMode::deserialize(value).ok()),
+        })
+    }
+}
+
 pub(super) struct Subscription {
     can_write: bool,
     managed_by: Option<String>,
     origin_managed_by: Option<String>,
+    submodules_managed_by: Option<String>,
     permission_policy: PermissionPolicy,
     directory_supported: bool,
     directory_managed_by: Option<String>,
@@ -295,6 +352,7 @@ impl Subscription {
             can_write,
             managed_by: None,
             origin_managed_by: None,
+            submodules_managed_by: None,
             permission_policy: PermissionPolicy::default(),
             directory_supported: false,
             directory_managed_by: None,
@@ -320,6 +378,7 @@ impl Subscription {
                     let config = &event["config"];
                     self.managed_by = managed_by(&config["managedPolicy"], KEY);
                     self.origin_managed_by = managed_by(&config["managedPolicy"], ORIGIN);
+                    self.submodules_managed_by = managed_by(&config["managedPolicy"], SUBMODULES);
                     self.permission_policy = PermissionPolicy::read(&config["managedPolicy"]);
                     self.directory_supported =
                         config["environment"]["capabilities"][DIRECTORY].as_bool() == Some(true);
@@ -389,6 +448,20 @@ impl Subscription {
                 text: BranchTextField::ALL.map(|field| self.branch_text(settings, field)),
                 writable: self.can_write && self.branch_naming_managed_by.is_none(),
                 managed_by: self.branch_naming_managed_by.clone(),
+            },
+            submodules: SubmoduleSetting {
+                environment: SubmoduleMode::deserialize(&settings[SUBMODULES]).ok(),
+                projects: self
+                    .overrides
+                    .iter()
+                    .filter_map(|(id, project)| {
+                        SubmoduleMode::deserialize(&project[SUBMODULES])
+                            .ok()
+                            .map(|mode| (id.clone(), mode))
+                    })
+                    .collect(),
+                writable: self.can_write && self.submodules_managed_by.is_none(),
+                managed_by: self.submodules_managed_by.clone(),
             },
             origin: OriginSetting {
                 enabled: settings[ORIGIN].as_bool().unwrap_or(true),
@@ -528,6 +601,14 @@ impl Connection {
         self.update_workspace_setting(project_id, Edit::StartFromRemote(enabled))
     }
 
+    pub(crate) fn update_worktree_submodules(
+        &self,
+        project_id: Option<String>,
+        mode: Option<SubmoduleMode>,
+    ) -> Option<Uuid> {
+        self.update_workspace_setting(project_id, Edit::WorktreeSubmodules(mode))
+    }
+
     pub(crate) fn update_default_permissions(
         &self,
         project_id: Option<String>,
@@ -576,6 +657,7 @@ impl Connection {
         let edit = match setting {
             ResetWorkspaceOverride::Mode => Edit::Mode(None),
             ResetWorkspaceOverride::Permissions => Edit::Permissions(None),
+            ResetWorkspaceOverride::WorktreeSubmodules => Edit::WorktreeSubmodules(None),
         };
         self.send_workspace_setting(Target::Projects(projects), edit)
     }
@@ -631,6 +713,7 @@ impl Session {
         let managed_by = match edit {
             Edit::Mode(_) => &settings.managed_by,
             Edit::StartFromRemote(_) => &settings.origin_managed_by,
+            Edit::WorktreeSubmodules(_) => &settings.submodules_managed_by,
             Edit::Permissions(_) => &settings.permission_policy.managed_by,
             Edit::WorktreesDirectory(_) => &settings.directory_managed_by,
             Edit::AddProjectBaseDirectory(_) => &settings.add_project_base_managed_by,
@@ -697,7 +780,7 @@ impl Session {
         else {
             events.send(Event::WorkspaceProjectFile {
                 operation,
-                mode: None,
+                settings: ProjectFileWorkspaceSettings::default(),
             });
             return Ok(());
         };
@@ -724,12 +807,13 @@ impl Session {
         events: &EventSender<impl Fn()>,
     ) {
         if let Some(pending) = self.workspace_settings.pending_file.take() {
-            let mode = result.ok().and_then(|file| {
-                crate::server::project_file::workspace_mode(file["contents"].as_str()?)
-            });
+            let settings = result
+                .ok()
+                .and_then(|file| ProjectFileWorkspaceSettings::read(&file))
+                .unwrap_or_default();
             events.send(Event::WorkspaceProjectFile {
                 operation: pending.operation,
-                mode,
+                settings,
             });
         }
     }

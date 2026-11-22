@@ -8,11 +8,13 @@ use super::{
 
 mod branches;
 mod location;
+mod submodules;
 
+pub(super) use branches::FieldsPanel;
 pub(in crate::ui) use branches::poll as poll_branch_fields;
-pub(super) use branches::{FieldsPanel, overlay};
 pub(super) use location::LocationPanel;
 pub(in crate::ui) use location::poll as poll_location;
+pub(super) use submodules::Panel as SubmodulesPanel;
 
 const SWITCH: &str = "start-from-remote";
 const LABEL: &str = "Start new worktrees from remote by default";
@@ -132,7 +134,8 @@ pub(super) fn page(state: &State, palette: Palette, width: f32, large: bool) -> 
                 .w_full()
                 .px(16.0)
                 .py(12.0),
-        ),
+        )
+        .children(submodules::advanced(state, palette, width)),
     );
     if let Some(error) = settings.error() {
         section = section.child(error_text(error, palette));
@@ -156,6 +159,10 @@ pub(super) fn page(state: &State, palette: Palette, width: f32, large: bool) -> 
                 .child(section)
                 .child(branches::section(state, palette, width)),
         )
+}
+
+pub(super) fn overlay(state: &State, palette: Palette) -> Option<[El; 2]> {
+    submodules::overlay(state, palette).or_else(|| branches::overlay(state, palette))
 }
 
 fn toggle(state: &mut State, _: &mut Tx) {
