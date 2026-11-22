@@ -56,6 +56,17 @@ pub(super) struct Panel {
     error: Option<String>,
 }
 
+impl State {
+    pub(in crate::ui) fn automatically_removes_worktree(&self, project: &str) -> bool {
+        self.settings
+            .workspace
+            .current
+            .as_ref()
+            .and_then(|settings| settings.worktree_delete_policy.when_deleted(project))
+            .is_some()
+    }
+}
+
 pub(super) struct BranchTextView<'a> {
     pub(super) value: &'a str,
     pub(super) project_id: Option<&'a str>,

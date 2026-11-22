@@ -16,6 +16,7 @@ pub(super) mod delete_cleanup;
 mod rename;
 mod unarchive;
 mod visit;
+pub(super) mod worktree_auto;
 pub(super) use create::CreateThread;
 pub(super) use create::{normalize_model_selection, trim as trim_js};
 

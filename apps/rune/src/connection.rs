@@ -27,6 +27,7 @@ pub(crate) use terminal_link::TerminalFileLink;
 mod tests;
 mod workspace_retry;
 mod workspace_settings;
+pub(crate) mod worktree_removal;
 pub(crate) mod worktree_setup;
 
 use std::cell::Cell;
@@ -155,6 +156,10 @@ pub(crate) enum Event {
         thread_id: String,
         operation: Uuid,
         result: Result<(), String>,
+    },
+    WorktreeRemovalSettled {
+        operation: Uuid,
+        result: Result<worktree_removal::Reply, String>,
     },
     ScratchProjectsAvailable,
     ScratchWorkspace {
@@ -392,6 +397,10 @@ enum Command {
         action: ArchiveAction,
         thread_id: String,
         operation: Uuid,
+    },
+    WorktreeRemoval {
+        operation: Uuid,
+        request: worktree_removal::Request,
     },
     SetSavedReasoning(saved_reasoning::Edit),
     StopThread(String),
@@ -1360,6 +1369,7 @@ struct Session {
     archive_writes: bool,
     archive_deletes: bool,
     pending_archive_actions: HashMap<String, archive::PendingAction>,
+    pending_worktree_removals: HashMap<String, worktree_removal::Pending>,
     providers_request_id: Option<String>,
     workspace_settings: workspace_settings::Subscription,
     project_clones_request_id: Option<String>,
@@ -1400,6 +1410,7 @@ struct Session {
     worktree_setup: bool,
     worktree_queue: bool,
     checkout_switch: bool,
+    source_control_write: bool,
     native_model_discovery: bool,
     native_stop: bool,
     stop_writes: bool,
@@ -1460,6 +1471,11 @@ impl Session {
     ) -> Result<Self, String> {
         let capabilities = &environment.descriptor.capabilities;
         let scope = environment.token.scope.as_deref();
+        let source_control_write = scope.is_some_and(|scopes| {
+            scopes
+                .split_whitespace()
+                .any(|scope| scope == "source-control:write")
+        });
         let can_operate = |scopes: &str| {
             scopes
                 .split_whitespace()
@@ -1499,6 +1515,7 @@ impl Session {
             archive_writes: capabilities.thread_unarchive && scope.is_some_and(can_operate),
             archive_deletes: capabilities.thread_archive_delete && scope.is_some_and(can_operate),
             pending_archive_actions: HashMap::new(),
+            pending_worktree_removals: HashMap::new(),
             providers_request_id: None,
             workspace_settings: workspace_settings::Subscription::new(settings_write),
             project_clones_request_id: None,
@@ -1558,11 +1575,8 @@ impl Session {
             checkout_switch: capabilities
                 .checkout_switch
                 .unwrap_or(!capabilities.read_only)
-                && scope.is_some_and(|scopes| {
-                    scopes
-                        .split_whitespace()
-                        .any(|scope| scope == "source-control:write")
-                }),
+                && source_control_write,
+            source_control_write,
             native_model_discovery: capabilities.launch_writes == Some(true),
             native_stop: capabilities.thread_stop == Some(true),
             stop_writes: capabilities.thread_stop.unwrap_or(!capabilities.read_only)
@@ -1971,6 +1985,10 @@ impl Session {
                     .await?
             }
             Command::SetSavedReasoning(edit) => self.set_saved_reasoning(edit, events).await?,
+            Command::WorktreeRemoval { operation, request } => {
+                self.submit_worktree_removal(operation, request, events)
+                    .await?
+            }
             Command::StopThread(thread_id) => {
                 let locally_available = self.thread.as_ref().is_some_and(|thread| {
                     thread.thread_id == thread_id && thread.reported_stop == Some(true)
@@ -2942,6 +2960,10 @@ impl Session {
                     }
                     return Ok(());
                 }
+                if let Some(action) = self.pending_worktree_removals.remove(&request_id) {
+                    action.finish(exit.into_result(), events);
+                    return Ok(());
+                }
                 if let Some(action) = self.pending_archive_actions.remove(&request_id) {
                     return self
                         .finish_archive_action(action, exit.into_result(), events)
@@ -3255,6 +3277,7 @@ async fn run(
         terminal_selection.set_write_session(None);
         session.unconfirm_workspace_retries(events);
         session.unconfirm_archive_actions(events);
+        session.unconfirm_worktree_removals(events);
         let reason = match disconnected {
             Ok(()) => return Ok(()),
             Err(SessionStop::Protocol(message)) => {
@@ -3396,6 +3419,7 @@ async fn run_socket(
                     return Err(SessionStop::Socket("The environment stopped responding.".to_owned()));
                 }
                 session.expire_archive_actions(events);
+                session.expire_worktree_removals(events);
                 session.pending_launches.retain(|_, (stage, started)| {
                     if started.elapsed() < stage.timeout() {
                         return true;

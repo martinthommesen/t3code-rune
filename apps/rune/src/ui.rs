@@ -1225,6 +1225,9 @@ impl State {
                 }
                 settings::settle_archive_action(self, action, &thread_id, operation, result, tx);
             }
+            Event::WorktreeRemovalSettled { operation, result } => {
+                sidebar::thread_actions::worktree::settle(self, operation, result, tx);
+            }
             Event::ScratchProjectsAvailable => {
                 if let Some(workspace) = &mut self.workspace {
                     workspace.scratch_projects = true;

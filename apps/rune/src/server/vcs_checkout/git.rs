@@ -95,7 +95,7 @@ impl<'a> Git<'a> {
         Some(lease(&CONFIG_LEASES, &directory).await)
     }
 
-    async fn run(
+    pub(super) async fn run(
         self,
         operation: &'static str,
         args: &[&str],

@@ -2,6 +2,7 @@ mod create;
 mod diagnostic;
 mod git;
 mod idle;
+mod remove_worktree;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -16,6 +17,9 @@ use super::thread_commands::trim_js;
 pub(super) use create::{CreateRefInput, create_ref};
 use diagnostic::FailureReason;
 pub(super) use diagnostic::GitCommandError;
+pub(super) use remove_worktree::{
+    RemoveWorktreeInput, automatic_candidate, remove_automatic, remove_worktree,
+};
 
 const SERVICE: &str = "GitWorkflowService.switchRef";
 const DRIVER: &str = "GitVcsDriver.switchRef";
@@ -245,7 +249,7 @@ async fn lease(registry: &Leases, path: &Path) -> OwnedMutexGuard<()> {
     lock.lock_owned().await
 }
 
-async fn checkout_lease(root: &Path) -> OwnedMutexGuard<()> {
+pub(super) async fn checkout_lease(root: &Path) -> OwnedMutexGuard<()> {
     let lease_root = root.canonicalize().unwrap_or_else(|_| root.to_owned());
     lease(&CHECKOUT_LEASES, &lease_root).await
 }

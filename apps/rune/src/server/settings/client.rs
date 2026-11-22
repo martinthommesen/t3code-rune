@@ -42,6 +42,7 @@ const RUNTIME_MODES: &[&str] = &[
 ];
 const BRANCH_NAMING_MODES: &[&str] = &["static", "semantic", "custom"];
 const SUBMODULE_MODES: &[&str] = &["recursive", "top-level", "none"];
+const WORKTREE_KEEP_MODES: &[&str] = &["any-local-files", "uncommitted-changes", "tracked-changes"];
 const THREAD_ENV_MODES: &[&str] = &["local", "worktree"];
 const IDLE_MODES: &[&str] = &["onReturn", "beforeCacheExpires", "off"];
 const TEXT_GENERATION_DEFAULTS: &[(&str, &str)] = &[
@@ -91,6 +92,28 @@ pub(super) fn project(
     }
     if let Some(value) = raw.get("ghqCloneLayout") {
         fields.insert("ghqCloneLayout".to_owned(), value.as_bool()?.into());
+    }
+    if let Some(value) = raw.get("worktreeCleanup") {
+        fields.insert("worktreeCleanup".to_owned(), worktree_cleanup(value)?);
+    }
+    if let Some(value) = raw.get("storageCleanup") {
+        let configured = value.as_object()?;
+        let mut rules = fields.get("storageCleanup")?.as_object()?.clone();
+        for (key, value) in configured {
+            let value = match key.as_str() {
+                "worktreeKeepWhen" => Value::from(literal(value, WORKTREE_KEEP_MODES)?),
+                "worktreeAfterDays" | "browserArtifactsAfterDays" | "logsAfterDays" => {
+                    retention_days(value, 1)?
+                }
+                "worktreeSettledAfterDays" => retention_days(value, 0)?,
+                "worktreeOnMerge" | "worktreeOnDelete" | "worktreeUnchanged" => {
+                    Value::from(value.as_bool()?)
+                }
+                _ => continue,
+            };
+            rules.insert(key.clone(), value);
+        }
+        fields.insert("storageCleanup".to_owned(), Value::Object(rules));
     }
     for key in ["worktreesDirectory", "threadTitleInstructions"] {
         if let Some(value) = raw.get(key).and_then(text) {
@@ -297,10 +320,7 @@ pub(super) fn worktree_cleanup(value: &Value) -> Option<Value> {
         "custom" => {
             let rules = value.get("rules")?.as_object()?;
             let keep_when = match rules.get("worktreeKeepWhen") {
-                Some(value) => literal(
-                    value,
-                    &["any-local-files", "uncommitted-changes", "tracked-changes"],
-                )?,
+                Some(value) => literal(value, WORKTREE_KEEP_MODES)?,
                 None => "uncommitted-changes",
             };
             Some(json!({

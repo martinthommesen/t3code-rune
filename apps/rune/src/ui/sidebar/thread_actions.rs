@@ -12,6 +12,7 @@ use super::super::{Palette, ProjectView, State, confirmation, sidebar_header};
 use super::{Destination, begin_rename, project_scope};
 
 pub(in crate::ui) mod undo;
+pub(in crate::ui) mod worktree;
 
 const MENU: &str = "sidebar-thread-menu";
 const ARCHIVE: &str = "sidebar-archive-thread";
@@ -37,6 +38,7 @@ struct Target {
     project_id: String,
     can_rename: bool,
     workspace_path: Option<String>,
+    worktree_path: Option<String>,
     branch: Option<String>,
     environment: Option<String>,
 }
@@ -47,15 +49,21 @@ pub(in crate::ui) struct Panel {
     copy_menu_open: bool,
     confirmation: Option<(Target, ArchiveAction)>,
     pending_archive: HashMap<String, Option<String>>,
-    pending_delete: HashMap<String, Option<Destination>>,
+    pending_delete: HashMap<String, Deletion>,
+    worktree: worktree::Panel,
     pub(in crate::ui) undo: undo::Notice,
+}
+
+struct Deletion {
+    destination: Option<Destination>,
+    checkout: Option<worktree::Checkout>,
 }
 
 impl Panel {
     pub(in crate::ui) fn pending_navigation(&self, thread_id: &str) -> bool {
         self.pending_delete
             .get(thread_id)
-            .is_some_and(Option::is_some)
+            .is_some_and(|deletion| deletion.destination.is_some())
             || self
                 .pending_archive
                 .get(thread_id)
@@ -66,6 +74,7 @@ impl Panel {
 impl State {
     fn can_delete_active_thread(&self, id: &str) -> bool {
         self.connection.is_some()
+            && !self.thread_actions.worktree.checking(id)
             && self.settings.archive.can_delete(id)
             && self
                 .workspace
@@ -74,7 +83,6 @@ impl State {
                 .and_then(|workspace| workspace.thread(id))
                 .is_some_and(|thread| {
                     !thread.archived
-                        && thread.worktree_path.is_none()
                         && !matches!(
                             thread.status.as_str(),
                             "preparing" | "queued" | "starting" | "running" | "waiting"
@@ -125,6 +133,7 @@ impl State {
             project_id: thread.project_id.clone(),
             can_rename,
             workspace_path,
+            worktree_path: thread.worktree_path.clone(),
             branch: thread.branch.clone().filter(|branch| !branch.is_empty()),
             environment: self.draft_environment.clone(),
         };
@@ -248,15 +257,32 @@ impl State {
             ArchiveAction::Archive => self.archive_active_thread(target, tx),
             ArchiveAction::DeleteActive
                 if self.can_delete_active_thread(&target.id)
-                    && self.submit_archive_action(action, &target.id, tx) =>
+                    && !worktree::inspect(self, target) =>
             {
-                let fallback =
-                    active_thread(self, &target.id).then(|| delete_fallback(self, target));
-                self.thread_actions
-                    .pending_delete
-                    .insert(target.id.clone(), fallback);
+                self.delete_active_thread(target, None, tx);
             }
             _ => {}
+        }
+    }
+
+    fn delete_active_thread(
+        &mut self,
+        target: &Target,
+        checkout: Option<worktree::Checkout>,
+        tx: &mut Tx,
+    ) {
+        if self.can_delete_active_thread(&target.id)
+            && self.submit_archive_action(ArchiveAction::DeleteActive, &target.id, tx)
+        {
+            let destination =
+                active_thread(self, &target.id).then(|| delete_fallback(self, target));
+            self.thread_actions.pending_delete.insert(
+                target.id.clone(),
+                Deletion {
+                    destination,
+                    checkout,
+                },
+            );
         }
     }
 
@@ -345,7 +371,9 @@ fn delete_fallback(state: &State, target: &Target) -> Destination {
 }
 
 pub(in crate::ui) fn settle_delete(state: &mut State, id: &str, result: Result<(), String>) {
-    let fallback = state.thread_actions.pending_delete.remove(id).flatten();
+    let Some(deletion) = state.thread_actions.pending_delete.remove(id) else {
+        return;
+    };
     if let Err(error) = result {
         state.project_notice = Some(format!("Failed to delete thread. {error}"));
         return;
@@ -358,11 +386,14 @@ pub(in crate::ui) fn settle_delete(state: &mut State, id: &str, result: Result<(
     {
         shell.threads.retain(|thread| thread.id != id);
     }
-    if let Some(fallback) = fallback
+    if let Some(fallback) = deletion.destination
         && active_thread(state, id)
         && !show_delete_fallback(state, fallback)
     {
         state.show_destination(Destination::Home);
+    }
+    if let Some(checkout) = deletion.checkout {
+        worktree::remove(state, checkout);
     }
 }
 
@@ -525,6 +556,9 @@ fn menu_row(
 }
 
 pub(in crate::ui) fn confirmation(state: &State, palette: Palette) -> Option<El> {
+    if let Some(dialog) = worktree::view(state, palette) {
+        return Some(dialog);
+    }
     let (target, action) = state.thread_actions.confirmation.as_ref()?;
     let destructive = *action == ArchiveAction::DeleteActive;
     let verb = if destructive { "Delete" } else { "Archive" };

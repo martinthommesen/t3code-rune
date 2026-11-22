@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use time::OffsetDateTime;
-use tokio::sync::broadcast;
+use tokio::sync::{Notify, broadcast};
 use uuid::Uuid;
 
 use crate::server::turn_commands::timestamp;
@@ -25,6 +25,7 @@ pub(in crate::server) async fn run(
     terminals: Arc<TerminalManager>,
     preview: Option<Arc<Preview>>,
     mut notifications: broadcast::Receiver<ProjectionChange>,
+    worktree_cleanup: Arc<Notify>,
 ) {
     let recovery = commands.clone();
     if !matches!(
@@ -44,7 +45,10 @@ pub(in crate::server) async fn run(
             )
             .await
         {
-            Ok(Ok(true)) => continue,
+            Ok(Ok(true)) => {
+                worktree_cleanup.notify_one();
+                continue;
+            }
             Ok(Ok(false)) => {}
             Ok(Err(error)) => eprintln!("Could not settle thread cleanup: {error}"),
             Err(error) => eprintln!("Thread cleanup task stopped: {error}"),

@@ -237,7 +237,6 @@ pub(super) const INSERT_EFFECT: &str = "
 const SELECT_THREAD: &str = "
     SELECT thread.payload_json, thread.project_id, thread.archived_at IS NOT NULL,
         thread.deleted_at IS NULL
-        AND json_extract(thread.payload_json,'$.worktreePath') IS NULL
         AND json_extract(thread.payload_json,'$.forkedFrom') IS NULL
         AND NOT EXISTS (
             SELECT 1 FROM orchestration_v2_projection_runs AS run WHERE run.thread_id = thread.thread_id

@@ -206,11 +206,20 @@ impl LocalHost {
                             eprintln!("The local thread title worker stopped: {error}");
                         }
                     });
+                    let worktree_cleanup_changed = Arc::new(tokio::sync::Notify::new());
                     let archive_cleanup = tokio::spawn(thread_commands::delete_cleanup::run(
                         threads.clone(),
                         Arc::clone(&terminals),
                         preview.clone(),
                         projection_changes.subscribe(),
+                        Arc::clone(&worktree_cleanup_changed),
+                    ));
+                    let worktree_cleanup = tokio::spawn(thread_commands::worktree_auto::run(
+                        threads.clone(),
+                        settings.clone(),
+                        Arc::clone(&terminals),
+                        named_projects_root.with_file_name("worktrees"),
+                        worktree_cleanup_changed,
                     ));
                     let repository_identities = repository_identity::Identities::default();
                     let project_clones = ProjectClones::new(
@@ -246,8 +255,10 @@ impl LocalHost {
                     if ready.send(code).is_err() {
                         titles.abort();
                         archive_cleanup.abort();
+                        worktree_cleanup.abort();
                         let _ = titles.await;
                         let _ = archive_cleanup.await;
+                        let _ = worktree_cleanup.await;
                         let _ = turn_worker.shutdown().await;
                         return;
                     }
@@ -265,8 +276,10 @@ impl LocalHost {
                     let _ = settings_watch.await;
                     titles.abort();
                     archive_cleanup.abort();
+                    worktree_cleanup.abort();
                     let _ = titles.await;
                     let _ = archive_cleanup.await;
+                    let _ = worktree_cleanup.await;
                     project_clones.shutdown().await;
                     if let Some(preview) = preview {
                         let _ = preview.shutdown().await;

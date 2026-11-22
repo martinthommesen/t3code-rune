@@ -317,6 +317,39 @@ fn startup_reconciliation_leaves_invalid_stored_settings_for_repair() {
 }
 
 #[test]
+fn configured_worktree_deletion_reaches_the_server_and_client_policy() {
+    use crate::worktree_cleanup::{DeletePolicy, KeepWhen};
+
+    let defaults =
+        SettingsSnapshot::decode(r#"{"storageCleanup":{"worktreeOnDelete":true}}"#).for_client();
+    assert_eq!(
+        defaults["storageCleanup"]["worktreeKeepWhen"],
+        "uncommitted-changes"
+    );
+    assert_eq!(
+        DeletePolicy::from_settings(&defaults).when_deleted("project"),
+        Some(KeepWhen::UncommittedChanges)
+    );
+    let with_override = SettingsSnapshot::decode(
+        r#"{
+        "storageCleanup":{"worktreeOnDelete":true},
+        "worktreeCleanup":{"mode":"off"},
+        "projectSettingsOverrides":{"project":{"worktreeCleanup":{"mode":"custom","rules":{
+          "worktreeKeepWhen":"tracked-changes","worktreeAfterDays":null,"worktreeOnMerge":false,
+          "worktreeOnDelete":true,"worktreeUnchanged":false
+        }}}}
+    }"#,
+    )
+    .for_client();
+    let policy = DeletePolicy::from_settings(&with_override);
+    assert_eq!(policy.when_deleted("other"), None);
+    assert_eq!(
+        policy.when_deleted("project"),
+        Some(KeepWhen::TrackedChanges)
+    );
+}
+
+#[test]
 fn reports_each_observed_settings_revision_once_even_when_its_values_match() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("settings.json");

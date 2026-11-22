@@ -752,6 +752,19 @@ impl Shell {
         self.archive.iter().any(|row| row.thread.id == thread_id)
     }
 
+    pub(super) fn side_chats_of(&self, thread_id: &str) -> Vec<String> {
+        self.threads
+            .iter()
+            .chain(&self.archive)
+            .filter(|row| {
+                row.lineage.as_ref().is_some_and(|lineage| {
+                    lineage.side_chat && lineage.parent_thread_id.as_deref() == Some(thread_id)
+                })
+            })
+            .map(|row| row.thread.id.clone())
+            .collect()
+    }
+
     pub(super) fn project_has_threads(&self, project_id: &str) -> bool {
         self.threads
             .iter()

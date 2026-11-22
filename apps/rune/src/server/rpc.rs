@@ -636,6 +636,7 @@ pub(super) async fn serve(
                         | "worktreeSetup.cancel"
                         | "vcs.switchRef"
                         | "vcs.createRef"
+                        | "vcs.removeWorktree"
                         | "projectClone.start"
                         | "projectClone.cancel"
                         | "projectClone.retry"
@@ -644,7 +645,10 @@ pub(super) async fn serve(
                         && payload["type"] == thread_launch::RETRY_COMMAND) =>
             {
                 let clone_operation = tag.starts_with("projectClone.");
-                let git_write = matches!(tag.as_str(), "vcs.switchRef" | "vcs.createRef");
+                let git_write = matches!(
+                    tag.as_str(),
+                    "vcs.switchRef" | "vcs.createRef" | "vcs.removeWorktree"
+                );
                 let (scope, allowed) = if clone_operation || git_write {
                     ("source-control:write", permissions.source_control_write)
                 } else {
@@ -686,6 +690,9 @@ pub(super) async fn serve(
                             }
                             "vcs.createRef" => {
                                 create_git_ref(&local, &store, id.clone(), payload).await
+                            }
+                            "vcs.removeWorktree" => {
+                                remove_git_worktree(&local, id.clone(), payload).await
                             }
                             "projects.mutate" => delete_project(local, id.clone(), payload).await,
                             _ => clone_project(&local, id.clone(), &tag, payload).await,
@@ -890,6 +897,26 @@ async fn create_git_ref(
                     .await;
             }
             success(id, result)
+        }
+        Err(error) => failure(id, error),
+    }
+}
+
+async fn remove_git_worktree(local: &LocalOperations, id: RequestId, payload: Value) -> Value {
+    let input = match vcs_checkout::RemoveWorktreeInput::parse(payload) {
+        Ok(input) => input,
+        Err(message) => return defect(id, message),
+    };
+    match vcs_checkout::remove_worktree(input).await {
+        Ok(path) => {
+            let _ = local
+                .vcs_status
+                .refresh(vcs_status::RefreshInput {
+                    cwd: path.to_string_lossy().into_owned(),
+                    local_only: true,
+                })
+                .await;
+            success(id, Value::Null)
         }
         Err(error) => failure(id, error),
     }

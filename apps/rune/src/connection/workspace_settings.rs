@@ -304,6 +304,7 @@ pub(crate) struct WorkspaceSetting {
     pub(crate) actions: ProjectActions,
     pub(crate) permission: PermissionSetting,
     pub(crate) worktree_location: Option<WorktreeLocation>,
+    pub(crate) worktree_delete_policy: crate::worktree_cleanup::DeletePolicy,
     pub(crate) add_project_base: Option<AddProjectBaseDirectory>,
     pub(crate) clone_layout: Option<CloneLayoutSetting>,
     pub(crate) branch_naming: BranchNamingSetting,
@@ -431,6 +432,7 @@ impl Subscription {
         }
         current.map(|(configured, settings)| WorkspaceSetting {
             configured,
+            worktree_delete_policy: crate::worktree_cleanup::DeletePolicy::from_settings(settings),
             favorites: FavoriteSetting {
                 models: Vec::<ModelFavorite>::deserialize(&settings[FAVORITES]).unwrap_or_default(),
                 writable: self.can_write && self.favorites_managed_by.is_none(),

@@ -8,6 +8,7 @@ mod snooze;
 mod ui;
 mod workspace_image;
 mod workspace_path;
+mod worktree_cleanup;
 
 use clap::{Parser, Subcommand};
 use std::{env, error::Error, ffi::OsString, io, path::PathBuf};

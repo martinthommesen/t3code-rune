@@ -12,7 +12,7 @@ pub(super) struct Dialog<'a> {
     pub(super) cancel: &'static str,
     pub(super) confirm: &'static str,
     pub(super) title: &'a str,
-    pub(super) detail: Option<(&'static str, &'static str)>,
+    pub(super) detail: Option<(&'static str, &'a str)>,
     pub(super) destructive: bool,
 }
 

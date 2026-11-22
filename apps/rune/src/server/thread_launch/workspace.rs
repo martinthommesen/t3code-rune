@@ -213,7 +213,7 @@ pub(super) fn read_settings(path: Option<&Path>) -> Result<Value, &'static str> 
     }
 }
 
-pub(super) fn configured_worktrees_root(
+pub(in crate::server) fn configured_worktrees_root(
     settings_path: Option<&Path>,
     default: &Path,
 ) -> Result<PathBuf, &'static str> {

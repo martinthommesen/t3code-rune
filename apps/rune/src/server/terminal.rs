@@ -490,6 +490,21 @@ pub(super) struct TerminalManager {
 }
 
 impl TerminalManager {
+    pub(super) fn has_running_terminal_under(&self, worktree: &Path) -> bool {
+        lock(&self.sessions).values().any(|session| {
+            let state = lock(&session.state);
+            matches!(state.phase, Phase::Running(_))
+                && std::iter::once(&state.cwd)
+                    .chain(state.worktree_path.as_ref())
+                    .any(|path| {
+                        path.starts_with(worktree)
+                            || path
+                                .canonicalize()
+                                .is_ok_and(|path| path.starts_with(worktree))
+                    })
+        })
+    }
+
     pub(super) fn with_state_dir(state_dir: &Path) -> io::Result<Self> {
         Ok(Self {
             sessions: Mutex::default(),
