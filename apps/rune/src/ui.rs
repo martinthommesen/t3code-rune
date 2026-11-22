@@ -966,6 +966,7 @@ impl State {
                 terminal,
             } => {
                 self.history = History::default();
+                self.settings.archive = Default::default();
                 self.pairing_code.clear();
                 if self.draft_environment.as_deref() != Some(&environment_id) {
                     self.keybindings = None;
@@ -1013,6 +1014,17 @@ impl State {
                 {
                     self.show_destination(draft);
                 }
+            }
+            Event::ArchiveAvailable { readable, writable } => {
+                self.settings.archive.available(readable, writable);
+            }
+            Event::ArchivedThreads(threads) => self.settings.archive.update(threads),
+            Event::ThreadUnarchiveSettled {
+                thread_id,
+                operation,
+                result,
+            } => {
+                settings::settle_archive_unarchive(self, &thread_id, operation, result, tx);
             }
             Event::ScratchProjectsAvailable => {
                 if let Some(workspace) = &mut self.workspace {

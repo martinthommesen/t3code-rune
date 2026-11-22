@@ -26,6 +26,9 @@ macro_rules! glyph {
     };
 }
 
+mod archive;
+pub(super) use archive::settle as settle_archive_unarchive;
+
 static GEAR: Icon = glyph!(
     "settings",
     r#"<path d="M12.2 2h-.4a2 2 0 0 0-2 2v.2a2 2 0 0 1-1 1.7l-.4.2a2 2 0 0 1-2 0l-.1-.1a2 2 0 0 0-2.7.7l-.2.4a2 2 0 0 0 .7 2.7l.2.1a2 2 0 0 1 1 1.7v.4a2 2 0 0 1-1 1.8l-.2.1a2 2 0 0 0-.7 2.7l.2.4a2 2 0 0 0 2.7.7l.1-.1a2 2 0 0 1 2 0l.4.2a2 2 0 0 1 1 1.7v.2a2 2 0 0 0 2 2h.4a2 2 0 0 0 2-2v-.2a2 2 0 0 1 1-1.7l.4-.2a2 2 0 0 1 2 0l.1.1a2 2 0 0 0 2.7-.7l.2-.4a2 2 0 0 0-.7-2.7l-.2-.1a2 2 0 0 1-1-1.8v-.4a2 2 0 0 1 1-1.7l.2-.1a2 2 0 0 0 .7-2.7l-.2-.4a2 2 0 0 0-2.7-.7l-.1.1a2 2 0 0 1-2 0l-.4-.2a2 2 0 0 1-1-1.7V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>"#
@@ -51,6 +54,7 @@ static RESET: Icon = glyph!(
 
 pub(super) struct Panel {
     open: bool,
+    pub(super) archive: archive::Panel,
     error: Option<String>,
     page: Page,
     project: Option<project::Form>,
@@ -68,6 +72,7 @@ impl Default for Panel {
     fn default() -> Self {
         Self {
             open: false,
+            archive: archive::Panel::default(),
             error: None,
             page: Page::General,
             project: None,
@@ -84,6 +89,7 @@ enum Page {
     Appearance,
     Threads,
     Projects,
+    Archive,
 }
 
 impl Page {
@@ -93,6 +99,7 @@ impl Page {
             Self::Appearance => "Appearance",
             Self::Threads => "Threads",
             Self::Projects => "Projects",
+            Self::Archive => "Archive",
         }
     }
 }
@@ -108,6 +115,7 @@ impl State {
     fn close_client_settings(&mut self, tx: &mut Tx) {
         self.save_project_name();
         self.settings.open = false;
+        self.settings.archive.leave();
         self.settings.workspace.highlighted = None;
         self.settings.error = None;
         tx.focus(self.settings.return_focus, tx.focus_visible());
@@ -133,6 +141,9 @@ impl State {
     fn select_settings_page(&mut self, page: Page) {
         self.save_project_name();
         self.settings.page = page;
+        if page != Page::Archive {
+            self.settings.archive.leave();
+        }
         self.settings.workspace.highlighted = None;
         self.ensure_open_workspace_settings();
         self.settings.error = None;
@@ -214,6 +225,7 @@ pub(super) fn overlay(state: &State, palette: Palette, width: f32, height: f32) 
         Page::Appearance => appearance::page(state, palette, content_width),
         Page::Threads => workspace::page(state, palette, content_width),
         Page::Projects => project::page(state, palette, content_width),
+        Page::Archive => archive::page(state, palette, content_width),
     };
     let picker = project::icon_overlay(state, palette, width)
         .or_else(|| project::file_overlay(state, palette, width, height));
@@ -234,7 +246,10 @@ pub(super) fn overlay(state: &State, palette: Palette, width: f32, height: f32) 
         .border_layout()
         .on_key(|state: &mut State, event, tx| {
             if event.key == Key::Escape {
-                state.close_client_settings(tx);
+                if state.settings.page != Page::Archive || !state.settings.archive.dismiss_scope(tx)
+                {
+                    state.close_client_settings(tx);
+                }
                 return true;
             }
             false
@@ -291,6 +306,7 @@ fn navigation(active: Page, width: f32, colors: sidebar_header::Colors) -> El {
         (Page::Appearance, &APPEARANCE, "settings-appearance"),
         (Page::Threads, &THREADS, "settings-threads"),
         (Page::Projects, &GEAR, "settings-projects"),
+        (Page::Archive, &archive::ARCHIVE, "settings-archive"),
     ] {
         let selected = active == page;
         let ink = if selected {
@@ -317,8 +333,13 @@ fn navigation(active: Page, width: f32, colors: sidebar_header::Colors) -> El {
                 Color::TRANSPARENT
             })
             .hover(colors.hover)
-            .child(icon(glyph, 16.0).color(ink).a11y_hidden())
-            .on_press_tx(move |state: &mut State, _| state.select_settings_page(page));
+            .child(icon(glyph, 16.0).color(ink).a11y_hidden());
+        let select = move |state: &mut State, _: &mut Tx| state.select_settings_page(page);
+        button = if page == Page::Archive {
+            archive::press(button, select)
+        } else {
+            button.on_press_tx(select)
+        };
         if width > 56.0 {
             button = button.child(text(page.label()).font(CONTROL).color(ink));
         }

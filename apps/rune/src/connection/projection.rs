@@ -128,6 +128,7 @@ pub(crate) struct ThreadError {
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ThreadActivity {
+    archived_at: Option<String>,
     latest_user_message_at: Option<String>,
     #[serde(default, deserialize_with = "present_timestamp")]
     latest_user_authored_message_at: Option<Option<String>>,
@@ -140,6 +141,12 @@ fn present_timestamp<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<Option<String>>, D::Error> {
     Option::<String>::deserialize(deserializer).map(Some)
+}
+
+impl Thread {
+    pub(crate) fn archived_at(&self) -> Option<&str> {
+        self.activity.archived_at.as_deref()
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
@@ -511,6 +518,14 @@ impl Shell {
                 .map(|row| row.thread.clone())
                 .collect(),
         )
+    }
+
+    pub(super) fn archived_threads(&self) -> Vec<Thread> {
+        self.archive.iter().map(|row| row.thread.clone()).collect()
+    }
+
+    pub(super) fn contains_archived_thread(&self, thread_id: &str) -> bool {
+        self.archive.iter().any(|row| row.thread.id == thread_id)
     }
 
     pub(super) fn project_has_threads(&self, project_id: &str) -> bool {

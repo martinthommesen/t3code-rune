@@ -1,3 +1,4 @@
+mod archive;
 mod browse;
 mod command_output;
 mod draft_defaults;
@@ -111,6 +112,16 @@ pub(crate) enum Event {
     Shell {
         projects: Vec<Project>,
         threads: Vec<Thread>,
+    },
+    ArchiveAvailable {
+        readable: bool,
+        writable: bool,
+    },
+    ArchivedThreads(Result<Vec<Thread>, String>),
+    ThreadUnarchiveSettled {
+        thread_id: String,
+        operation: Uuid,
+        result: Result<(), String>,
     },
     ScratchProjectsAvailable,
     ScratchWorkspace {
@@ -281,6 +292,10 @@ enum Command {
     ResumeThread {
         thread_id: String,
         source_run: String,
+        operation: Uuid,
+    },
+    UnarchiveThread {
+        thread_id: String,
         operation: Uuid,
     },
     StopThread(String),
@@ -821,6 +836,8 @@ struct Capabilities {
     thread_stop: Option<bool>,
     #[serde(rename = "t3ArchiveSnapshots")]
     archive_snapshots: Option<bool>,
+    #[serde(default, rename = "t3ThreadUnarchive")]
+    thread_unarchive: bool,
     #[serde(default, rename = "t3ThreadVisits")]
     thread_visits: bool,
     #[serde(rename = "t3Terminal")]
@@ -1152,6 +1169,8 @@ struct Session {
     shell_request_id: String,
     initial_shell: bool,
     archive: ArchiveState,
+    archive_writes: bool,
+    pending_unarchive: HashMap<String, archive::Unarchive>,
     providers_request_id: Option<String>,
     workspace_settings: workspace_settings::Subscription,
     project_clones_request_id: Option<String>,
@@ -1269,6 +1288,8 @@ impl Session {
             } else {
                 ArchiveState::Disabled
             },
+            archive_writes: capabilities.thread_unarchive && scope.is_some_and(can_operate),
+            pending_unarchive: HashMap::new(),
             providers_request_id: None,
             workspace_settings: workspace_settings::Subscription::new(scope.is_some_and(
                 |scopes| {
@@ -1700,6 +1721,10 @@ impl Session {
                     });
                 }
             }
+            Command::UnarchiveThread {
+                thread_id,
+                operation,
+            } => self.submit_unarchive(thread_id, operation, events).await?,
             Command::StopThread(thread_id) => {
                 let locally_available = self.thread.as_ref().is_some_and(|thread| {
                     thread.thread_id == thread_id && thread.reported_stop == Some(true)
@@ -2339,11 +2364,15 @@ impl Session {
                 let mut subscribe_providers = false;
                 if request_id == self.shell_request_id {
                     if matches!(self.archive, ArchiveState::Loaded)
-                        && values.iter().any(|item| {
-                            matches!(
-                                item["kind"].as_str(),
-                                Some("thread.removed" | "project.removed")
-                            )
+                        && values.iter().any(|item| match item["kind"].as_str() {
+                            Some("thread.removed" | "project.removed") => true,
+                            Some("thread.updated") => {
+                                item["location"] == "archive"
+                                    || item["thread"]["id"]
+                                        .as_str()
+                                        .is_some_and(|id| self.shell.contains_archived_thread(id))
+                            }
+                            _ => false,
                         })
                     {
                         self.archive = ArchiveState::Needed;
@@ -2591,17 +2620,28 @@ impl Session {
                 }
                 if matches!(&self.archive, ArchiveState::Loading(id) if id == &request_id) {
                     self.archive = ArchiveState::Loaded;
-                    if let Ok(snapshot) = exit.into_result() {
-                        match self.shell.apply_archive_snapshot(snapshot) {
+                    match exit.into_result() {
+                        Ok(snapshot) => match self.shell.apply_archive_snapshot(snapshot) {
                             Ok(true) => {
                                 let (projects, threads) = self.shell.view();
                                 events.send(Event::Shell { projects, threads });
+                                events.send(Event::ArchivedThreads(Ok(self
+                                    .shell
+                                    .archived_threads())));
                             }
                             Ok(false) => self.load_archive().await?,
-                            Err(_) => self.archive = ArchiveState::Disabled,
-                        }
+                            Err(error) => {
+                                events.send(Event::ArchivedThreads(Err(error.to_string())))
+                            }
+                        },
+                        Err(error) => events.send(Event::ArchivedThreads(Err(error))),
                     }
                     return Ok(());
+                }
+                if let Some(action) = self.pending_unarchive.remove(&request_id) {
+                    return self
+                        .finish_unarchive(action, exit.into_result(), events)
+                        .await;
                 }
                 if let Some(thread) = self
                     .thread
@@ -2872,11 +2912,16 @@ async fn run(
     let mut attempt = 0;
     loop {
         let connected_at = Instant::now();
+        events.send(Event::ArchiveAvailable {
+            readable: !matches!(session.archive, ArchiveState::Disabled),
+            writable: session.archive_writes,
+        });
         let disconnected = match session.publish_initial_shell(events).await {
             Ok(()) => run_socket(&mut session, &mut commands, events).await,
             Err(error) => Err(error),
         };
         session.unconfirm_workspace_retries(events);
+        session.unconfirm_unarchive(events);
         let reason = match disconnected {
             Ok(()) => return Ok(()),
             Err(SessionStop::Protocol(message)) => {
@@ -3007,6 +3052,7 @@ async fn run_socket(
                 if last_seen.elapsed() >= SOCKET_TIMEOUT {
                     return Err(SessionStop::Socket("The environment stopped responding.".to_owned()));
                 }
+                session.expire_unarchive(events);
                 session.pending_launches.retain(|_, (stage, started)| {
                     if started.elapsed() < stage.timeout() {
                         return true;
