@@ -512,7 +512,12 @@ async fn switch_git_ref(
     }
 }
 
-async fn create_git_ref(local: &LocalOperations, store: &Store, id: RequestId, payload: Value) -> Value {
+async fn create_git_ref(
+    local: &LocalOperations,
+    store: &Store,
+    id: RequestId,
+    payload: Value,
+) -> Value {
     let input = match vcs_checkout::CreateRefInput::parse(payload) {
         Ok(input) => input,
         Err(message) => return defect(id, message),
@@ -524,7 +529,13 @@ async fn create_git_ref(local: &LocalOperations, store: &Store, id: RequestId, p
             if switch {
                 refresh_after_checkout(&local.vcs_status, cwd).await;
             } else {
-                let _ = local.vcs_status.refresh(vcs_status::RefreshInput { cwd, local_only: false }).await;
+                let _ = local
+                    .vcs_status
+                    .refresh(vcs_status::RefreshInput {
+                        cwd,
+                        local_only: false,
+                    })
+                    .await;
             }
             success(id, result)
         }
@@ -533,10 +544,20 @@ async fn create_git_ref(local: &LocalOperations, store: &Store, id: RequestId, p
 }
 
 async fn refresh_after_checkout(status: &vcs_status::Service, cwd: String) {
-    let _ = status.refresh(vcs_status::RefreshInput { cwd: cwd.clone(), local_only: true }).await;
+    let _ = status
+        .refresh(vcs_status::RefreshInput {
+            cwd: cwd.clone(),
+            local_only: true,
+        })
+        .await;
     let status = status.clone();
     tokio::spawn(async move {
-        let _ = status.refresh(vcs_status::RefreshInput { cwd, local_only: false }).await;
+        let _ = status
+            .refresh(vcs_status::RefreshInput {
+                cwd,
+                local_only: false,
+            })
+            .await;
     });
 }
 

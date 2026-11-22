@@ -3,6 +3,7 @@ use rusqlite::{ToSql, Transaction, params, types::FromSql};
 use serde::{Deserialize, Serialize};
 
 const PAGE_SIZE: usize = 500;
+pub(super) const MAX_SAFE_NUMBER: u64 = 9_007_199_254_740_991;
 
 pub(super) fn migrate_64(database: &Transaction<'_>) -> rusqlite::Result<()> {
     rewrite_links(
@@ -96,19 +97,11 @@ fn encode_link(legacy: &str, at: &str) -> rusqlite::Result<String> {
         || repository.is_empty()
         || url.is_empty()
         || legacy.number == 0
-        || legacy.number > 9_007_199_254_740_991
+        || legacy.number > MAX_SAFE_NUMBER
     {
         return Err(error("Invalid legacy pull request link".into()));
     }
-    let parsed = Url::parse(url).ok();
-    let (host, repository) = parsed
-        .as_ref()
-        .and_then(|parsed| keyed_authority(parsed, legacy.number))
-        .unwrap_or_else(|| {
-            let host = parsed.as_ref().and_then(Url::host_str).unwrap_or_default();
-            let host = if host.is_empty() { "unknown" } else { host };
-            (host.to_lowercase(), repository.to_lowercase())
-        });
+    let (host, repository) = legacy_key(repository, url, Some(legacy.number));
     serde_json::to_string(&[Link {
         host,
         repository,
@@ -122,7 +115,24 @@ fn encode_link(legacy: &str, at: &str) -> rusqlite::Result<String> {
     .map_err(|cause| error(Box::new(cause)))
 }
 
-fn trim(value: &str) -> &str {
+pub(super) fn legacy_key(
+    repository: &str,
+    url: &str,
+    number: Option<u64>,
+) -> (String, String) {
+    let parsed = Url::parse(url).ok();
+    parsed
+        .as_ref()
+        .zip(number)
+        .and_then(|(parsed, number)| keyed_authority(parsed, number))
+        .unwrap_or_else(|| {
+            let host = parsed.as_ref().and_then(Url::host_str).unwrap_or_default();
+            let host = if host.is_empty() { "unknown" } else { host };
+            (host.to_lowercase(), trim(repository).to_lowercase())
+        })
+}
+
+pub(super) fn trim(value: &str) -> &str {
     value.trim_matches(|ch: char| (ch.is_whitespace() && ch != '\u{85}') || ch == '\u{feff}')
 }
 
@@ -147,7 +157,8 @@ fn keyed_authority(url: &Url, expected: u64) -> Option<(String, String)> {
             return None;
         }
         if let Some((repository, number)) = change_request(&path, "pulls", |_| true) {
-            return (number == expected).then(|| (authority(&host, url), repository));
+            return (number == Some(expected))
+                .then(|| canonical_repository(authority(&host, url), repository));
         }
         if path.iter().enumerate().skip(2).any(|(index, segment)| {
             *segment == "-"
@@ -164,25 +175,38 @@ fn keyed_authority(url: &Url, expected: u64) -> Option<(String, String)> {
     let (repository, number) = change_request(&path, "pullrequest", |prefix| {
         prefix.iter().rev().nth(1) == Some(&"_git")
     })?;
-    if number != expected {
+    if number != Some(expected) {
         return None;
     }
     if url.port().is_some() {
-        return Some((authority(&host, url), repository));
+        return Some(canonical_repository(authority(&host, url), repository));
     }
-    if host == "dev.azure.com" {
-        return Some((host, repository));
+    let canonical = canonical_repository(host, repository);
+    (canonical.0 == "dev.azure.com").then_some(canonical)
+}
+
+fn canonical_repository(host: String, repository: String) -> (String, String) {
+    let parts: Vec<&str> = repository.split('/').collect();
+    if matches!(host.as_str(), "ssh.dev.azure.com" | "vs-ssh.visualstudio.com")
+        && let ["v3", account, project, name] = parts.as_slice()
+    {
+        return ("dev.azure.com".into(), format!("{account}/{project}/_git/{name}"));
     }
-    let account = host
+    if let Some(account) = host
         .strip_suffix(".visualstudio.com")
-        .filter(|host| !host.contains('.'))?;
-    let repository = repository
-        .strip_prefix("defaultcollection/")
-        .unwrap_or(&repository);
-    if repository.split('/').count() != 3 {
-        return None;
+        .filter(|account| !account.is_empty() && !account.contains('.'))
+    {
+        let path = match parts.as_slice() {
+            ["defaultcollection", project, "_git", name] | [project, "_git", name] => {
+                Some(format!("{account}/{project}/_git/{name}"))
+            }
+            _ => None,
+        };
+        if let Some(path) = path {
+            return ("dev.azure.com".into(), path);
+        }
     }
-    Some(("dev.azure.com".into(), format!("{account}/{repository}")))
+    (host, repository)
 }
 
 fn authority(host: &str, url: &Url) -> String {
@@ -201,14 +225,17 @@ fn change_request(
     path: &[&str],
     marker: &str,
     matches_path: impl Fn(&[&str]) -> bool,
-) -> Option<(String, u64)> {
+) -> Option<(String, Option<u64>)> {
     let index = (2..path.len().saturating_sub(1)).rev().find(|&index| {
         path[index] == marker
             && decimal_id(path[index + 1])
             && path[..index].iter().all(|part| !part.is_empty())
             && matches_path(&path[..index])
     })?;
-    let id = path[index + 1].parse().ok()?;
+    let id = path[index + 1]
+        .parse::<u64>()
+        .ok()
+        .filter(|number| (1..=MAX_SAFE_NUMBER).contains(number));
     Some((path[..index].join("/").to_lowercase(), id))
 }
 

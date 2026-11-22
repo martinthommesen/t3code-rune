@@ -49,8 +49,13 @@ pub(in crate::ui) enum Popup {
     Mode,
     BaseRef {
         query: Box<TextEdit>,
-        active: Option<String>,
+        active: Option<RefHighlight>,
     },
+}
+
+pub(in crate::ui) enum RefHighlight {
+    Existing(String),
+    Create,
 }
 
 #[derive(Clone, Copy)]
@@ -231,7 +236,7 @@ pub(super) fn view(
             project_id,
             draft,
             query,
-            active.as_deref(),
+            active.as_ref(),
             remote,
             width,
             colors,
@@ -328,7 +333,7 @@ fn visible_branches<'a>(
     include_remote: bool,
 ) -> impl Iterator<Item = &'a GitRef> {
     let query = query.trim().to_lowercase();
-    let sanitized = query.split_ascii_whitespace().collect::<Vec<_>>().join("-");
+    let sanitized = sanitize_ref_name(&query);
     draft.refs.branches.iter().filter(move |branch| {
         if branch.is_remote && !include_remote {
             return false;
@@ -341,12 +346,34 @@ fn visible_branches<'a>(
     })
 }
 
+fn sanitize_ref_name(query: &str) -> String {
+    query
+        .trim_matches(|ch: char| (ch.is_whitespace() && ch != '\u{85}') || ch == '\u{feff}')
+        .split([' ', '\t', '\n', '\r', '\u{b}', '\u{c}'])
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+fn create_ref_name(draft: &Draft, query: &str) -> Option<String> {
+    if draft.workspace_mode != WorkspaceMode::Local {
+        return None;
+    }
+    let name = sanitize_ref_name(query);
+    (!name.is_empty() && !draft.refs.branches.iter().any(|branch| branch.name == name))
+        .then_some(name)
+}
+
 fn highlighted_branch(
     draft: &Draft,
     branches: &[&GitRef],
     query: &str,
-    active: Option<&str>,
+    active: Option<&RefHighlight>,
+    can_create: bool,
 ) -> usize {
+    if matches!(active, Some(RefHighlight::Create)) && can_create {
+        return branches.len();
+    }
     let selected = if draft.workspace_mode == WorkspaceMode::Worktree {
         draft.base_ref.as_deref()
     } else {
@@ -356,7 +383,10 @@ fn highlighted_branch(
             .map(|branch| branch.name.as_str())
     }
     .filter(|_| query.trim().is_empty());
-    let wanted = active.or(selected);
+    let wanted = match active {
+        Some(RefHighlight::Existing(name)) => Some(name.as_str()),
+        _ => selected,
+    };
     branches
         .iter()
         .position(|branch| wanted == Some(branch.name.as_str()))
@@ -367,7 +397,7 @@ fn branch_menu(
     project: &str,
     draft: &Draft,
     query: &TextEdit,
-    active: Option<&str>,
+    active: Option<&RefHighlight>,
     include_remote: bool,
     lane: f32,
     colors: Colors,
@@ -410,8 +440,9 @@ fn branch_menu(
         .pr(9.0)
         .py(12.0);
     let branches: Vec<_> = visible_branches(draft, &query.text, include_remote).collect();
-    let index = highlighted_branch(draft, &branches, &query.text, active);
-    if branches.is_empty() {
+    let create = create_ref_name(draft, &query.text);
+    let index = highlighted_branch(draft, &branches, &query.text, active, create.is_some());
+    if branches.is_empty() && create.is_none() {
         let status = if draft.refs.loading {
             "Loading refs..."
         } else {
@@ -419,6 +450,7 @@ fn branch_menu(
         };
         results = results.child(text(status).font(ITEM).color(colors.muted).wrap_anywhere());
     }
+    let branch_count = branches.len();
     for (row_index, branch) in branches.into_iter().enumerate() {
         let name = branch.name.clone();
         let project = project.to_owned();
@@ -444,7 +476,11 @@ fn branch_menu(
             .radius(4.0)
             .role("option")
             .label(&branch.name)
-            .focus_selected(draft.base_ref.as_deref() == Some(branch.name.as_str()))
+            .focus_selected(if draft.workspace_mode == WorkspaceMode::Worktree {
+                draft.base_ref.as_deref() == Some(branch.name.as_str())
+            } else {
+                branch.current
+            })
             .focus_ring(1.0, -1.0, colors.focus)
             .focusable(true)
             .tab_index(-1)
@@ -462,6 +498,34 @@ fn branch_menu(
         }
         results = results.child(option);
     }
+    if let Some(name) = create {
+        let project = project.to_owned();
+        let label = format!("Create new ref \"{name}\"");
+        results = results.child(
+            row()
+                .key("draft-create-ref")
+                .w_full()
+                .h(28.0)
+                .px(8.0)
+                .center_y()
+                .radius(4.0)
+                .role("option")
+                .label(&label)
+                .focusable(true)
+                .tab_index(-1)
+                .fill(if index == branch_count {
+                    colors.ink.alpha(0.09)
+                } else {
+                    Color::TRANSPARENT
+                })
+                .hover(colors.hover)
+                .focus_ring(1.0, -1.0, colors.focus)
+                .on_press_tx(move |state: &mut State, tx| {
+                    select_new_ref(state, &project, &name, tx)
+                })
+                .child(text(&label).font(ITEM).color(colors.ink).truncate()),
+        );
+    }
     let width = 318.0_f32.min((lane - 2.0 * INSET).max(0.0));
     let right = (branch_trailing_inset(lane) + 0.83).min((lane - width - INSET).max(INSET));
     let panel = col()
@@ -472,7 +536,11 @@ fn branch_menu(
         .border(1.0, colors.border)
         .border_layout()
         .role("dialog")
-        .label("Base branches")
+        .label(if draft.workspace_mode == WorkspaceMode::Worktree {
+            "Base branches"
+        } else {
+            "Checkout branches"
+        })
         .shadow(3.0, 10.0, Color::BLACK.alpha(0.22))
         .paint_order(1)
         .pin(None, None, Some(right), Some(28.75))
@@ -600,17 +668,20 @@ fn branch_keys(state: &mut State, project: &str, event: &KeyEvent, tx: &mut Tx) 
         .as_ref()
         .is_some_and(|workspace| workspace.remote_worktree_launch);
     let branches: Vec<_> = visible_branches(draft, &query.text, remote).collect();
-    let index = highlighted_branch(draft, &branches, &query.text, active.as_deref());
+    let can_create = create_ref_name(draft, &query.text).is_some();
+    let index = highlighted_branch(draft, &branches, &query.text, active.as_ref(), can_create);
+    let count = branches.len() + usize::from(can_create);
     let next = if event.key == Key::Up {
         index.saturating_sub(1)
     } else {
-        index
-            .saturating_add(1)
-            .min(branches.len().saturating_sub(1))
+        index.saturating_add(1).min(count.saturating_sub(1))
     };
     if let Some(branch) = branches.get(next) {
-        *active = Some(branch.name.clone());
+        *active = Some(RefHighlight::Existing(branch.name.clone()));
         tx.scroll_key_center_at(format!("draft-ref-{}", branch.name), 112.0);
+    } else if can_create {
+        *active = Some(RefHighlight::Create);
+        tx.scroll_key_center_at("draft-create-ref", 112.0);
     }
     true
 }
@@ -627,10 +698,19 @@ fn choose_highlighted_branch(state: &mut State, project: &str, tx: &mut Tx) {
         .as_ref()
         .is_some_and(|workspace| workspace.remote_worktree_launch);
     let branches: Vec<_> = visible_branches(draft, &query.text, remote).collect();
-    let index = highlighted_branch(draft, &branches, &query.text, active.as_deref());
+    let create = create_ref_name(draft, &query.text);
+    let index = highlighted_branch(
+        draft,
+        &branches,
+        &query.text,
+        active.as_ref(),
+        create.is_some(),
+    );
     let name = branches.get(index).map(|branch| branch.name.clone());
     if let Some(name) = name {
         select_branch(state, project, &name, tx);
+    } else if let Some(name) = create {
+        select_new_ref(state, project, &name, tx);
     }
 }
 
@@ -641,9 +721,15 @@ fn select_branch(state: &mut State, project: &str, name: &str, tx: &mut Tx) {
         .map(|draft| draft.workspace_mode)
     {
         Some(WorkspaceMode::Worktree) => state.set_draft_base_ref(project, name),
-        Some(WorkspaceMode::Local) => state.switch_draft_checkout(project, name),
+        Some(WorkspaceMode::Local) => state.change_draft_checkout(project, name, false),
         None => {}
     }
     state.draft_workspace_popup = None;
     tx.focus("draft-base-branch", tx.focus_visible());
+}
+
+fn select_new_ref(state: &mut State, project: &str, name: &str, tx: &mut Tx) {
+    state.change_draft_checkout(project, name, true);
+    state.draft_workspace_popup = None;
+    tx.focus("initial-prompt", tx.focus_visible());
 }

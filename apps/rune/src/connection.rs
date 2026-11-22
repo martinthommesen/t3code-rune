@@ -206,10 +206,11 @@ enum Command {
         cwd: String,
         refresh: bool,
     },
-    SwitchGitCheckout {
+    ChangeGitCheckout {
         project_id: String,
         cwd: String,
         name: String,
+        create: bool,
     },
     AddProject {
         command_id: String,
@@ -438,11 +439,18 @@ impl Connection {
         });
     }
 
-    pub(crate) fn switch_git_checkout(&self, project_id: String, cwd: String, name: String) {
-        let _ = self.commands.send(Command::SwitchGitCheckout {
+    pub(crate) fn change_git_checkout(
+        &self,
+        project_id: String,
+        cwd: String,
+        name: String,
+        create: bool,
+    ) {
+        let _ = self.commands.send(Command::ChangeGitCheckout {
             project_id,
             cwd,
             name,
+            create,
         });
     }
 
@@ -1001,11 +1009,14 @@ impl Session {
                 .remote_worktree_launch
                 .unwrap_or(!capabilities.read_only)
                 && scope.is_some_and(can_operate),
-            worktree_setup: capabilities
-                .worktree_setup
-                .unwrap_or(!capabilities.read_only && scope.is_some_and(|scopes| {
-                    scopes.split_whitespace().any(|scope| scope == "orchestration:read")
-                })),
+            worktree_setup: capabilities.worktree_setup.unwrap_or(
+                !capabilities.read_only
+                    && scope.is_some_and(|scopes| {
+                        scopes
+                            .split_whitespace()
+                            .any(|scope| scope == "orchestration:read")
+                    }),
+            ),
             checkout_switch: capabilities
                 .checkout_switch
                 .unwrap_or(!capabilities.read_only)
@@ -1491,16 +1502,23 @@ impl Session {
                     });
                 }
             }
-            Command::SwitchGitCheckout {
+            Command::ChangeGitCheckout {
                 project_id,
                 cwd,
                 name,
+                create,
             } => {
                 if self.checkout_switch {
                     let id = self.allocate_id();
                     self.pending_git_checkouts.insert(id.clone(), project_id);
-                    self.send_request(&id, "vcs.switchRef", json!({"cwd":cwd,"refName":name}))
-                        .await?;
+                    let mut payload = json!({"cwd":cwd,"refName":name});
+                    let tag = if create {
+                        payload["switchRef"] = json!(true);
+                        "vcs.createRef"
+                    } else {
+                        "vcs.switchRef"
+                    };
+                    self.send_request(&id, tag, payload).await?;
                 } else {
                     events.send(Event::GitCheckout {
                         project_id,

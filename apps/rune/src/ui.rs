@@ -527,7 +527,7 @@ impl State {
         }
     }
 
-    fn switch_draft_checkout(&mut self, project_id: &str, name: &str) {
+    fn change_draft_checkout(&mut self, project_id: &str, name: &str, create: bool) {
         let Some(project) = self
             .workspace
             .as_ref()
@@ -553,19 +553,25 @@ impl State {
             !draft.pending
                 && !draft.refs.switching
                 && draft.workspace_mode == WorkspaceMode::Local
-                && draft
-                    .refs
-                    .branches
-                    .iter()
-                    .any(|entry| entry.name == name && !entry.current)
+                && draft.refs.is_repo == Some(true)
         }) else {
             return;
         };
+        let matching = draft.refs.branches.iter().find(|entry| entry.name == name);
+        let unavailable = if create {
+            matching.is_some()
+        } else {
+            matching.is_none_or(|entry| entry.current)
+        };
+        if name.is_empty() || unavailable {
+            return;
+        }
         draft.refs.switching = true;
-        connection.switch_git_checkout(
+        connection.change_git_checkout(
             project_id.to_owned(),
             project.path.clone(),
             name.to_owned(),
+            create,
         );
     }
 
