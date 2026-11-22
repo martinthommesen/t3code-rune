@@ -10,10 +10,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
-use super::WorkspaceMode;
 use super::launch::ModelSelection;
 use super::runtime_approval::{ApprovalDetails, ApprovalProjection, RuntimeRequest};
 use super::runtime_question::{QuestionDetails, QuestionProjection};
+use super::{ProjectAction, WorkspaceMode};
 pub(crate) use command::{CommandEntry, CommandOutputTarget, CommandStatus};
 pub(crate) use queue::QueuedMessage;
 pub(crate) use transcript::{CompletedWork, ConversationEntry, TodoListEntry, TodoStepStatus};
@@ -41,6 +41,8 @@ pub(crate) struct Project {
     pub(crate) pinned_at: Option<String>,
     #[serde(rename = "archivedAt")]
     pub(crate) archived_at: Option<String>,
+    #[serde(default)]
+    pub(crate) scripts: Vec<ProjectAction>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

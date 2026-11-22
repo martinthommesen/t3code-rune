@@ -145,6 +145,7 @@ impl State {
         self.settings.open = false;
         self.settings.keybindings.clear_view();
         self.settings.archive.leave();
+        project::dismiss_actions(self);
         self.settings.workspace.submodules.collapse();
         self.settings.workspace.close_popups();
         self.settings.error = None;
@@ -190,6 +191,7 @@ impl State {
             self.settings.keybindings.clear_view();
         }
         if self.settings.page != page {
+            project::dismiss_actions(self);
             self.settings.workspace.submodules.collapse();
         }
         self.settings.page = page;
@@ -227,7 +229,9 @@ impl State {
         &mut self,
         operation: uuid::Uuid,
         result: Result<(), String>,
+        tx: &mut Tx,
     ) {
+        project::settle_actions(self, operation, &result, tx);
         self.settings
             .worktree_location
             .settle_reset(operation, result.is_ok());
@@ -288,7 +292,10 @@ impl State {
 
     pub(super) fn ensure_open_workspace_settings(&mut self) {
         if self.settings.open
-            && matches!(self.settings.page, Page::Threads | Page::Worktrees)
+            && matches!(
+                self.settings.page,
+                Page::Threads | Page::Worktrees | Page::Projects
+            )
             && let Some(connection) = &self.connection
         {
             connection.ensure_workspace_settings();
@@ -350,7 +357,8 @@ pub(super) fn overlay(
         Page::Projects => project::page(state, palette, content_width),
         Page::Archive => archive::page(state, palette, content_width),
     };
-    let picker = project::icon_overlay(state, palette, width)
+    let picker = project::actions_overlay(state, palette, width, height)
+        .or_else(|| project::icon_overlay(state, palette, width))
         .or_else(|| project::file_overlay(state, palette, width, height))
         .or_else(|| archive::confirmation(state, palette));
     let dialog = row()

@@ -1258,7 +1258,7 @@ impl State {
                 if let Some(workspace) = &mut self.workspace {
                     workspace.model_favorites.settle(operation, &result);
                 }
-                self.settle_workspace_setting(operation, result);
+                self.settle_workspace_setting(operation, result, tx);
             }
             Event::ProjectEditSettled {
                 project_id,
@@ -2637,6 +2637,7 @@ mod tests {
                 updated_at: None,
                 pinned_at: None,
                 archived_at: None,
+                scripts: Vec::new(),
             }],
             threads: vec![Thread {
                 id: thread_id.into(),

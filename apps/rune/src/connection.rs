@@ -6,6 +6,7 @@ pub(crate) mod file_preview;
 mod file_preview_asset;
 mod keybindings;
 mod launch;
+mod project_actions;
 mod project_favicon;
 mod projection;
 mod provider_metadata;
@@ -54,6 +55,7 @@ pub(crate) use keybindings::{
 pub(crate) use launch::{
     DraftModelPolicy, DraftProvider, ModelSelection, Workspace as LaunchWorkspace,
 };
+pub(crate) use project_actions::{ProjectAction, ProjectActionIcon, ProjectActions};
 pub(crate) use project_favicon::{FaviconBytes, FaviconTarget};
 pub(crate) use projection::WorkspaceFailure;
 pub(crate) use projection::{

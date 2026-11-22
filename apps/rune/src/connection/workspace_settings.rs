@@ -13,6 +13,8 @@ use super::{
     Command, Connection, Event, EventSender, REQUEST_TIMEOUT, Session, SessionStop, WorkspaceMode,
 };
 
+use super::project_actions::{self, ProjectAction, ProjectActions};
+
 const KEY: &str = "defaultThreadEnvMode";
 const ORIGIN: &str = "newWorktreesStartFromOrigin";
 const PERMISSIONS: &str = "defaultRuntimeMode";
@@ -48,6 +50,7 @@ pub(super) enum Edit {
     BranchNaming(Option<BranchNamingMode>),
     BranchText(BranchTextField, Option<String>),
     SnoozePresets(Vec<Preset>),
+    ProjectActions(Option<Vec<ProjectAction>>),
     ModelFavorite {
         model: ModelFavorite,
         favorite: bool,
@@ -74,6 +77,7 @@ impl Edit {
             Self::BranchText(field, Some(value)) => (field.key(), json!(value)),
             Self::BranchText(field, None) if project_scope => (field.key(), Value::Null),
             Self::BranchText(field, None) => (field.key(), json!(field.default_value())),
+            Self::ProjectActions(actions) => (project_actions::KEY, json!(actions)),
             Self::SnoozePresets(presets) => (snooze::KEY, json!(presets)),
             Self::ModelFavorite { model, favorite } => (
                 "setModelFavorites",
@@ -297,6 +301,7 @@ pub(crate) struct WorkspaceSetting {
     pub(crate) configured: Option<WorkspaceMode>,
     pub(crate) origin: OriginSetting,
     pub(crate) submodules: SubmoduleSetting,
+    pub(crate) actions: ProjectActions,
     pub(crate) permission: PermissionSetting,
     pub(crate) worktree_location: Option<WorktreeLocation>,
     pub(crate) add_project_base: Option<AddProjectBaseDirectory>,
@@ -338,6 +343,7 @@ pub(super) struct Subscription {
     managed_by: Option<String>,
     origin_managed_by: Option<String>,
     submodules_managed_by: Option<String>,
+    actions_managed_by: Option<String>,
     permission_policy: PermissionPolicy,
     directory_supported: bool,
     directory_managed_by: Option<String>,
@@ -365,6 +371,7 @@ impl Subscription {
             managed_by: None,
             origin_managed_by: None,
             submodules_managed_by: None,
+            actions_managed_by: None,
             permission_policy: PermissionPolicy::default(),
             directory_supported: false,
             directory_managed_by: None,
@@ -392,6 +399,8 @@ impl Subscription {
                     self.managed_by = managed_by(&config["managedPolicy"], KEY);
                     self.origin_managed_by = managed_by(&config["managedPolicy"], ORIGIN);
                     self.submodules_managed_by = managed_by(&config["managedPolicy"], SUBMODULES);
+                    self.actions_managed_by =
+                        managed_by(&config["managedPolicy"], project_actions::KEY);
                     self.permission_policy = PermissionPolicy::read(&config["managedPolicy"]);
                     self.directory_supported =
                         config["environment"]["capabilities"][DIRECTORY].as_bool() == Some(true);
@@ -471,6 +480,12 @@ impl Subscription {
                 writable: self.can_write && self.branch_naming_managed_by.is_none(),
                 managed_by: self.branch_naming_managed_by.clone(),
             },
+            actions: ProjectActions::read(
+                settings,
+                &self.overrides,
+                self.can_write && self.actions_managed_by.is_none(),
+                self.actions_managed_by.clone(),
+            ),
             submodules: SubmoduleSetting {
                 environment: SubmoduleMode::deserialize(&settings[SUBMODULES]).ok(),
                 projects: self
@@ -623,6 +638,14 @@ impl Connection {
         self.update_workspace_setting(project_id, Edit::StartFromRemote(enabled))
     }
 
+    pub(crate) fn update_project_actions(
+        &self,
+        project_id: String,
+        actions: Option<Vec<ProjectAction>>,
+    ) -> Option<Uuid> {
+        self.update_workspace_setting(Some(project_id), Edit::ProjectActions(actions))
+    }
+
     pub(crate) fn update_worktree_submodules(
         &self,
         project_id: Option<String>,
@@ -740,6 +763,7 @@ impl Session {
             Edit::Mode(_) => &settings.managed_by,
             Edit::StartFromRemote(_) => &settings.origin_managed_by,
             Edit::WorktreeSubmodules(_) => &settings.submodules_managed_by,
+            Edit::ProjectActions(_) => &settings.actions_managed_by,
             Edit::Permissions(_) => &settings.permission_policy.managed_by,
             Edit::WorktreesDirectory(_) => &settings.directory_managed_by,
             Edit::AddProjectBaseDirectory(_) => &settings.add_project_base_managed_by,

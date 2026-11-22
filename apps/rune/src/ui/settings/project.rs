@@ -10,9 +10,13 @@ use crate::ui::sidebar::project_badge;
 use super::super::{Palette, State, Workspace, error_text};
 use super::{CONTROL, DESCRIPTION, DIALOG, GEAR, Page, RESET, icon_button};
 
+mod actions;
 mod icon_files;
 mod icon_picker;
 
+pub(super) use actions::{
+    dismiss as dismiss_actions, overlay as actions_overlay, settle as settle_actions,
+};
 pub(super) use icon_files::overlay as file_overlay;
 pub(in crate::ui) use icon_files::{poll as poll_files, settle as settle_files};
 pub(super) use icon_picker::overlay as icon_overlay;
@@ -33,6 +37,7 @@ pub(super) struct Form {
     edit: TextEdit,
     dirty: bool,
     pending: HashSet<ProjectEditKind>,
+    actions: actions::Panel,
     icon_picker: Option<icon_picker::Picker>,
     file_picker: Option<icon_files::Picker>,
 }
@@ -48,6 +53,7 @@ impl Form {
             edit,
             dirty: false,
             pending: HashSet::new(),
+            actions: actions::Panel::default(),
             icon_picker: None,
             file_picker: None,
         }
@@ -85,6 +91,7 @@ impl State {
         self.settings.error = None;
         self.settings.open = true;
         self.settings.return_focus = "project-filter";
+        self.ensure_open_workspace_settings();
         tx.focus_when_shown(DIALOG, false);
     }
 
@@ -321,7 +328,8 @@ pub(super) fn page(state: &State, palette: Palette, width: f32) -> El {
             .gap(20.0)
             .child(scope)
             .child(info)
-            .child(details),
+            .child(details)
+            .child(actions::section(state, project, palette, narrow)),
     );
     if let Some(error) = &state.settings.error {
         view = view.child(error_text(error, palette));
