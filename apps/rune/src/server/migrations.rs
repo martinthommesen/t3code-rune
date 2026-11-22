@@ -1,5 +1,6 @@
 pub(in crate::server) mod citation_search;
 mod legacy_cutover;
+mod legacy_pre30;
 mod legacy_pre38;
 mod legacy_pre52;
 mod legacy_pull_requests;
@@ -16,9 +17,8 @@ use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
 };
 
-const MINIMUM_HEAD: i64 = 30;
-const PIN_ORDER_HEAD: i64 = 38;
-const TITLE_STATE_HEAD: i64 = 52;
+const MINIMUM_HEAD: i64 = 23;
+const PRIOR_MINIMUM_HEADS: [i64; 3] = [52, 38, 30];
 
 struct Migration {
     id: i64,
@@ -163,8 +163,9 @@ pub(super) fn migrate(path: &Path) -> Result<(), MigrationError> {
 }
 
 fn migrations() -> impl Iterator<Item = &'static Migration> {
-    legacy_pre38::MIGRATIONS
+    legacy_pre30::MIGRATIONS
         .iter()
+        .chain(legacy_pre38::MIGRATIONS)
         .chain(legacy_pre52::MIGRATIONS)
         .chain(sql::MIGRATIONS)
 }
@@ -281,13 +282,10 @@ fn validated_head(database: &Connection) -> Result<i64, MigrationError> {
         return Err(MigrationError::UnsupportedBase { head });
     }
 
-    let required = if head >= TITLE_STATE_HEAD {
-        TITLE_STATE_HEAD
-    } else if head >= PIN_ORDER_HEAD {
-        PIN_ORDER_HEAD
-    } else {
-        MINIMUM_HEAD
-    };
+    let required = PRIOR_MINIMUM_HEADS
+        .into_iter()
+        .find(|minimum| head >= *minimum)
+        .unwrap_or(MINIMUM_HEAD);
     let expected = sql::BASE_HISTORY
         .iter()
         .copied()
