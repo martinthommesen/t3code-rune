@@ -639,13 +639,40 @@ impl TerminalManager {
         Ok(false)
     }
 
-    pub fn write(&self, key: &TerminalKey, data: &str, binary: bool) -> Result<(), TerminalError> {
-        let length = data.encode_utf16().count();
-        if length == 0 || length > MAX_WRITE_UNITS {
-            return Err(TerminalError::Invalid(
-                "Terminal input is empty or exceeds the write limit.",
-            ));
+    pub(super) fn write_if_idle(
+        &self,
+        key: &TerminalKey,
+        cwd: &Path,
+        worktree: Option<&Path>,
+        env: &BTreeMap<String, String>,
+        data: &str,
+    ) -> Result<bool, TerminalError> {
+        validate_write(data)?;
+        let session = match self.session(key) {
+            Ok(session) => session,
+            Err(TerminalError::Unknown(_)) => return Ok(false),
+            Err(error) => return Err(error),
+        };
+        let state = lock(&session.state);
+        let Phase::Running(process) = &state.phase else {
+            return Ok(false);
+        };
+        if state.cwd != cwd
+            || state.worktree_path.as_deref() != worktree
+            || &state.env != env
+            || state.stop_on_settle
+            || process.has_active_subprocess() != Some(false)
+        {
+            return Ok(false);
         }
+        process
+            .write(data.as_bytes().to_vec())
+            .map_err(|cause| TerminalError::Write(key.clone(), process.pid, cause))?;
+        Ok(true)
+    }
+
+    pub fn write(&self, key: &TerminalKey, data: &str, binary: bool) -> Result<(), TerminalError> {
+        validate_write(data)?;
         let session = self.session(key)?;
         let state = lock(&session.state);
         match &state.phase {
@@ -820,6 +847,16 @@ fn evict_inactive(sessions: &mut HashMap<TerminalKey, Arc<Session>>) {
     for (_, key) in inactive.into_iter().take(excess) {
         sessions.remove(&key);
     }
+}
+
+fn validate_write(data: &str) -> Result<(), TerminalError> {
+    let length = data.encode_utf16().count();
+    if length == 0 || length > MAX_WRITE_UNITS {
+        return Err(TerminalError::Invalid(
+            "Terminal input is empty or exceeds the write limit.",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_open(input: &OpenTerminal) -> Result<(), TerminalError> {

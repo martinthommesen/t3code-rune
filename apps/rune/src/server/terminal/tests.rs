@@ -126,6 +126,85 @@ mod unix {
         .expect("closing an idle shell publishes its close event");
     }
 
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn guarded_write_refuses_foreground_input_then_reuses_the_idle_shell() {
+        async fn read_until(events: &mut broadcast::Receiver<TerminalEvent>, expected: &str) {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let mut output = String::new();
+                while !output.contains(expected) {
+                    match events.recv().await.unwrap().event {
+                        OutputEvent::Output { data } => output.push_str(&data),
+                        OutputEvent::Error { message } => {
+                            panic!("Terminal reported error: {message}")
+                        }
+                        _ => {}
+                    }
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("Expected terminal output matching {expected:?}"));
+        }
+
+        let terminals = TerminalManager::default();
+        let input = open_input("action-shell");
+        let cwd = input.cwd.clone();
+        let env = input.env.clone();
+        let key = input.key.clone();
+        let (opened, mut events) = terminals.open_observed(input, false).unwrap();
+        terminals
+            .write(
+                &key,
+                "sh -c 'printf \"FOREGROUND_%s\\n\" READY; IFS= read -r line; printf \"FOREGROUND_%s:%s\\n\" INPUT \"$line\"'\r",
+                false,
+            )
+            .unwrap();
+        read_until(&mut events, "FOREGROUND_READY").await;
+        assert_eq!(terminals.has_active_subprocess(&key).unwrap(), Some(true));
+        assert!(
+            !terminals
+                .write_if_idle(
+                    &key,
+                    &cwd,
+                    None,
+                    &env,
+                    "must not reach the foreground program\r"
+                )
+                .unwrap()
+        );
+        terminals.write(&key, "authorized input\r", false).unwrap();
+        read_until(&mut events, "FOREGROUND_INPUT:authorized input").await;
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while terminals.has_active_subprocess(&key).unwrap() != Some(false) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the interactive shell returned to its prompt");
+        assert!(
+            !terminals
+                .write_if_idle(
+                    &key,
+                    &cwd.join("other"),
+                    None,
+                    &env,
+                    "must not enter the wrong checkout\r"
+                )
+                .unwrap()
+        );
+        assert!(
+            terminals
+                .write_if_idle(&key, &cwd, None, &env, " printf 'IDLE_%s\\n' REUSED\r")
+                .unwrap()
+        );
+        read_until(&mut events, "IDLE_REUSED").await;
+        let (reused, _) = terminals.observe(&key).unwrap();
+        assert_eq!(opened.pid, reused.pid);
+        assert!(!reused.history.contains("must not reach"));
+        assert!(!reused.history.contains("must not enter"));
+    }
+
     #[tokio::test]
     async fn same_terminal_id_in_another_thread_survives_close() {
         let terminals = TerminalManager::default();

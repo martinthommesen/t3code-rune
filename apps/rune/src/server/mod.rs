@@ -469,7 +469,7 @@ async fn environment_description(environment: &Environment) -> (Value, Option<Pa
         "platform": {"os": os, "arch": arch},
         "serverVersion": env!("CARGO_PKG_VERSION"),
         "orchestrationProtocolVersion": PROTOCOL_VERSION,
-        "capabilities": {"t3ReadOnly": true, "t3ProjectWrites": local, "t3NamedProjects": local, "t3ScratchProjects": scratch_projects, "t3CloneProjects": local, "t3PromptWrites": local, "t3ThreadLaunch": local, "t3WorktreeLaunch": local, "t3RemoteWorktreeLaunch": local, "t3WorktreeSetup": local, "t3WorktreeQueue": local, "t3ShellHttp": local, "t3CheckoutSwitch": local, "t3ThreadStop": local, "t3ArchiveSnapshots": local, "t3ThreadArchive": local, "t3ThreadUnarchive": local, "t3ArchivedThreadDelete": local, "t3ThreadVisits": local, "t3Terminal": local, "serverBrowser": server_browser, "commandOutputStreaming": local, "projectOrganization": local, "worktreesDirectory": local}
+        "capabilities": {"t3ReadOnly": true, "t3ProjectWrites": local, "t3NamedProjects": local, "t3ScratchProjects": scratch_projects, "t3CloneProjects": local, "t3PromptWrites": local, "t3ThreadLaunch": local, "t3WorktreeLaunch": local, "t3RemoteWorktreeLaunch": local, "t3WorktreeSetup": local, "t3WorktreeQueue": local, "t3ShellHttp": local, "t3CheckoutSwitch": local, "t3ThreadStop": local, "t3ArchiveSnapshots": local, "t3ThreadArchive": local, "t3ThreadUnarchive": local, "t3ArchivedThreadDelete": local, "t3ThreadVisits": local, "t3Terminal": local, "t3TerminalIdleWrite": local && cfg!(target_os = "linux"), "serverBrowser": server_browser, "commandOutputStreaming": local, "projectOrganization": local, "worktreesDirectory": local}
     });
     (description, scratch_root)
 }

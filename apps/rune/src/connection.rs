@@ -335,6 +335,10 @@ pub(crate) enum Event {
         attachment: u64,
         message: String,
     },
+    TerminalIdleWriteSettled {
+        request: Uuid,
+        result: Result<Option<String>, String>,
+    },
     TerminalCloseSettled {
         target: TerminalTarget,
         result: Result<(), String>,
@@ -884,6 +888,26 @@ impl Connection {
         });
     }
 
+    pub(crate) fn write_idle_terminal(
+        &self,
+        thread_id: String,
+        terminal_ids: Vec<String>,
+        data: String,
+    ) -> Option<Uuid> {
+        let request = Uuid::new_v4();
+        let session = self.terminal_selection.write_session()?;
+        self.commands
+            .send(Command::Terminal(terminal::Command::WriteIdle {
+                request,
+                session,
+                thread_id,
+                terminal_ids,
+                data,
+            }))
+            .ok()
+            .map(|()| request)
+    }
+
     pub(crate) fn resize_terminal(&self, attachment: u64, cols: u16, rows: u16) {
         self.terminal_command(terminal::Command::Resize {
             attachment,
@@ -977,6 +1001,8 @@ struct Capabilities {
     thread_visits: bool,
     #[serde(rename = "t3Terminal")]
     terminal: Option<bool>,
+    #[serde(default, rename = "t3TerminalIdleWrite")]
+    terminal_idle_write: bool,
     #[serde(default, rename = "serverBrowser")]
     server_browser: bool,
 }
@@ -1371,6 +1397,8 @@ struct Session {
     clone_writes: bool,
     thread_visits: bool,
     terminals_enabled: bool,
+    terminal_idle_write: bool,
+    terminal_write_session: Uuid,
     terminals: BTreeMap<u64, terminal::Subscription>,
     pending_terminal: HashMap<String, terminal::PendingOperation>,
     terminal_links: terminal_link::TerminalLinks,
@@ -1563,6 +1591,13 @@ impl Session {
                         .split_whitespace()
                         .any(|scope| scope == "orchestration:operate")
                 }),
+            terminal_idle_write: capabilities.terminal_idle_write
+                && scope.is_some_and(|scopes| {
+                    scopes
+                        .split_whitespace()
+                        .any(|scope| scope == "terminal:read")
+                }),
+            terminal_write_session: Uuid::new_v4(),
             terminals_enabled: environment
                 .descriptor
                 .capabilities
@@ -3158,6 +3193,7 @@ async fn run(
 ) -> Result<(), String> {
     let environment = pair(server_url, pairing_code).await?;
     let mut session = Session::open(&environment, None, &[], terminal_selection).await?;
+    terminal_selection.set_write_session(Some(session.terminal_write_session));
     events.send(Event::Connected {
         environment_id: environment.descriptor.environment_id.clone(),
         label: environment.descriptor.label.clone(),
@@ -3198,6 +3234,7 @@ async fn run(
             Ok(()) => run_socket(&mut session, &mut commands, events).await,
             Err(error) => Err(error),
         };
+        terminal_selection.set_write_session(None);
         session.unconfirm_workspace_retries(events);
         session.unconfirm_archive_actions(events);
         let reason = match disconnected {
@@ -3315,6 +3352,7 @@ async fn run(
                 Err(error) => last_error = error,
             }
         };
+        terminal_selection.set_write_session(Some(session.terminal_write_session));
         events.send(Event::Reconnected);
         for inspection in command_outputs {
             session

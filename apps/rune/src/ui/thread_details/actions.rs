@@ -386,7 +386,8 @@ fn run(state: &mut State, thread_id: &str, action_id: &str, tx: &mut Tx) {
     };
     let project_id = project.id.clone();
     let input = format!(" {}\r", action.command);
-    if state.open_project_action_terminal(thread_id, input, tx) {
+    let may_reuse = action.stop_on_settle != Some(true);
+    if state.open_project_action_terminal(thread_id, input, may_reuse, tx) {
         state.thread_details.close();
         if let Err(error) = state
             .client_settings

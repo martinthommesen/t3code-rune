@@ -23,6 +23,14 @@ struct WriteInput {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct IdleWriteInput {
+    thread_id: String,
+    terminal_ids: Vec<String>,
+    data: String,
+}
+
+#[derive(Deserialize)]
 struct ResizeInput {
     #[serde(flatten)]
     key: TerminalKey,
@@ -89,6 +97,9 @@ pub(super) fn call(
                 .map_err(wire)?;
             Ok(Value::Null)
         }),
+        "t3.terminalWriteIdle" => {
+            decode(payload).and_then(|input| write_idle(manager, store, input))
+        }
         "terminal.resize" => decode(payload).and_then(|mut input: ResizeInput| {
             normalize_key(&mut input.key)?;
             manager
@@ -115,6 +126,52 @@ pub(super) fn call(
         }),
         _ => return None,
     })
+}
+
+fn write_idle(
+    manager: &TerminalManager,
+    store: &Store,
+    mut input: IdleWriteInput,
+) -> Result<Value, Value> {
+    normalize_id(&mut input.thread_id, usize::MAX)?;
+    for id in &mut input.terminal_ids {
+        normalize_id(id, 128)?;
+    }
+    let Some(first) = input.terminal_ids.first() else {
+        return Ok(json!({"terminalId": null}));
+    };
+    let mut key = TerminalKey {
+        thread_id: input.thread_id,
+        terminal_id: first.clone(),
+    };
+    let Some((project, worktree)) = store
+        .terminal_workspace(&key.thread_id)
+        .map_err(|_| invalid("Could not read the thread's terminal workspace."))?
+    else {
+        return Err(wire(TerminalError::Unknown(key)));
+    };
+    let cwd = workspace_directory(worktree.as_deref().unwrap_or(&project))?;
+    let mut env = BTreeMap::from([("T3CODE_PROJECT_ROOT".to_owned(), utf8_workspace(&project)?)]);
+    if let Some(worktree) = &worktree {
+        env.insert("T3CODE_WORKTREE_PATH".to_owned(), utf8_workspace(worktree)?);
+    }
+    let worktree = worktree.as_ref().map(|_| cwd.as_path());
+    for terminal_id in input.terminal_ids {
+        key.terminal_id = terminal_id;
+        if manager
+            .write_if_idle(&key, &cwd, worktree, &env, &input.data)
+            .map_err(wire)?
+        {
+            return Ok(json!({"terminalId": key.terminal_id}));
+        }
+    }
+    Ok(json!({"terminalId": null}))
+}
+
+fn utf8_workspace(path: &Path) -> Result<String, Value> {
+    path.to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| invalid("Terminal folder must be a UTF-8 path."))
 }
 
 pub(super) fn subscribe(

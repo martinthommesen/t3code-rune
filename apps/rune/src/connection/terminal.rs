@@ -4,6 +4,7 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::time::Instant;
+use uuid::Uuid;
 
 use super::{Event, EventSender, REQUEST_TIMEOUT, RpcCause, RpcExit, Session, SessionStop};
 
@@ -107,6 +108,13 @@ pub(super) enum Command {
         binary: bool,
         reply: bool,
     },
+    WriteIdle {
+        request: Uuid,
+        session: Uuid,
+        thread_id: String,
+        terminal_ids: Vec<String>,
+        data: String,
+    },
     Resize {
         attachment: u64,
         cols: u16,
@@ -128,9 +136,18 @@ pub(super) struct Intent {
 #[derive(Default)]
 pub(super) struct Selection {
     current: Mutex<HashMap<u64, TerminalTarget>>,
+    write_session: Mutex<Option<Uuid>>,
 }
 
 impl Selection {
+    pub(super) fn write_session(&self) -> Option<Uuid> {
+        *self.write_session.lock().expect("terminal write session")
+    }
+
+    pub(super) fn set_write_session(&self, session: Option<Uuid>) {
+        *self.write_session.lock().expect("terminal write session") = session;
+    }
+
     pub(super) fn attach(&self, intent: &Intent) {
         let mut current = self.current.lock().expect("terminal selection lock");
         current.retain(|_, target| target != &intent.attach.target);
@@ -401,6 +418,10 @@ enum Operation {
         attachment: u64,
         action: Action,
     },
+    IdleWrite {
+        request: Uuid,
+        terminal_ids: Vec<String>,
+    },
     Close {
         target: TerminalTarget,
         attachment: Option<u64>,
@@ -414,6 +435,8 @@ impl Operation {
 }
 
 const CLOSE_UNCONFIRMED: &str = "The environment did not confirm that the terminal closed.";
+const IDLE_WRITE_UNCONFIRMED: &str =
+    "The environment did not confirm that the project script was sent.";
 
 impl Session {
     pub(super) async fn start_terminal(&mut self, intent: Intent) -> Result<(), SessionStop> {
@@ -506,6 +529,46 @@ impl Session {
                     }
                 } else if !reply && !data.is_empty() {
                     terminal_error(events, attachment, "The terminal is not ready for input.");
+                }
+            }
+            Command::WriteIdle {
+                request,
+                session,
+                thread_id,
+                terminal_ids,
+                data,
+            } => {
+                if session != self.terminal_write_session {
+                    idle_write_settled(events, request, Err(IDLE_WRITE_UNCONFIRMED.to_owned()));
+                } else if !self.terminals_enabled
+                    || !self
+                        .thread
+                        .as_ref()
+                        .is_some_and(|thread| thread.thread_id == thread_id)
+                {
+                    idle_write_settled(
+                        events,
+                        request,
+                        Err("This thread terminal is unavailable.".to_owned()),
+                    );
+                } else if !self.terminal_idle_write || !idle_write_fits(&data) {
+                    idle_write_settled(events, request, Ok(None));
+                } else {
+                    let wire_id = self.allocate_id();
+                    let payload =
+                        json!({"threadId": thread_id, "terminalIds": terminal_ids, "data": data});
+                    self.pending_terminal.insert(
+                        wire_id.clone(),
+                        PendingOperation {
+                            kind: Operation::IdleWrite {
+                                request,
+                                terminal_ids,
+                            },
+                            started: Instant::now(),
+                        },
+                    );
+                    self.send_request(&wire_id, "t3.terminalWriteIdle", payload)
+                        .await?;
                 }
             }
             Command::Resize {
@@ -643,6 +706,21 @@ impl Session {
                     self.finish_terminal_close(target, attachment, exit, events)
                         .await?;
                 }
+                Operation::IdleWrite {
+                    request,
+                    terminal_ids,
+                } => {
+                    let result =
+                        exit.into_result()
+                            .and_then(|value| match value.get("terminalId") {
+                                Some(Value::Null) => Ok(None),
+                                Some(Value::String(id)) if terminal_ids.contains(id) => {
+                                    Ok(Some(id.to_owned()))
+                                }
+                                _ => Err(IDLE_WRITE_UNCONFIRMED.to_owned()),
+                            });
+                    idle_write_settled(events, request, result);
+                }
                 Operation::Active { attachment, .. } => {
                     if let Err(message) = exit.into_result() {
                         terminal_error(events, attachment, &message);
@@ -738,6 +816,9 @@ impl Session {
                 Operation::Active { attachment, action } => {
                     terminal_error(events, *attachment, action.unconfirmed())
                 }
+                Operation::IdleWrite { request, .. } => {
+                    idle_write_settled(events, *request, Err(IDLE_WRITE_UNCONFIRMED.to_owned()));
+                }
                 Operation::Close { target, attachment } => {
                     terminal_close_settled(
                         events,
@@ -761,8 +842,18 @@ impl Session {
     ) -> Vec<Intent> {
         let operations = std::mem::take(&mut self.pending_terminal);
         for operation in operations.values() {
-            if let Operation::Close { target, .. } = &operation.kind {
-                terminal_close_settled(events, target.clone(), Err(CLOSE_UNCONFIRMED.to_owned()));
+            match &operation.kind {
+                Operation::IdleWrite { request, .. } => {
+                    idle_write_settled(events, *request, Err(IDLE_WRITE_UNCONFIRMED.to_owned()));
+                }
+                Operation::Close { target, .. } => {
+                    terminal_close_settled(
+                        events,
+                        target.clone(),
+                        Err(CLOSE_UNCONFIRMED.to_owned()),
+                    );
+                }
+                Operation::Active { .. } => {}
             }
         }
         std::mem::take(&mut self.terminals)
@@ -782,6 +873,18 @@ impl Session {
             })
             .collect()
     }
+}
+
+fn idle_write_fits(data: &str) -> bool {
+    data.encode_utf16().take(MAX_WRITE_UNITS + 1).count() <= MAX_WRITE_UNITS
+}
+
+fn idle_write_settled(
+    events: &EventSender<impl Fn()>,
+    request: Uuid,
+    result: Result<Option<String>, String>,
+) {
+    events.send(Event::TerminalIdleWriteSettled { request, result });
 }
 
 fn terminal_close_settled(

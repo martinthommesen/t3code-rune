@@ -5,6 +5,8 @@ use uuid::Uuid;
 use crate::client_settings::{SavedTerminalGroup, SavedTerminalLayout};
 use crate::connection::TerminalTarget;
 
+use super::PendingProjectAction;
+
 pub(super) use crate::client_settings::SplitDirection;
 
 pub(super) const MAX_TERMINALS_PER_GROUP: usize = 4;
@@ -29,12 +31,14 @@ impl Group {
 pub(in crate::ui) struct TabsByThread {
     layouts: HashMap<String, Tabs>,
     closing: HashSet<TerminalTarget>,
+    pub(super) pending_action: Option<PendingProjectAction>,
 }
 
 impl TabsByThread {
     pub(in crate::ui) fn clear(&mut self) {
         self.layouts.clear();
         self.closing.clear();
+        self.pending_action = None;
     }
 
     pub(in crate::ui) fn remove_thread(&mut self, thread_id: &str) {
@@ -44,6 +48,22 @@ impl TabsByThread {
 
     pub(super) fn get(&self, thread_id: &str) -> Option<&Tabs> {
         self.layouts.get(thread_id)
+    }
+
+    pub(super) fn action_candidates(&self, thread_id: &str) -> Vec<String> {
+        let Some(tabs) = self.get(thread_id) else {
+            return Vec::new();
+        };
+        let active = tabs.selected();
+        std::iter::once(active)
+            .chain(tabs.entries.iter().filter(|tab| tab.id != active.id))
+            .map(|tab| TerminalTarget {
+                thread_id: thread_id.to_owned(),
+                terminal_id: tab.id.clone(),
+            })
+            .filter(|target| !self.closing.contains(target))
+            .map(|target| target.terminal_id)
+            .collect()
     }
 
     pub(super) fn get_mut(&mut self, thread_id: &str) -> Option<&mut Tabs> {

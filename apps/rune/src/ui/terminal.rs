@@ -7,6 +7,7 @@ use alacritty_terminal::{
     vte::ansi::{Color as TerminalColor, CursorShape, NamedColor},
 };
 use rune::{Color, Drag, El, Family, Key, KeyEvent, Phase, Span, TextStyle, Tx, col, el, text};
+use uuid::Uuid;
 
 use crate::connection::{
     TerminalAttach, TerminalSnapshot, TerminalStatus, TerminalTarget, TerminalUpdate,
@@ -49,6 +50,12 @@ const FONT: TextStyle = TextStyle::new(13.0, 400.0)
     .lh(LINE_HEIGHT)
     .family(TERMINAL_FONT);
 pub(super) const INPUT_KEY: &str = "terminal-input";
+
+struct PendingProjectAction {
+    request: Uuid,
+    thread: String,
+    input: String,
+}
 
 pub(super) struct Pane {
     pub(super) attachment: u64,
@@ -236,13 +243,15 @@ impl State {
         };
         terminal.apply(update);
         let replies = terminal.screen.take_replies();
-        let input = if terminal.received_snapshot {
-            terminal
-                .project_action_input
-                .take()
-                .filter(|_| terminal.status == TerminalStatus::Running)
-        } else {
-            None
+        let input = match terminal.status {
+            TerminalStatus::Running if terminal.received_snapshot => {
+                terminal.project_action_input.take()
+            }
+            TerminalStatus::Exited | TerminalStatus::Error => {
+                terminal.project_action_input = None;
+                None
+            }
+            _ => None,
         };
         if let Some(connection) = &self.connection {
             if !replies.is_empty() {
@@ -260,6 +269,10 @@ impl State {
     }
 
     pub(super) fn discard_project_action_inputs(&mut self) {
+        if self.terminal_tabs.pending_action.take().is_some() {
+            self.project_notice =
+                Some("The connection closed before confirming the project script.".to_owned());
+        }
         for pane in self.terminal.iter_mut().chain(&mut self.terminal_peers) {
             pane.project_action_input = None;
         }
@@ -395,27 +408,91 @@ impl State {
         }
     }
 
+    fn project_action_terminal_available(&self, thread_id: &str) -> bool {
+        self.connection.is_some()
+            && self.workspace.as_ref().is_some_and(|workspace| {
+                workspace.terminal
+                    && !workspace.reconnecting
+                    && workspace
+                        .thread(thread_id)
+                        .is_some_and(|thread| !thread.archived)
+                    && workspace.selection.as_ref().is_some_and(|selection| {
+                        matches!(&selection.view, ProjectView::Conversation(conversation)
+                            if conversation.id == thread_id)
+                    })
+            })
+    }
+
     pub(super) fn open_project_action_terminal(
+        &mut self,
+        thread_id: &str,
+        input: String,
+        may_reuse: bool,
+        tx: &mut Tx,
+    ) -> bool {
+        if !self.project_action_terminal_available(thread_id) {
+            return false;
+        }
+        self.restore_terminal_tabs(thread_id);
+        if may_reuse && self.terminal_tabs.pending_action.is_none() {
+            let candidates = self.terminal_tabs.action_candidates(thread_id);
+            if !candidates.is_empty()
+                && let Some(connection) = &self.connection
+            {
+                let Some(request) =
+                    connection.write_idle_terminal(thread_id.to_owned(), candidates, input.clone())
+                else {
+                    return false;
+                };
+                self.terminal_tabs.pending_action = Some(PendingProjectAction {
+                    request,
+                    thread: thread_id.to_owned(),
+                    input,
+                });
+                return true;
+            }
+        }
+        self.open_new_project_action_terminal(thread_id, input, tx)
+    }
+
+    pub(super) fn project_action_terminal_settled(
+        &mut self,
+        request: Uuid,
+        result: Result<Option<String>, String>,
+        tx: &mut Tx,
+    ) {
+        let Some(action) = self
+            .terminal_tabs
+            .pending_action
+            .take_if(|action| action.request == request)
+        else {
+            return;
+        };
+        if !self.project_action_terminal_available(&action.thread) {
+            return;
+        }
+        match result {
+            Ok(Some(id)) => {
+                if let Some(tabs) = self.terminal_tabs.get_mut(&action.thread)
+                    && tabs.tab(&id).is_some()
+                {
+                    tabs.select(&id);
+                    self.attach_selected_terminal(tx, true);
+                }
+            }
+            Ok(None) => {
+                self.open_new_project_action_terminal(&action.thread, action.input, tx);
+            }
+            Err(error) => self.project_notice = Some(error),
+        }
+    }
+
+    fn open_new_project_action_terminal(
         &mut self,
         thread_id: &str,
         input: String,
         tx: &mut Tx,
     ) -> bool {
-        let available = self.workspace.as_ref().is_some_and(|workspace| {
-            workspace.terminal
-                && !workspace.reconnecting
-                && workspace
-                    .thread(thread_id)
-                    .is_some_and(|thread| !thread.archived)
-                && workspace.selection.as_ref().is_some_and(|selection| {
-                    matches!(&selection.view, ProjectView::Conversation(conversation)
-                        if conversation.id == thread_id)
-                })
-        });
-        if !available || self.connection.is_none() {
-            return false;
-        }
-        self.restore_terminal_tabs(thread_id);
         if self.terminal_tabs.get(thread_id).is_some() {
             if !self.terminal_tabs.append(thread_id) {
                 return false;
@@ -549,6 +626,7 @@ impl State {
     }
 
     pub(super) fn detach_terminal_pane(&mut self) {
+        self.terminal_tabs.pending_action = None;
         for pane in self
             .terminal
             .take()

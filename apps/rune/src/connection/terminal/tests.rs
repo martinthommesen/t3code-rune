@@ -9,7 +9,10 @@ use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tokio::time::timeout;
 
 use super::super::{Connection, Event, REQUEST_TIMEOUT};
-use super::{Intent, Selection, TerminalAttach, TerminalStatus, TerminalTarget, TerminalUpdate};
+use super::{
+    Intent, MAX_WRITE_UNITS, Selection, Subscription, TerminalAttach, TerminalStatus,
+    TerminalTarget, TerminalUpdate, idle_write_fits,
+};
 
 fn target(thread: &str) -> TerminalAttach {
     TerminalAttach {
@@ -51,6 +54,34 @@ fn terminal_launch_preserves_project_and_worktree_environment() {
     assert!(observed.get("cwd").is_none());
     assert!(observed.get("env").is_none());
     assert_eq!(observed["resume"], true);
+}
+
+#[test]
+fn guarded_action_reuse_preserves_long_utf16_terminal_input() {
+    let short = " printf 'ready 🙂'\r";
+    assert!(idle_write_fits(short));
+
+    let at_limit = format!(" {}🙂\r", "x".repeat(MAX_WRITE_UNITS - 4));
+    assert_eq!(at_limit.encode_utf16().count(), MAX_WRITE_UNITS);
+    assert!(idle_write_fits(&at_limit));
+
+    let subscription = Subscription::new("attach".into(), Intent::new(1, target("thread")));
+    for (padding, last_chunk) in [(MAX_WRITE_UNITS - 3, "\r"), (MAX_WRITE_UNITS - 2, "🙂\r")] {
+        let long = format!(" {}🙂\r", "x".repeat(padding));
+        assert_eq!(long.encode_utf16().count(), padding + 4);
+        assert!(!idle_write_fits(&long));
+
+        let chunks = subscription.inputs(&long, false, false);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[1]["data"], last_chunk);
+        let mut restored = String::new();
+        for chunk in chunks {
+            let data = chunk["data"].as_str().unwrap();
+            assert!(idle_write_fits(data));
+            restored.push_str(data);
+        }
+        assert_eq!(restored, long);
+    }
 }
 
 #[test]

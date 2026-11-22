@@ -1352,11 +1352,18 @@ fn response(
                 ),
             }
         }
-        "terminal.open" | "terminal.write" | "terminal.resize" | "terminal.clear"
-        | "terminal.close" => {
+        "terminal.open"
+        | "terminal.write"
+        | "terminal.resize"
+        | "terminal.clear"
+        | "terminal.close"
+        | "t3.terminalWriteIdle" => {
             let Some(local) = local.filter(|_| permissions.terminal_operate) else {
                 return terminal_denied(id, "terminal:operate");
             };
+            if tag == "t3.terminalWriteIdle" && !permissions.terminal_read {
+                return terminal_denied(id, "terminal:read");
+            }
             match terminal_rpc::call(&local.terminals, store, tag, payload)
                 .expect("known terminal command")
             {

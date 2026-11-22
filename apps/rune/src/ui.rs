@@ -1678,6 +1678,9 @@ impl State {
                 attachment,
                 message,
             } => self.fail_terminal_attachment(attachment, message),
+            Event::TerminalIdleWriteSettled { request, result } => {
+                self.project_action_terminal_settled(request, result, tx);
+            }
             Event::TerminalCloseSettled { target, result } => {
                 self.terminal_close_settled(target, result);
             }
