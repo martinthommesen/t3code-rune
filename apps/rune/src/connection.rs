@@ -16,6 +16,8 @@ mod runtime_question;
 mod runtime_response;
 mod saved_reasoning;
 mod terminal;
+mod terminal_link;
+pub(crate) use terminal_link::TerminalFileLink;
 #[cfg(test)]
 mod tests;
 mod workspace_retry;
@@ -296,6 +298,16 @@ pub(crate) enum Event {
         attachment: u64,
         update: TerminalUpdate,
     },
+    TerminalFileLinkChecked {
+        attachment: u64,
+        id: Uuid,
+        available: bool,
+    },
+    TerminalFileLinkOpened {
+        attachment: u64,
+        editor: Option<String>,
+        result: Result<(), String>,
+    },
     TerminalFailed {
         attachment: u64,
         message: String,
@@ -418,6 +430,7 @@ enum Command {
         query: String,
     },
     Terminal(terminal::Command),
+    TerminalFileLink(terminal_link::Request),
 }
 
 pub(crate) struct Connection {
@@ -1325,6 +1338,7 @@ struct Session {
     terminals_enabled: bool,
     terminals: BTreeMap<u64, terminal::Subscription>,
     pending_terminal: HashMap<String, terminal::PendingOperation>,
+    terminal_links: terminal_link::TerminalLinks,
 }
 
 struct GitRefsRequest {
@@ -1521,6 +1535,7 @@ impl Session {
                 }),
             terminals: BTreeMap::new(),
             pending_terminal: HashMap::new(),
+            terminal_links: terminal_link::TerminalLinks::new(scope.is_some_and(can_operate)),
         };
         let request_id = session.allocate_id();
         session
@@ -1886,6 +1901,7 @@ impl Session {
                 }
             }
             Command::Terminal(command) => self.terminal_command(command, events).await?,
+            Command::TerminalFileLink(request) => self.terminal_file_link(request, events).await?,
             Command::ObserveOutput(command) => self.command_output(command, events).await?,
             Command::RespondToRuntimeRequest(response) => {
                 self.respond_to_runtime_request(response, events).await?
@@ -2563,6 +2579,8 @@ impl Session {
                             .then(|| event["config"].as_object())
                             .flatten()
                     }) {
+                        self.terminal_links.editors =
+                            terminal_link::config_editors(config.get("availableEditors"));
                         let root = config
                             .get("scratchWorkspaceRoot")
                             .and_then(Value::as_str)
@@ -2881,6 +2899,11 @@ impl Session {
                     };
                     events.send(response.finish(outcome));
                     return Ok(());
+                }
+                if self.terminal_links.matches(&request_id) {
+                    return self
+                        .terminal_file_link_exit(&request_id, exit, events)
+                        .await;
                 }
                 if self.terminal_attachment(&request_id).is_some()
                     || self.pending_terminal.contains_key(&request_id)
@@ -3332,6 +3355,7 @@ async fn run_socket(
                     session.interrupt(&id).await?;
                 }
                 session.expire_terminal(events).await?;
+                session.expire_terminal_links(events).await?;
                 session.expire_workspace_retries(events);
                 session.expire_keybinding_write(events);
                 session.expire_workspace_write(events);

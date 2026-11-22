@@ -42,6 +42,8 @@ pub(crate) struct TerminalSnapshot {
     #[serde(flatten)]
     target: TerminalTarget,
     sequence: Option<u64>,
+    pub(crate) cwd: Option<String>,
+    pub(crate) worktree_path: Option<String>,
     pub(crate) history: String,
     pub(crate) label: String,
     pub(crate) status: TerminalStatus,

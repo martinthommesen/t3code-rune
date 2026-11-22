@@ -9,6 +9,7 @@ use crate::server::parse_settings_json;
 
 mod appearance;
 mod chromium;
+mod editor;
 mod reasoning;
 mod terminal;
 

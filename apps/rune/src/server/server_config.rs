@@ -97,7 +97,7 @@ pub(super) async fn snapshot(environment: &Environment) -> Result<Value, Value> 
             "keybindings": keybindings,
             "issues": issues,
             "providers": providers,
-            "availableEditors": [],
+            "availableEditors": super::external_editor::available_editors().await,
             "observability": {
                 "logsDirectoryPath": profile.join("logs").to_string_lossy(),
                 "localTracingEnabled": false,

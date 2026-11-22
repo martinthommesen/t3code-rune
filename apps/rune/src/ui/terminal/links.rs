@@ -1,4 +1,8 @@
-use std::{ops::RangeInclusive, sync::LazyLock};
+use std::{
+    ops::{Range, RangeInclusive},
+    sync::LazyLock,
+    time::{Duration, Instant},
+};
 
 use alacritty_terminal::{
     grid::Dimensions,
@@ -8,10 +12,16 @@ use alacritty_terminal::{
 use regex_lite::Regex;
 use reqwest::Url;
 use rune::{Drag, Phase, PointerEvent, Tx};
+use uuid::Uuid;
 
-use super::{CELL_PADDING, CELL_WIDTH, LINE_HEIGHT, Pane, State, control::TerminalScreen, mouse};
+use crate::connection::TerminalFileLink;
+
+use super::{
+    CELL_PADDING, CELL_WIDTH, LINE_HEIGHT, Pane, State, control::TerminalScreen, link_paths, mouse,
+};
 
 const DRAG_THRESHOLD: f32 = 4.0;
+const FILE_HOVER_DELAY: Duration = Duration::from_millis(250);
 static URL_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?i)https?://[^\s"'`<>]+"#).expect("valid terminal URL pattern")
 });
@@ -21,12 +31,26 @@ pub(super) struct Links {
     pressed: Option<Link>,
     hovered: Option<PointerEvent>,
     selecting: bool,
+    file_hover: Option<FileHover>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Link {
-    url: String,
+    target: Target,
     cells: RangeInclusive<Point>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum Target {
+    Url(String),
+    File(String),
+}
+
+struct FileHover {
+    link: TerminalFileLink,
+    id: Uuid,
+    deadline: Option<Instant>,
+    available: bool,
 }
 
 impl State {
@@ -45,6 +69,7 @@ impl State {
             }
             pane.links.selecting = true;
             pane.links.hovered = None;
+            pane.links.file_hover = None;
         }
         if let Some(link) = pane.links.pressed.take() {
             let moved = drag.dx.hypot(drag.dy) > DRAG_THRESHOLD;
@@ -53,8 +78,26 @@ impl State {
                     && !moved
                     && link_at_pointer(&pane.screen, drag.x, drag.y).as_ref() == Some(&link)
                 {
+                    let file = match &link.target {
+                        Target::File(path) => file_request(pane, path),
+                        Target::Url(_) => None,
+                    };
                     self.activate_terminal_attachment(attachment, tx);
-                    let _ = tx.open_url(&link.url);
+                    match link.target {
+                        Target::Url(url) => {
+                            let _ = tx.open_url(&url);
+                        }
+                        Target::File(_) => {
+                            if let Some(file) = file
+                                && let Some(connection) = self.connection.as_ref()
+                            {
+                                connection.open_terminal_file_link(
+                                    file,
+                                    self.client_settings.preferred_editor(),
+                                );
+                            }
+                        }
+                    }
                 }
                 return;
             }
@@ -64,6 +107,7 @@ impl State {
             }
             pane.links.selecting = true;
             pane.links.hovered = None;
+            pane.links.file_hover = None;
             let mut start = *drag;
             start.phase = Phase::Down;
             start.x = drag.start_x;
@@ -90,12 +134,99 @@ impl State {
         pane.links.hovered = point.filter(|_| {
             !pane.links.selecting && !mouse::capture(pane.screen.mouse_modes.protocol(), tx.mods())
         });
+        let file = pane.links.hovered.and_then(|point| {
+            match link_at_pointer(&pane.screen, point.x, point.y)?.target {
+                Target::File(path) => file_request(pane, &path),
+                Target::Url(_) => None,
+            }
+        });
+        if file.as_ref() == pane.links.file_hover.as_ref().map(|probe| &probe.link) {
+            return;
+        }
+        pane.links.file_hover = file.map(|link| {
+            tx.wake_after(FILE_HOVER_DELAY);
+            FileHover {
+                link,
+                id: Uuid::new_v4(),
+                deadline: Some(Instant::now() + FILE_HOVER_DELAY),
+                available: false,
+            }
+        });
     }
+
+    pub(in crate::ui) fn poll_terminal_file_links(&mut self, tx: &mut Tx) {
+        let Some(connection) = self.connection.as_ref() else {
+            return;
+        };
+        let now = Instant::now();
+        for pane in self.terminal.iter_mut().chain(&mut self.terminal_peers) {
+            let Some(probe) = pane.links.file_hover.as_mut() else {
+                continue;
+            };
+            let Some(deadline) = probe.deadline else {
+                continue;
+            };
+            if deadline > now {
+                tx.wake_after(deadline - now);
+                continue;
+            }
+            probe.deadline = None;
+            connection.check_terminal_file_link(probe.link.clone(), probe.id);
+        }
+    }
+
+    pub(in crate::ui) fn terminal_file_link_checked(
+        &mut self,
+        attachment: u64,
+        id: Uuid,
+        available: bool,
+    ) {
+        if let Some(pane) = self.terminal_attachment_mut(attachment)
+            && let Some(probe) = &mut pane.links.file_hover
+            && probe.id == id
+        {
+            probe.available = available;
+        }
+    }
+
+    pub(in crate::ui) fn terminal_file_link_opened(
+        &mut self,
+        attachment: u64,
+        editor: Option<String>,
+        result: Result<(), String>,
+    ) {
+        if let Some(editor) = editor
+            && let Err(error) = self.client_settings.remember_editor(editor)
+        {
+            eprintln!("Could not remember the preferred editor: {error}");
+        }
+        if let Err(error) = result
+            && let Some(pane) = self.terminal_attachment_mut(attachment)
+        {
+            pane.message = Some(error);
+        }
+    }
+}
+
+fn file_request(pane: &Pane, path: &str) -> Option<TerminalFileLink> {
+    Some(link_paths::request(
+        pane.attachment,
+        path,
+        pane.cwd.as_deref()?,
+        pane.worktree_path.as_deref(),
+    ))
 }
 
 pub(super) fn highlighted_cells(pane: &Pane) -> Option<RangeInclusive<Point>> {
     let point = pane.links.hovered?;
-    link_at_pointer(&pane.screen, point.x, point.y).map(|link| link.cells)
+    let link = link_at_pointer(&pane.screen, point.x, point.y)?;
+    match &link.target {
+        Target::Url(_) => Some(link.cells),
+        Target::File(path) => (pane.links.file_hover.as_ref().is_some_and(|probe| {
+            probe.available && file_request(pane, path).as_ref() == Some(&probe.link)
+        }))
+        .then_some(link.cells),
+    }
 }
 
 fn link_at_pointer(screen: &TerminalScreen, x: f32, y: f32) -> Option<Link> {
@@ -172,31 +303,42 @@ fn link_at(screen: &TerminalScreen, mut point: Point) -> Option<Link> {
     let hit = hit?;
     // A visible last line with a continuation may contain only the beginning of the URL.
     let text = text.trim_end();
+    let (target, range) = url_at(text, hit).or_else(|| {
+        link_paths::matching(text, hit).map(|(path, range)| (Target::File(path.to_owned()), range))
+    })?;
+    if range.end == text.len() && wraps(end) {
+        return None;
+    }
+    let first = offsets[offsets.partition_point(|(byte, _)| *byte < range.start)].1;
+    let last = offsets[offsets.partition_point(|(byte, _)| *byte < range.end) - 1].1;
+    Some(Link {
+        target,
+        cells: first..=last,
+    })
+}
+
+fn url_at(text: &str, hit: usize) -> Option<(Target, Range<usize>)> {
     for found in URL_PATTERN.find_iter(text) {
-        let url = trim_url(found.as_str());
-        let end_offset = found.start() + url.len();
-        if hit < found.start() || hit >= end_offset {
-            continue;
+        let url = trim_closing_delimiters(found.as_str(), false);
+        let range = found.start()..found.start() + url.len();
+        if range.contains(&hit) {
+            return Some((Target::Url(Url::parse(url).ok()?.into()), range));
         }
-        if end_offset == text.len() && wraps(end) {
-            return None;
-        }
-        let first = offsets[offsets.partition_point(|(byte, _)| *byte < found.start())].1;
-        let last = offsets[offsets.partition_point(|(byte, _)| *byte < end_offset) - 1].1;
-        return Some(Link {
-            url: Url::parse(url).ok()?.into(),
-            cells: first..=last,
-        });
     }
     None
 }
 
-fn trim_url(url: &str) -> &str {
+pub(super) fn trim_closing_delimiters(url: &str, path: bool) -> &str {
     let url = url
         .split(|character: char| character.is_whitespace() || character == '\u{feff}')
         .next()
-        .unwrap_or_default()
-        .trim_end_matches(['.', ',', ';', '!', '?']);
+        .unwrap_or_default();
+    let punctuation = if path {
+        &['.', ',', ';', ':', '!', '?'][..]
+    } else {
+        &['.', ',', ';', '!', '?'][..]
+    };
+    let url = url.trim_end_matches(punctuation);
     let mut end = url.len();
     for (open, close) in [(b'(', b')'), (b'[', b']'), (b'{', b'}')] {
         let opens = url.bytes().filter(|byte| *byte == open).count();
@@ -216,13 +358,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn detects_only_printed_http_url_cells_and_keeps_balanced_delimiters() {
+    fn distinguishes_printed_file_paths_from_urls_and_keeps_balanced_delimiters() {
         let mut screen = TerminalScreen::new(4, 60);
         screen.process("好 (https://example.invalid/(a)).\r\n./docs/demo.txt:3:5".as_bytes());
         let link = link_at(&screen, Point::new(Line(0), Column(20))).unwrap();
-        assert_eq!(link.url, "https://example.invalid/(a)");
+        assert_eq!(
+            link.target,
+            Target::Url("https://example.invalid/(a)".into())
+        );
         assert!(!link.cells.contains(&Point::new(Line(0), Column(3))));
-        assert!(link_at(&screen, Point::new(Line(1), Column(8))).is_none());
+        assert_eq!(
+            link_at(&screen, Point::new(Line(1), Column(8)))
+                .unwrap()
+                .target,
+            Target::File("./docs/demo.txt:3:5".into())
+        );
     }
 
     #[test]
@@ -232,14 +382,14 @@ mod tests {
         assert_eq!(
             link_at(&screen, Point::new(Line(0), Column(13)))
                 .unwrap()
-                .url,
-            "https://example.invalid/"
+                .target,
+            Target::Url("https://example.invalid/".into())
         );
         assert_eq!(
             link_at(&screen, Point::new(Line(1), Column(13)))
                 .unwrap()
-                .url,
-            "https://xn--r8jz45g.invalid/%E9%9B%AA"
+                .target,
+            Target::Url("https://xn--r8jz45g.invalid/%E9%9B%AA".into())
         );
         assert!(link_at(&screen, Point::new(Line(2), Column(4))).is_none());
     }
@@ -251,6 +401,9 @@ mod tests {
         let first = link_at(&screen, Point::new(Line(0), Column(8))).unwrap();
         let second = link_at(&screen, Point::new(Line(1), Column(6))).unwrap();
         assert_eq!(first, second);
-        assert_eq!(first.url, "https://example.invalid/path");
+        assert_eq!(
+            first.target,
+            Target::Url("https://example.invalid/path".into())
+        );
     }
 }

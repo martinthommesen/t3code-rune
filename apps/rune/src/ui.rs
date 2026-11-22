@@ -1057,6 +1057,7 @@ impl State {
             changed = true;
         }
         changed |= self.poll_terminal_output(tx);
+        self.poll_terminal_file_links(tx);
         changed |= self.restore_terminal_for_selection(tx);
         if let Some(workspace) = &mut self.workspace {
             changed |= workspace.favicons.poll();
@@ -1631,6 +1632,16 @@ impl State {
             Event::Terminal { attachment, update } => {
                 self.apply_terminal_update(attachment, update);
             }
+            Event::TerminalFileLinkChecked {
+                attachment,
+                id,
+                available,
+            } => self.terminal_file_link_checked(attachment, id, available),
+            Event::TerminalFileLinkOpened {
+                attachment,
+                editor,
+                result,
+            } => self.terminal_file_link_opened(attachment, editor, result),
             Event::TerminalFailed {
                 attachment,
                 message,

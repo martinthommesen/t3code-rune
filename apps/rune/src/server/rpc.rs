@@ -25,6 +25,7 @@ use super::vcs_status;
 use super::{LocalOperations, ProjectionChange, SharedEnvironment, server_config};
 use super::{vcs_checkout, vcs_refs};
 
+mod editor_links;
 mod queued_run;
 mod shell_stream;
 mod streams;
@@ -356,6 +357,46 @@ pub(super) async fn serve(
                         });
                         operation_requests.insert(request_id, task);
                         continue;
+                    }
+                }
+            }
+            ClientMessage::Request { id, tag, payload }
+                if local.is_some()
+                    && matches!(
+                        tag.as_str(),
+                        "filesystem.getMetadata" | "shell.openInEditor"
+                    ) =>
+            {
+                match editor_links::Call::decode(&tag, payload) {
+                    Err(message) => Ok(defect(id, message)),
+                    Ok(call) => {
+                        if let Some(error) = call.denied(permissions) {
+                            Ok(failure(id, error))
+                        } else if operation_requests.contains_key(&id) {
+                            Ok(failure(
+                                id,
+                                RpcError::InvalidRequest {
+                                    message: "Request ID is already in use.",
+                                },
+                            ))
+                        } else {
+                            let settings = &local.as_ref().expect("local operations").settings;
+                            let state_dir = settings
+                                .path()
+                                .parent()
+                                .expect("local state directory")
+                                .to_owned();
+                            let request_id = id.clone();
+                            let task = operations.spawn(async move {
+                                let frame = match call.run(state_dir).await {
+                                    Ok(value) => success(id.clone(), value),
+                                    Err(error) => failure(id.clone(), error),
+                                };
+                                (id, frame)
+                            });
+                            operation_requests.insert(request_id, task);
+                            continue;
+                        }
                     }
                 }
             }

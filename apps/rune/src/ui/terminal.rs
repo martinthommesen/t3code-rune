@@ -16,6 +16,7 @@ use super::{Palette, ProjectSelection, ProjectView, SMALL, State, conversation::
 
 mod control;
 mod history;
+mod link_paths;
 mod links;
 mod menu;
 mod mouse;
@@ -53,6 +54,8 @@ pub(super) struct Pane {
     pub(super) thread_id: String,
     terminal_id: String,
     screen: TerminalScreen,
+    cwd: Option<String>,
+    worktree_path: Option<String>,
     requested_grid: (u16, u16),
     status: TerminalStatus,
     label: String,
@@ -81,6 +84,8 @@ impl Pane {
             thread_id,
             terminal_id,
             screen: TerminalScreen::new(DEFAULT_ROWS, DEFAULT_COLS),
+            cwd: None,
+            worktree_path: None,
             requested_grid: (DEFAULT_COLS, DEFAULT_ROWS),
             status: TerminalStatus::Starting,
             label: "Shell".into(),
@@ -145,6 +150,8 @@ impl Pane {
 
     fn snapshot(&mut self, snapshot: TerminalSnapshot) {
         self.received_snapshot = true;
+        self.cwd = snapshot.cwd;
+        self.worktree_path = snapshot.worktree_path;
         let (cols, rows) = self.requested_grid;
         self.screen =
             TerminalScreen::new(snapshot.rows.unwrap_or(rows), snapshot.cols.unwrap_or(cols));
