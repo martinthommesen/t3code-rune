@@ -1,5 +1,6 @@
 pub(in crate::server) mod citation_search;
 mod legacy_cutover;
+mod legacy_pre23;
 mod legacy_pre30;
 mod legacy_pre38;
 mod legacy_pre52;
@@ -17,8 +18,8 @@ use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
 };
 
-const MINIMUM_HEAD: i64 = 23;
-const PRIOR_MINIMUM_HEADS: [i64; 3] = [52, 38, 30];
+const MINIMUM_HEAD: i64 = 15;
+const PRIOR_MINIMUM_HEADS: [i64; 4] = [52, 38, 30, 23];
 
 struct Migration {
     id: i64,
@@ -163,8 +164,9 @@ pub(super) fn migrate(path: &Path) -> Result<(), MigrationError> {
 }
 
 fn migrations() -> impl Iterator<Item = &'static Migration> {
-    legacy_pre30::MIGRATIONS
+    legacy_pre23::MIGRATIONS
         .iter()
+        .chain(legacy_pre30::MIGRATIONS)
         .chain(legacy_pre38::MIGRATIONS)
         .chain(legacy_pre52::MIGRATIONS)
         .chain(sql::MIGRATIONS)
