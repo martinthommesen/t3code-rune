@@ -491,6 +491,10 @@ impl State {
     }
 
     pub(super) fn matches_terminal_toggle(&self, event: &KeyEvent, tx: &Tx) -> bool {
+        self.resolve_shortcut(event, tx) == Some("terminal.toggle")
+    }
+
+    pub(super) fn resolve_shortcut(&self, event: &KeyEvent, tx: &Tx) -> Option<&str> {
         let binding = match &self.keybindings {
             Some(binding) => binding,
             None => crate::connection::Keybindings::stock(),
@@ -517,7 +521,7 @@ impl State {
             "composerFocus" => composer_focus,
             "editableFocus" => terminal_focus || composer_focus,
             _ => false,
-        }) == Some("terminal.toggle")
+        })
     }
 
     fn terminal_key(&mut self, event: &KeyEvent, tx: &mut Tx) -> bool {
@@ -525,30 +529,24 @@ impl State {
             tx.request_paste();
             return true;
         }
-        if self.matches_terminal_toggle(event, tx) {
-            self.detach_terminal_pane();
-            return true;
+        match self.resolve_shortcut(event, tx) {
+            Some("terminal.toggle") => self.detach_terminal_pane(),
+            Some("terminal.new") => self.new_terminal_tab(tx),
+            Some("terminal.close") => {
+                if !tx.key_repeat() {
+                    self.request_selected_terminal_close(tx);
+                }
+            }
+            _ => {
+                let Some(terminal) = &self.terminal else {
+                    return false;
+                };
+                let application = terminal.screen.screen().application_cursor();
+                return key_input(event, application)
+                    .is_some_and(|input| self.send_terminal_input(input));
+            }
         }
-        let primary_only = !event.mods.shift
-            && !event.mods.alt
-            && if cfg!(target_os = "macos") {
-                !event.mods.ctrl
-            } else {
-                !event.mods.logo
-            };
-        if primary_only && event.is_command('n') {
-            self.new_terminal_tab(tx);
-            return true;
-        }
-        if primary_only && event.is_command('w') {
-            self.request_selected_terminal_close(tx);
-            return true;
-        }
-        let Some(terminal) = &self.terminal else {
-            return false;
-        };
-        let application = terminal.screen.screen().application_cursor();
-        key_input(event, application).is_some_and(|input| self.send_terminal_input(input))
+        true
     }
 }
 

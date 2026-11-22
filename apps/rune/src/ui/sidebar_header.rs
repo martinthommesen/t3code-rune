@@ -265,20 +265,23 @@ pub(super) fn shortcut(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool
         || state.settings.is_open()
         || state.add_project.is_some()
         || state.terminal_close_confirmation_open()
-        || mods.shift
-        || mods.alt
-        || (cfg!(target_os = "macos") && mods.ctrl)
-        || (!cfg!(target_os = "macos") && mods.logo)
     {
         return false;
     }
-    if event.is_command('b') {
+    let terminal_focus = tx.focused() == Some(super::terminal::INPUT_KEY);
+    let control = mods.ctrl || (!cfg!(target_os = "macos") && mods.cmd);
+    if !(control && terminal_focus) && state.resolve_shortcut(event, tx) == Some("sidebar.toggle") {
         if !tx.key_repeat() {
             state.toggle_sidebar();
         }
         return true;
     }
-    if tx.focused() == Some(super::terminal::INPUT_KEY) {
+    if terminal_focus
+        || mods.shift
+        || mods.alt
+        || (cfg!(target_os = "macos") && mods.ctrl)
+        || (!cfg!(target_os = "macos") && mods.logo)
+    {
         return false;
     }
     let direction = match event.key {
