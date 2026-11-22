@@ -8,6 +8,8 @@ use crate::connection::{WorkspaceMode, WorkspaceSetting};
 
 use super::{CONTROL, DESCRIPTION, Palette, RESET, SECTION, State, error_text};
 
+mod scope;
+
 const WIDTH: f32 = 160.0;
 const TRIGGER: &str = "default-workspace";
 const LIST: &str = "default-workspace-options";
@@ -19,10 +21,17 @@ static CHEVRON: Icon = Icon {
     body: r#"<path d="m6 9 6 6 6-6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
 
+static LAYERS: Icon = Icon {
+    name: "workspace-inheritance",
+    view: 24.0,
+    body: r#"<path d="m12 2 10 5-10 5L2 7l10-5zm-10 10 10 5 10-5m-20 5 10 5 10-5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+
 #[derive(Default)]
 pub(super) struct Panel {
     pub(super) current: Option<WorkspaceSetting>,
     pub(super) highlighted: Option<WorkspaceMode>,
+    scope: scope::Scope,
     pending: Option<Uuid>,
     error: Option<String>,
 }
@@ -37,13 +46,35 @@ impl Panel {
 
     pub(super) fn disconnect(&mut self) {
         self.current = None;
-        self.highlighted = None;
+        self.close_popups();
     }
 
     pub(super) fn stop(&mut self) {
         self.disconnect();
+        self.scope = scope::Scope::default();
         self.pending = None;
         self.error = None;
+    }
+
+    pub(super) fn close_popups(&mut self) {
+        self.highlighted = None;
+        self.scope.close();
+    }
+
+    pub(super) fn apply_project_file(&mut self, operation: Uuid, mode: Option<WorkspaceMode>) {
+        self.scope.apply_file(operation, mode);
+    }
+
+    pub(super) fn refresh_project_file(state: &mut State) {
+        scope::Scope::reload(state);
+    }
+
+    fn configured(&self) -> Option<WorkspaceMode> {
+        let setting = self.current.as_ref()?;
+        match &self.scope.id {
+            Some(project) => setting.projects.get(project).copied(),
+            None => setting.configured,
+        }
     }
 
     fn writable(&self, state: &State) -> bool {
@@ -54,17 +85,27 @@ impl Panel {
                 .workspace
                 .as_ref()
                 .is_some_and(|workspace| !workspace.reconnecting)
+            && self
+                .scope
+                .id
+                .as_deref()
+                .is_none_or(|id| scope::project_is_available(state, id))
     }
 
     fn effective(&self) -> Option<WorkspaceMode> {
-        self.current
-            .as_ref()
-            .map(|setting| setting.configured.unwrap_or_default())
+        let setting = self.current.as_ref()?;
+        Some(
+            self.configured()
+                .or(setting.configured)
+                .or(self.scope.file_mode)
+                .unwrap_or_default(),
+        )
     }
 }
 
 pub(super) fn page(state: &State, palette: Palette, width: f32) -> El {
     let settings = &state.settings.workspace;
+    let project_scope = settings.scope.id.is_some();
     let writable = settings.writable(state);
     let expanded = settings.highlighted.is_some();
     let value = settings.effective().map_or("Unavailable", label);
@@ -123,29 +164,66 @@ pub(super) fn page(state: &State, palette: Palette, width: f32) -> El {
 
     let mut title = row()
         .items_center()
-        .gap(8.0)
+        .gap(6.0)
         .child(text("Workspace").font(CONTROL).color(palette.ink));
-    if settings
-        .current
-        .as_ref()
-        .is_some_and(|setting| setting.configured.is_some())
-    {
+    if project_scope {
+        let inherited = if settings.configured().is_some() {
+            "Overridden for this project".to_owned()
+        } else if settings
+            .current
+            .as_ref()
+            .is_some_and(|setting| setting.configured.is_some())
+        {
+            state
+                .workspace
+                .as_ref()
+                .map_or("Inherited from environment".to_owned(), |workspace| {
+                    format!("Inherited from {}", workspace.label)
+                })
+        } else if settings.scope.file_mode.is_some() {
+            "Inherited from the repository’s t3.json".to_owned()
+        } else {
+            "Built-in default".to_owned()
+        };
+        title = title.child(
+            el().size(20.0, 20.0)
+                .center()
+                .help(inherited.clone())
+                .role("img")
+                .label(inherited)
+                .child(icon(&LAYERS, 12.0).color(palette.muted).a11y_hidden()),
+        );
+    }
+    if settings.configured().is_some() && (!project_scope || writable) {
         let reset = super::icon_button(
             "reset-default-workspace",
-            "Reset default workspace to default",
+            if project_scope {
+                "Reset Workspace to default"
+            } else {
+                "Reset default workspace to default"
+            },
             &RESET,
             12.0,
             20.0,
             palette,
             |state, tx| choose(state, None, tx),
         );
+        let reset = if project_scope {
+            reset.help("Reset to inherited value")
+        } else {
+            reset
+        };
         title = title.child(reset.disabled(!writable).focusable(writable));
     }
     let label = col().grow(1.0).min_w(0.0).gap(4.0).child(title).child(
-        text("Where new threads start. Projects and their t3.json can override it.")
-            .font(DESCRIPTION)
-            .color(palette.muted)
-            .wrap(),
+        text(if project_scope {
+            "Where new threads in this project start."
+        } else {
+            "Where new threads start. Projects and their t3.json can override it."
+        })
+        .font(DESCRIPTION)
+        .color(palette.muted)
+        .wrap(),
     );
     let layout = if width >= 560.0 {
         row().items_center().gap(32.0).child(label).child(trigger)
@@ -187,10 +265,20 @@ pub(super) fn page(state: &State, palette: Palette, width: f32) -> El {
         .scroll(ScrollSpec {
             stick_bottom: false,
         })
-        .child(section)
+        .child(
+            col()
+                .w_full()
+                .max_w(800.0)
+                .gap(22.0)
+                .child(scope::view(state, palette))
+                .child(section),
+        )
 }
 
 pub(super) fn overlay(state: &State, palette: Palette) -> Option<[El; 2]> {
+    if let Some(scope) = scope::overlay(state, palette) {
+        return Some(scope);
+    }
     let settings = &state.settings.workspace;
     let active = settings.highlighted.filter(|_| settings.writable(state))?;
     let outside = el()
@@ -294,11 +382,12 @@ fn choose(state: &mut State, mode: Option<WorkspaceMode>, tx: &mut Tx) {
     {
         return;
     }
+    let project_id = settings.scope.id.clone();
     state.settings.workspace.error = None;
     state.settings.workspace.pending = state
         .connection
         .as_ref()
-        .and_then(|connection| connection.update_workspace_mode(mode));
+        .and_then(|connection| connection.update_workspace_mode(project_id, mode));
     if state.settings.workspace.pending.is_none() {
         state.settings.workspace.error = Some("The environment connection is unavailable.".into());
     }

@@ -116,7 +116,7 @@ impl State {
         self.save_project_name();
         self.settings.open = false;
         self.settings.archive.leave();
-        self.settings.workspace.highlighted = None;
+        self.settings.workspace.close_popups();
         self.settings.error = None;
         tx.focus(self.settings.return_focus, tx.focus_visible());
     }
@@ -144,7 +144,7 @@ impl State {
         if page != Page::Archive {
             self.settings.archive.leave();
         }
-        self.settings.workspace.highlighted = None;
+        self.settings.workspace.close_popups();
         self.ensure_open_workspace_settings();
         self.settings.error = None;
     }
@@ -172,12 +172,21 @@ impl State {
         }
     }
 
-    pub(super) fn ensure_open_workspace_settings(&self) {
+    pub(super) fn set_workspace_project_file(
+        &mut self,
+        operation: uuid::Uuid,
+        mode: Option<crate::connection::WorkspaceMode>,
+    ) {
+        self.settings.workspace.apply_project_file(operation, mode);
+    }
+
+    pub(super) fn ensure_open_workspace_settings(&mut self) {
         if self.settings.open
             && self.settings.page == Page::Threads
             && let Some(connection) = &self.connection
         {
             connection.ensure_workspace_settings();
+            workspace::Panel::refresh_project_file(self);
         }
     }
 }

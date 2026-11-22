@@ -1,5 +1,7 @@
+use std::collections::HashMap;
+
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use tokio::time::Instant;
 use uuid::Uuid;
 
@@ -8,10 +10,12 @@ use super::{
 };
 
 const KEY: &str = "defaultThreadEnvMode";
+const PROJECT_OVERRIDES: &str = "projectSettingsOverrides";
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct WorkspaceSetting {
     pub(crate) configured: Option<WorkspaceMode>,
+    pub(crate) projects: HashMap<String, WorkspaceMode>,
     pub(crate) writable: bool,
     pub(crate) managed_by: Option<String>,
 }
@@ -20,6 +24,8 @@ pub(super) struct Subscription {
     can_write: bool,
     managed_by: Option<String>,
     pending: Option<Pending>,
+    overrides: Map<String, Value>,
+    pending_file: Option<Pending>,
 }
 
 struct Pending {
@@ -34,6 +40,8 @@ impl Subscription {
             can_write,
             managed_by: None,
             pending: None,
+            overrides: Map::new(),
+            pending_file: None,
         }
     }
 
@@ -53,14 +61,47 @@ impl Subscription {
                 _ => continue,
             };
             if let Some(mode) = configured_mode(settings) {
+                self.overrides = settings[PROJECT_OVERRIDES]
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default();
                 current = Some(mode);
             }
         }
         current.map(|configured| WorkspaceSetting {
             configured,
+            projects: self
+                .overrides
+                .iter()
+                .filter_map(|(id, project)| {
+                    configured_mode(project)
+                        .flatten()
+                        .map(|mode| (id.clone(), mode))
+                })
+                .collect(),
             writable: self.can_write && self.managed_by.is_none(),
             managed_by: self.managed_by.clone(),
         })
+    }
+
+    fn patch(&self, project_id: Option<&str>, mode: Option<WorkspaceMode>) -> Value {
+        let Some(project_id) = project_id else {
+            return json!({KEY: mode});
+        };
+        let mut project = self
+            .overrides
+            .get(project_id)
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        if let Some(mode) = mode {
+            project.insert(KEY.to_owned(), json!(mode));
+        } else {
+            project.remove(KEY);
+        }
+        // An empty object drops a genuinely empty entry while the server preserves opaque
+        // fields which the client projection cannot see.
+        json!({PROJECT_OVERRIDES: {project_id: project}})
     }
 }
 
@@ -86,10 +127,29 @@ impl Connection {
         let _ = self.commands.send(Command::EnsureWorkspaceSettings);
     }
 
-    pub(crate) fn update_workspace_mode(&self, mode: Option<WorkspaceMode>) -> Option<Uuid> {
+    pub(crate) fn update_workspace_mode(
+        &self,
+        project_id: Option<String>,
+        mode: Option<WorkspaceMode>,
+    ) -> Option<Uuid> {
         let operation = Uuid::new_v4();
         self.commands
-            .send(Command::UpdateWorkspaceMode { mode, operation })
+            .send(Command::UpdateWorkspaceMode {
+                project_id,
+                mode,
+                operation,
+            })
+            .ok()?;
+        Some(operation)
+    }
+
+    pub(crate) fn read_workspace_project_file(&self, project_id: String) -> Option<Uuid> {
+        let operation = Uuid::new_v4();
+        self.commands
+            .send(Command::ReadWorkspaceProjectFile {
+                project_id,
+                operation,
+            })
             .ok()?;
         Some(operation)
     }
@@ -98,6 +158,7 @@ impl Connection {
 impl Session {
     pub(super) async fn save_workspace_mode(
         &mut self,
+        project_id: Option<String>,
         mode: Option<WorkspaceMode>,
         operation: Uuid,
         events: &EventSender<impl Fn()>,
@@ -107,6 +168,11 @@ impl Session {
             Some(format!("Managed by {organization}."))
         } else if !settings.can_write {
             Some("This connection lacks permission to change environment settings.".into())
+        } else if project_id
+            .as_deref()
+            .is_some_and(|id| self.shell.project(id).is_none())
+        {
+            Some("The selected project is unavailable.".into())
         } else if settings.pending.is_some() {
             Some("The workspace setting is already being saved.".into())
         } else {
@@ -117,14 +183,68 @@ impl Session {
             return Ok(());
         }
 
+        let patch = settings.patch(project_id.as_deref(), mode);
         let id = self.allocate_id();
         self.workspace_settings.pending = Some(Pending {
             request: id.clone(),
             operation,
             started: Instant::now(),
         });
-        self.send_request(&id, "server.updateSettings", json!({"patch": {KEY: mode}}))
+        self.send_request(&id, "server.updateSettings", json!({"patch": patch}))
             .await
+    }
+
+    pub(super) async fn load_workspace_project_file(
+        &mut self,
+        project_id: String,
+        operation: Uuid,
+        events: &EventSender<impl Fn()>,
+    ) -> Result<(), SessionStop> {
+        if let Some(pending) = self.workspace_settings.pending_file.take() {
+            self.interrupt(&pending.request).await?;
+        }
+        let Some(project) = self
+            .shell
+            .project(&project_id)
+            .filter(|_| self.filesystem_read)
+        else {
+            events.send(Event::WorkspaceProjectFile {
+                operation,
+                mode: None,
+            });
+            return Ok(());
+        };
+        let payload = json!({"cwd": project.workspace_path(), "relativePath": "t3.json", "allowMissing": true});
+        let id = self.allocate_id();
+        self.workspace_settings.pending_file = Some(Pending {
+            request: id.clone(),
+            operation,
+            started: Instant::now(),
+        });
+        self.send_request(&id, "projects.readFile", payload).await
+    }
+
+    pub(super) fn workspace_project_file_matches(&self, id: &str) -> bool {
+        self.workspace_settings
+            .pending_file
+            .as_ref()
+            .is_some_and(|pending| pending.request == id)
+    }
+
+    pub(super) fn workspace_project_file_result(
+        &mut self,
+        result: Result<Value, String>,
+        events: &EventSender<impl Fn()>,
+    ) {
+        if let Some(pending) = self.workspace_settings.pending_file.take() {
+            let mode = result.ok().and_then(|file| {
+                crate::server::project_file::workspace_mode(file["contents"].as_str()?)
+            });
+            events.send(Event::WorkspaceProjectFile {
+                operation: pending.operation,
+                mode,
+            });
+        }
     }
 
     pub(super) fn workspace_write_matches(&self, id: &str) -> bool {
@@ -152,6 +272,14 @@ impl Session {
     }
 
     pub(super) fn expire_workspace_write(&mut self, events: &EventSender<impl Fn()>) {
+        if self
+            .workspace_settings
+            .pending_file
+            .as_ref()
+            .is_some_and(|file| file.started.elapsed() >= REQUEST_TIMEOUT)
+        {
+            self.workspace_project_file_result(Ok(Value::Null), events);
+        }
         let expired = self
             .workspace_settings
             .pending
@@ -206,5 +334,28 @@ mod tests {
         }})]).unwrap();
         assert!(!locked.writable);
         assert_eq!(locked.managed_by.as_deref(), Some("Example"));
+    }
+
+    #[test]
+    fn replaces_only_the_selected_project_entry_and_clears_only_the_workspace_key() {
+        let mut subscription = Subscription::new(true);
+        let current = subscription.apply(&[json!({"version":1,"type":"snapshot","config":{"settings":{
+            KEY:"worktree",
+            PROJECT_OVERRIDES:{"a":{KEY:"local","defaultAutoPull":true},"b":{KEY:"worktree"}}
+        }}})]).unwrap();
+        assert_eq!(current.configured, Some(WorkspaceMode::Worktree));
+        assert_eq!(current.projects["a"], WorkspaceMode::Local);
+        assert_eq!(
+            subscription.patch(Some("a"), Some(WorkspaceMode::Worktree)),
+            json!({PROJECT_OVERRIDES:{"a":{KEY:"worktree","defaultAutoPull":true}}})
+        );
+        assert_eq!(
+            subscription.patch(Some("a"), None),
+            json!({PROJECT_OVERRIDES:{"a":{"defaultAutoPull":true}}})
+        );
+        assert_eq!(
+            subscription.patch(Some("b"), None),
+            json!({PROJECT_OVERRIDES:{"b":{}}})
+        );
     }
 }

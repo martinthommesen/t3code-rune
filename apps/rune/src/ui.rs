@@ -1052,6 +1052,9 @@ impl State {
             }
             Event::ProviderCatalogUnavailable => self.onboarding.finish_refresh(),
             Event::WorkspaceConfiguration(settings) => self.set_workspace_configuration(settings),
+            Event::WorkspaceProjectFile { operation, mode } => {
+                self.set_workspace_project_file(operation, mode);
+            }
             Event::WorkspaceModeSettled { operation, result } => {
                 self.settle_workspace_mode(operation, result);
             }

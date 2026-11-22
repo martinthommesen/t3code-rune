@@ -50,7 +50,9 @@ pub(crate) use projection::{
     Project, ProjectIcon, QueuedMessage, Thread, TodoListEntry, TodoStepStatus,
 };
 use projection::{Conversation, Shell};
-pub(crate) use provider_metadata::{ProviderCatalog, ProviderMetadata, ProviderReadiness, SavedModel};
+pub(crate) use provider_metadata::{
+    ProviderCatalog, ProviderMetadata, ProviderReadiness, SavedModel,
+};
 pub(crate) use queue_mutation::QueueMutation;
 #[cfg(test)]
 pub(crate) use runtime_approval::ApprovalChoice;
@@ -136,6 +138,10 @@ pub(crate) enum Event {
     Providers(ProviderCatalog),
     ProviderCatalogUnavailable,
     WorkspaceConfiguration(Option<WorkspaceSetting>),
+    WorkspaceProjectFile {
+        operation: Uuid,
+        mode: Option<WorkspaceMode>,
+    },
     WorkspaceModeSettled {
         operation: Uuid,
         result: Result<(), String>,
@@ -272,7 +278,12 @@ pub(crate) enum Event {
 enum Command {
     RefreshProviderCatalog,
     EnsureWorkspaceSettings,
+    ReadWorkspaceProjectFile {
+        project_id: String,
+        operation: Uuid,
+    },
     UpdateWorkspaceMode {
+        project_id: Option<String>,
         mode: Option<WorkspaceMode>,
         operation: Uuid,
     },
@@ -1669,8 +1680,20 @@ impl Session {
                     self.subscribe_provider_catalog().await?;
                 }
             }
-            Command::UpdateWorkspaceMode { mode, operation } => {
-                self.save_workspace_mode(mode, operation, events).await?;
+            Command::ReadWorkspaceProjectFile {
+                project_id,
+                operation,
+            } => {
+                self.load_workspace_project_file(project_id, operation, events)
+                    .await?;
+            }
+            Command::UpdateWorkspaceMode {
+                project_id,
+                mode,
+                operation,
+            } => {
+                self.save_workspace_mode(project_id, mode, operation, events)
+                    .await?;
             }
             Command::RefreshProviderCatalog => {
                 if let Some(request) = self.providers_request_id.take() {
@@ -2501,6 +2524,10 @@ impl Session {
                 }
             }
             ServerFrame::Exit { request_id, exit } => {
+                if self.workspace_project_file_matches(&request_id) {
+                    self.workspace_project_file_result(exit.into_result(), events);
+                    return Ok(());
+                }
                 if self.workspace_write_matches(&request_id) {
                     self.workspace_write_result(exit.into_result(), events);
                     return Ok(());
