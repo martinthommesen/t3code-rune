@@ -4,6 +4,7 @@ use rune::{Color, El, Icon, TextStyle, Tx, col, edit_access, el, icon, row, text
 use super::conversation::{Layout, MAX_LANE};
 use super::draft_hero;
 use super::project::clone_banner;
+use super::worktree_setup;
 use super::{Draft, Palette, Project, SMALL, State, Workspace, button, error_text};
 
 const FONT: TextStyle = TextStyle::new(14.0, 400.0).lh(22.75);
@@ -76,22 +77,32 @@ pub(super) fn draft(
     layout: Layout,
     palette: Palette,
 ) -> El {
-    draft_hero::view(
-        state,
-        workspace,
-        project,
+    let composer = surface(
+        Target::Draft(&project.id),
         draft,
+        workspace,
+        None,
         layout,
         palette,
-        surface(
-            Target::Draft(&project.id),
-            draft,
-            workspace,
-            None,
-            layout,
-            palette,
-        ),
-    )
+    );
+    if let Some(launch) = &draft.worktree_launch {
+        return col()
+            .w_full()
+            .grow(1.0)
+            .min_h(0.0)
+            .child(worktree_setup::draft_transcript(
+                launch, workspace, layout, palette,
+            ))
+            .child(
+                col()
+                    .w_full()
+                    .items_center()
+                    .px(layout.timeline_gutter())
+                    .pb(20.0)
+                    .child(composer),
+            );
+    }
+    draft_hero::view(state, workspace, project, draft, layout, palette, composer)
 }
 
 enum Target<'a> {
@@ -164,7 +175,7 @@ fn surface(
         && !draft.pending
         && (editing_queue || (!unavailable && clone.is_none()))
         && workspace_ready;
-    let gutter = if starting_thread {
+    let gutter = if starting_thread && draft.worktree_launch.is_none() {
         draft_hero::gutter(layout)
     } else {
         layout.timeline_gutter()
@@ -185,7 +196,7 @@ fn surface(
         )
         .color(colors.ink)
         .selection_color(palette.selected)
-        .disabled(draft.pending);
+        .disabled(draft.pending && draft.worktree_launch.is_none());
     let submit: fn(&mut State, &mut Tx);
     match target {
         Target::Draft(project) => {
@@ -212,7 +223,7 @@ fn surface(
     }
     let editor = editor.on_submit(submit);
     let mut footer = row().w_full().px(8.0).pb(8.0).center_y().gap(8.0);
-    if starting_thread {
+    if starting_thread && draft.worktree_launch.is_none() {
         footer = footer.child(
             button(
                 "cancel-new-thread",

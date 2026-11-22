@@ -168,7 +168,7 @@ pub(crate) enum Event {
     },
     WorktreeSetupCancelSettled {
         thread_id: String,
-        result: Result<(), String>,
+        result: Result<bool, String>,
     },
     ProjectAdded {
         command_id: String,
@@ -220,6 +220,7 @@ enum Command {
         title: String,
     },
     CancelWorktreeSetup(String),
+    ObserveDraftWorktree(Option<String>),
     RespondToRuntimeRequest(RuntimeResponse),
     LaunchThread(launch::Draft),
     ListGitRefs {
@@ -427,6 +428,10 @@ impl Connection {
             .send(Command::RenameThread { thread_id, title });
     }
 
+    pub(crate) fn observe_draft_worktree(&self, thread_id: Option<String>) {
+        let _ = self.commands.send(Command::ObserveDraftWorktree(thread_id));
+    }
+
     pub(crate) fn cancel_worktree_setup(&self, thread_id: String) {
         let _ = self.commands.send(Command::CancelWorktreeSetup(thread_id));
     }
@@ -452,12 +457,15 @@ impl Connection {
         project_id: String,
         prompt: String,
         workspace: LaunchWorkspace,
-    ) {
+    ) -> String {
+        let thread_id = Uuid::new_v4().to_string();
         let _ = self.commands.send(Command::LaunchThread(launch::Draft {
             project_id,
+            thread_id: thread_id.clone(),
             prompt,
             workspace,
         }));
+        thread_id
     }
 
     pub(crate) fn list_git_refs(&self, project_id: String, cwd: String, refresh: bool) {
@@ -958,6 +966,7 @@ struct Session {
     project_clones_request_id: Option<String>,
     pending_project_clone_actions: HashMap<String, Instant>,
     thread: Option<ThreadSubscription>,
+    draft_setup: Option<(String, String)>,
     pending_prompts: HashMap<String, String>,
     pending_queue_changes: HashMap<String, (String, QueueMutation, Uuid)>,
     pending_runtime_responses: HashMap<String, (RuntimeResponse, Instant)>,
@@ -1060,6 +1069,7 @@ impl Session {
             project_clones_request_id: None,
             pending_project_clone_actions: HashMap::new(),
             thread: None,
+            draft_setup: None,
             pending_prompts: HashMap::new(),
             pending_queue_changes: HashMap::new(),
             pending_runtime_responses: HashMap::new(),
@@ -1402,6 +1412,9 @@ impl Session {
         match command {
             Command::OpenThread(thread_id) => self.open_thread(thread_id, true).await?,
             Command::CloseThread => self.close_thread().await?,
+            Command::ObserveDraftWorktree(thread_id) => {
+                self.observe_draft_worktree(thread_id).await?;
+            }
             Command::CancelWorktreeSetup(thread_id) => {
                 if self.worktree_setup && self.worktree_launch {
                     let id = self.allocate_id();
@@ -1820,11 +1833,11 @@ impl Session {
     ) -> Result<(), SessionStop> {
         match stage {
             LaunchStage::Config(draft) => {
-                let thread_id = Uuid::new_v4().to_string();
+                let thread_id = draft.thread_id.clone();
                 let payload = result.and_then(|config| {
                     self.launch_project(&draft.project_id)
                         .map_err(str::to_owned)
-                        .and_then(|project| launch::payload(config, project, &draft, &thread_id))
+                        .and_then(|project| launch::payload(config, project, &draft))
                 });
                 match payload {
                     Ok(payload) if !payload["modelSelection"].is_null() =>
@@ -1901,20 +1914,16 @@ impl Session {
     ) -> Result<(), SessionStop> {
         match frame {
             ServerFrame::Chunk { request_id, values } => {
-                if let Some(thread) = self
-                    .thread
-                    .as_ref()
-                    .filter(|thread| thread.setup_request_id.as_ref() == Some(&request_id))
-                {
+                if let Some(thread_id) = self.setup_thread(&request_id) {
                     for value in values {
                         if let Ok(snapshot) =
                             serde_json::from_value::<Option<Box<WorktreeSetup>>>(value)
                             && snapshot
                                 .as_ref()
-                                .is_none_or(|snapshot| snapshot.thread_id == thread.thread_id)
+                                .is_none_or(|snapshot| snapshot.thread_id == thread_id)
                         {
                             events.send(Event::WorktreeSetup {
-                                thread_id: thread.thread_id.clone(),
+                                thread_id: thread_id.to_owned(),
                                 snapshot,
                             });
                         }
@@ -2021,6 +2030,14 @@ impl Session {
                 }
             }
             ServerFrame::Exit { request_id, exit } => {
+                if self
+                    .draft_setup
+                    .as_ref()
+                    .is_some_and(|(request, _)| request == &request_id)
+                {
+                    self.draft_setup = None;
+                    return Ok(());
+                }
                 if let Some(project_id) = self.pending_git_checkouts.remove(&request_id) {
                     let result = exit
                         .into_result()
@@ -2038,7 +2055,12 @@ impl Session {
                 if let Some((thread_id, _)) = self.pending_setup_cancels.remove(&request_id) {
                     events.send(Event::WorktreeSetupCancelSettled {
                         thread_id,
-                        result: exit.into_result().map(|_| ()),
+                        result: exit.into_result().and_then(|value| {
+                            value["cancelled"].as_bool().ok_or_else(|| {
+                                "The environment returned an invalid setup cancellation result."
+                                    .into()
+                            })
+                        }),
                     });
                     return Ok(());
                 }

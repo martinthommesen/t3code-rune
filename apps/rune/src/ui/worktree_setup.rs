@@ -10,8 +10,10 @@ use crate::connection::worktree_setup::{Phase, Stage, StageId, Status, WorktreeS
 use super::{Conversation, Message, Palette, ProjectView, State, Workspace};
 
 mod background;
+mod draft;
 
 pub(super) use background::{Disclosure, overlay};
+pub(super) use draft::{DraftLaunch, draft_transcript};
 
 const BODY: TextStyle = TextStyle::new(14.0, 400.0).lh(22.75);
 const SMALL: TextStyle = TextStyle::new(12.0, 400.0).lh(16.0);
@@ -228,6 +230,40 @@ fn card(
     now: OffsetDateTime,
     colors: Colors,
 ) -> El {
+    let can_cancel = presentation == Presentation::Full
+        && can_cancel_before_handoff(setup)
+        && workspace.worktree_launch
+        && !workspace.reconnecting
+        && workspace
+            .thread(&conversation.id)
+            .is_some_and(|thread| !thread.archived);
+    let can_open_terminal = setup.phase != Phase::Cancelled
+        && workspace.terminal
+        && !workspace.reconnecting
+        && setup
+            .stages
+            .iter()
+            .any(|stage| stage.id == StageId::SetupScript && stage.status != Status::Pending);
+    let mut section = card_content(setup, presentation, now, colors).child(actions(
+        conversation,
+        setup,
+        can_cancel,
+        can_open_terminal,
+        presentation,
+        colors,
+    ));
+    if details_open(conversation, presentation) {
+        section = section.child(details(setup, colors));
+    }
+    section
+}
+
+fn card_content(
+    setup: &WorktreeSetup,
+    presentation: Presentation,
+    now: OffsetDateTime,
+    colors: Colors,
+) -> El {
     let mut section = col()
         .key("worktree-setup")
         .role("group")
@@ -281,35 +317,14 @@ fn card(
                 .wrap_anywhere(),
         );
     }
-    let can_cancel = setup.phase == Phase::Running
-        && presentation == Presentation::Full
+    section
+}
+
+fn can_cancel_before_handoff(setup: &WorktreeSetup) -> bool {
+    setup.phase == Phase::Running
         && !setup.stages.iter().any(|stage| {
             stage.id == StageId::Agent && matches!(stage.status, Status::Running | Status::Done)
         })
-        && workspace.worktree_launch
-        && !workspace.reconnecting
-        && workspace
-            .thread(&conversation.id)
-            .is_some_and(|thread| !thread.archived);
-    let can_open_terminal = setup.phase != Phase::Cancelled
-        && workspace.terminal
-        && !workspace.reconnecting
-        && setup
-            .stages
-            .iter()
-            .any(|stage| stage.id == StageId::SetupScript && stage.status != Status::Pending);
-    section = section.child(actions(
-        conversation,
-        setup,
-        can_cancel,
-        can_open_terminal,
-        presentation,
-        colors,
-    ));
-    if details_open(conversation, presentation) {
-        section = section.child(details(setup, colors));
-    }
-    section
 }
 
 fn agent_started(setup: &WorktreeSetup) -> bool {
@@ -527,37 +542,18 @@ fn actions(
 ) -> El {
     let thread_id = conversation.id.clone();
     let expanded = details_open(conversation, presentation);
-    let mut controls = row()
-        .w_full()
-        .pl(19.0)
-        .pt(2.0)
-        .gap(2.0)
-        .center_y()
-        .flex_wrap()
-        .child(
-            action(
-                "worktree-setup-details",
-                "Details",
-                69.1875,
-                if expanded {
-                    &CHEVRON_DOWN
+    let mut controls = action_row().child(details_action(expanded, colors).on_press(
+        move |state: &mut State| {
+            if let Some(conversation) = state.conversation_mut(&thread_id) {
+                let details = if presentation == Presentation::Popup {
+                    &mut conversation.worktree_background.details
                 } else {
-                    &CHEVRON_RIGHT
-                },
-                colors,
-            )
-            .expanded(expanded)
-            .on_press(move |state: &mut State| {
-                if let Some(conversation) = state.conversation_mut(&thread_id) {
-                    let details = if presentation == Presentation::Popup {
-                        &mut conversation.worktree_background.details
-                    } else {
-                        &mut conversation.worktree_details_open
-                    };
-                    *details = !*details;
-                }
-            }),
-        );
+                    &mut conversation.worktree_details_open
+                };
+                *details = !*details;
+            }
+        },
+    ));
     if terminal && let Some(script) = &setup.setup_script {
         let terminal_id = script.terminal_id.clone();
         let thread_id = conversation.id.clone();
@@ -596,6 +592,31 @@ fn details_open(conversation: &Conversation, presentation: Presentation) -> bool
     } else {
         conversation.worktree_details_open
     }
+}
+
+fn action_row() -> El {
+    row()
+        .w_full()
+        .pl(19.0)
+        .pt(2.0)
+        .gap(2.0)
+        .center_y()
+        .flex_wrap()
+}
+
+fn details_action(expanded: bool, colors: Colors) -> El {
+    action(
+        "worktree-setup-details",
+        "Details",
+        69.1875,
+        if expanded {
+            &CHEVRON_DOWN
+        } else {
+            &CHEVRON_RIGHT
+        },
+        colors,
+    )
+    .expanded(expanded)
 }
 
 fn action(key: &str, label: &str, width: f32, symbol: &'static Icon, colors: Colors) -> El {

@@ -257,7 +257,7 @@ pub(super) fn transcript(
     let (before, after) = entries.split_at(split);
     let entry_row = |entry: &ConversationEntry| match entry {
         ConversationEntry::Message(message) if message.role == "user" => Some(user_message(
-            conversation,
+            Some(conversation),
             message,
             bubble_width,
             layout.viewport[0],
@@ -306,15 +306,31 @@ pub(super) fn transcript(
         )
 }
 
+pub(super) fn draft_prompt(thread_id: &str, prompt: &str, layout: Layout, palette: Palette) -> El {
+    user_message(
+        None,
+        &Message {
+            id: format!("draft-{thread_id}"),
+            role: "user".into(),
+            text: prompt.to_owned(),
+            created_by: None,
+        },
+        layout.max_bubble_width(),
+        layout.viewport[0],
+        Colors::new(palette),
+    )
+}
+
 fn user_message(
-    conversation: &Conversation,
+    conversation: Option<&Conversation>,
     message: &Message,
     max_width: f32,
     viewport_width: f32,
     colors: Colors,
 ) -> El {
     let agent = message.created_by.as_deref() == Some("agent");
-    let expanded = conversation.expanded_messages.contains(&message.id);
+    let expanded = conversation
+        .is_some_and(|conversation| conversation.expanded_messages.contains(&message.id));
     let body = || {
         text(&message.text)
             .key(format!("message-text-{}", message.id))
@@ -330,7 +346,7 @@ fn user_message(
         .min_w(0.0)
         .fill(colors.bubble)
         .radius(16.0);
-    if agent {
+    if agent && let Some(conversation) = conversation {
         let id = message.id.clone();
         let thread = conversation.id.clone();
         let summary: String = message

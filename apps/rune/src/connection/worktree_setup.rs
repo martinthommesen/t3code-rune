@@ -1,4 +1,46 @@
 use serde::Deserialize;
+use serde_json::json;
+
+use super::{Session, SessionStop};
+
+impl Session {
+    pub(super) async fn observe_draft_worktree(
+        &mut self,
+        thread_id: Option<String>,
+    ) -> Result<(), SessionStop> {
+        let thread_id = thread_id.filter(|_| self.worktree_setup && self.worktree_launch);
+        if self.draft_setup.as_ref().map(|(_, thread)| thread.as_str()) == thread_id.as_deref() {
+            return Ok(());
+        }
+        if let Some((request, _)) = self.draft_setup.take() {
+            self.interrupt(&request).await?;
+        }
+        if let Some(thread_id) = thread_id {
+            let request = self.allocate_id();
+            self.send_request(
+                &request,
+                "subscribeWorktreeSetup",
+                json!({"threadId": thread_id}),
+            )
+            .await?;
+            self.draft_setup = Some((request, thread_id));
+        }
+        Ok(())
+    }
+
+    pub(super) fn setup_thread(&self, request_id: &str) -> Option<&str> {
+        self.draft_setup
+            .as_ref()
+            .filter(|(request, _)| request == request_id)
+            .map(|(_, thread)| thread.as_str())
+            .or_else(|| {
+                self.thread
+                    .as_ref()
+                    .filter(|thread| thread.setup_request_id.as_deref() == Some(request_id))
+                    .map(|thread| thread.thread_id.as_str())
+            })
+    }
+}
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]

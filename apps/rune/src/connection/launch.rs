@@ -122,6 +122,7 @@ impl ServerSettings {
 
 pub(super) struct Draft {
     pub(super) project_id: String,
+    pub(super) thread_id: String,
     pub(super) prompt: String,
     pub(super) workspace: Workspace,
 }
@@ -141,12 +142,7 @@ pub(crate) enum Workspace {
     },
 }
 
-pub(super) fn payload(
-    config: Value,
-    project: &ProjectRow,
-    draft: &Draft,
-    thread_id: &str,
-) -> Result<Value, String> {
+pub(super) fn payload(config: Value, project: &ProjectRow, draft: &Draft) -> Result<Value, String> {
     let settings: ServerSettings = serde_json::from_value(config)
         .map_err(|_| "The environment returned invalid launch settings.".to_owned())?;
     let overrides = settings.project_settings_overrides.get(&draft.project_id);
@@ -175,7 +171,7 @@ pub(super) fn payload(
 
     Ok(json!({
         "commandId": Uuid::new_v4().to_string(),
-        "threadId": thread_id,
+        "threadId": draft.thread_id,
         "creationSource": "web",
         "projectId": draft.project_id,
         "title": title,

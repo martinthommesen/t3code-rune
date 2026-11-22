@@ -211,6 +211,7 @@ struct Draft {
     start_from_origin_default: Option<bool>,
     start_from_origin_changed: bool,
     refs: DraftRefs,
+    worktree_launch: Option<worktree_setup::DraftLaunch>,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -497,6 +498,7 @@ impl State {
         if let Some(project_id) = new_draft {
             self.load_draft_refs(&project_id, false);
         }
+        self.observe_selected_draft_worktree();
         true
     }
 
@@ -702,7 +704,15 @@ impl State {
             };
         draft.pending = true;
         draft.failure = None;
-        connection.launch_thread(id.clone(), draft.edit.text.clone(), workspace);
+        let prompt = draft.edit.text.clone();
+        let preparing_worktree = matches!(&workspace, LaunchWorkspace::Worktree { .. });
+        let thread_id = connection.launch_thread(id.clone(), prompt.clone(), workspace);
+        if preparing_worktree {
+            connection.observe_draft_worktree(Some(thread_id.clone()));
+            draft.worktree_launch = Some(worktree_setup::DraftLaunch::new(thread_id, prompt));
+            draft.edit.clear();
+            self.draft_workspace_popup = None;
+        }
     }
 
     fn stop_generation(&mut self, thread_id: &str) {
@@ -742,6 +752,56 @@ impl State {
             return;
         };
         conversation.worktree_cancel_pending = true;
+        if let Some(connection) = &self.connection {
+            connection.cancel_worktree_setup(thread_id.to_owned());
+        }
+    }
+
+    fn observe_selected_draft_worktree(&self) {
+        if let Some(connection) = &self.connection {
+            let thread = self
+                .workspace
+                .as_ref()
+                .and_then(|workspace| workspace.selection.as_ref())
+                .filter(|selection| matches!(selection.view, ProjectView::NewThread))
+                .and_then(|selection| self.new_thread_drafts.get(&selection.id))
+                .and_then(|draft| draft.worktree_launch.as_ref())
+                .map(|launch| launch.thread_id.clone());
+            connection.observe_draft_worktree(thread);
+        }
+    }
+
+    fn active_worktree_draft_mut(
+        &mut self,
+        thread_id: &str,
+    ) -> Option<&mut worktree_setup::DraftLaunch> {
+        let selection = self.workspace.as_ref()?.selection.as_ref()?;
+        if !matches!(selection.view, ProjectView::NewThread) {
+            return None;
+        }
+        self.new_thread_drafts
+            .get_mut(&selection.id)?
+            .worktree_launch
+            .as_mut()
+            .filter(|launch| launch.thread_id == thread_id)
+    }
+
+    fn cancel_draft_worktree(&mut self, thread_id: &str) {
+        if self.connection.is_none()
+            || self
+                .workspace
+                .as_ref()
+                .is_none_or(|workspace| workspace.reconnecting || !workspace.worktree_launch)
+        {
+            return;
+        }
+        let Some(launch) = self.active_worktree_draft_mut(thread_id) else {
+            return;
+        };
+        if !launch.can_cancel() || launch.cancelling {
+            return;
+        }
+        launch.cancelling = true;
         if let Some(connection) = &self.connection {
             connection.cancel_worktree_setup(thread_id.to_owned());
         }
@@ -978,6 +1038,28 @@ impl State {
                 project_id,
                 thread_id,
             } => {
+                if let Some(launch) = self
+                    .new_thread_drafts
+                    .get_mut(&project_id)
+                    .and_then(|draft| draft.worktree_launch.as_mut())
+                    .filter(|launch| launch.thread_id == thread_id)
+                {
+                    launch.accepted = true;
+                    if self
+                        .workspace
+                        .as_ref()
+                        .and_then(|workspace| workspace.selection.as_ref())
+                        .is_some_and(|selection| {
+                            selection.id == project_id
+                                && matches!(selection.view, ProjectView::NewThread)
+                        })
+                    {
+                        self.open_confirmed_thread();
+                    } else {
+                        self.finish_worktree_draft(&project_id, &thread_id);
+                    }
+                    return;
+                }
                 self.new_thread_drafts.remove(&project_id);
                 let Some(workspace) = &mut self.workspace else {
                     return;
@@ -997,7 +1079,13 @@ impl State {
                 if let Some(draft) = self.new_thread_drafts.get_mut(&project_id) {
                     draft.pending = false;
                     draft.failure = Some(message);
+                    if let Some(launch) = draft.worktree_launch.take()
+                        && draft.edit.text.is_empty()
+                    {
+                        draft.edit = TextEdit::new(launch.prompt);
+                    }
                 }
+                self.observe_selected_draft_worktree();
             }
             Event::ProjectAdded { command_id, result } => self.project_added(&command_id, result),
             Event::GitRefs { project_id, result } => {
@@ -1073,6 +1161,10 @@ impl State {
                 thread_id,
                 snapshot,
             } => {
+                if let Some(launch) = self.active_worktree_draft_mut(&thread_id) {
+                    launch.update(snapshot);
+                    return;
+                }
                 if let Some(conversation) = self.conversation_mut(&thread_id)
                     && let Some(snapshot) = snapshot
                     && conversation.worktree_setup.as_ref().is_none_or(|previous| {
@@ -1087,8 +1179,19 @@ impl State {
                 }
             }
             Event::WorktreeSetupCancelSettled { thread_id, result } => {
+                if let Some(launch) = self.active_worktree_draft_mut(&thread_id) {
+                    launch.cancelling = matches!(&result, Ok(true)) && launch.can_cancel();
+                    if let Err(message) = result {
+                        self.project_notice = Some(message);
+                    }
+                    return;
+                }
                 if let Some(conversation) = self.conversation_mut(&thread_id) {
-                    conversation.worktree_cancel_pending = false;
+                    conversation.worktree_cancel_pending = matches!(&result, Ok(true))
+                        && conversation
+                            .worktree_setup
+                            .as_ref()
+                            .is_some_and(|snapshot| snapshot.phase == SetupPhase::Running);
                     if let Err(message) = result {
                         self.project_notice = Some(message);
                     }
@@ -1274,19 +1377,56 @@ impl State {
         let Some(workspace) = &self.workspace else {
             return;
         };
-        if let Some(ProjectSelection {
-            id,
-            view: ProjectView::WaitingForThread(thread_id),
-        }) = &workspace.selection
-            && workspace
+        let Some(ProjectSelection { id, view }) = &workspace.selection else {
+            return;
+        };
+        let thread_id = match view {
+            ProjectView::WaitingForThread(thread_id) => Some(thread_id),
+            ProjectView::NewThread => self
+                .new_thread_drafts
+                .get(id)
+                .and_then(|draft| draft.worktree_launch.as_ref())
+                .filter(|launch| launch.accepted)
+                .map(|launch| &launch.thread_id),
+            _ => None,
+        };
+        let Some(thread_id) = thread_id.filter(|thread_id| {
+            workspace
                 .thread(thread_id)
                 .is_some_and(|thread| thread.project_id == *id)
+        }) else {
+            return;
+        };
+        let project = id.clone();
+        let thread = thread_id.clone();
+        let launch = if matches!(view, ProjectView::NewThread) {
+            self.finish_worktree_draft(&project, &thread)
+        } else {
+            None
+        };
+        self.show_destination(Destination::Thread {
+            project,
+            thread: thread.clone(),
+        });
+        if let Some(launch) = launch
+            && let Some(conversation) = self.conversation_mut(&thread)
         {
-            self.show_destination(Destination::Thread {
-                project: id.clone(),
-                thread: thread_id.clone(),
-            });
+            conversation.worktree_setup = launch.snapshot;
+            conversation.worktree_cancel_pending = launch.cancelling;
+            conversation.worktree_details_open = launch.details_open;
         }
+    }
+
+    fn finish_worktree_draft(
+        &mut self,
+        project_id: &str,
+        thread_id: &str,
+    ) -> Option<worktree_setup::DraftLaunch> {
+        let draft = self.new_thread_drafts.remove(project_id)?;
+        if !draft.edit.text.is_empty() {
+            self.drafts.entry(thread_id.to_owned()).or_default().edit = draft.edit;
+        }
+        draft.worktree_launch
     }
 
     fn conversation_mut(&mut self, id: &str) -> Option<&mut Conversation> {
@@ -2273,5 +2413,71 @@ mod tests {
             prompt_text(&runtime, "initial-prompt"),
             "Review the project"
         );
+    }
+
+    #[test]
+    fn worktree_launch_keeps_draft_actions_and_new_text_until_promotion() {
+        let mut runtime =
+            Runtime::new(State::default(), view, (1120.0, 740.0), Env::new(true, 1.0));
+        open_thread(&mut runtime, "local");
+        click(&mut runtime, "new-thread");
+        runtime.update(|state, _| {
+            state.workspace.as_mut().unwrap().worktree_launch = true;
+            let draft = state.new_thread_drafts.get_mut("project").unwrap();
+            draft.pending = true;
+            draft.worktree_launch = Some(worktree_setup::DraftLaunch::new(
+                "worktree".into(),
+                "Prepare the project".into(),
+            ));
+        });
+        runtime.frame(0.01);
+        assert!(runtime.find("worktree-setup-work-locally").is_none());
+
+        let snapshot = Box::new(WorktreeSetup {
+            thread_id: "worktree".into(),
+            phase: SetupPhase::Running,
+            started_at: "2026-03-29T00:00:00Z".into(),
+            ended_at: None,
+            branch: None,
+            base_ref: Some("main".into()),
+            worktree_path: None,
+            setup_script: None,
+            stages: vec![],
+            error: None,
+            sequence: 1,
+        });
+        publish(
+            &mut runtime,
+            Event::WorktreeSetup {
+                thread_id: "worktree".into(),
+                snapshot: Some(snapshot),
+            },
+        );
+        assert!(runtime.find("worktree-setup-work-locally").is_some());
+        click(&mut runtime, "worktree-setup-details");
+        assert!(runtime.find("worktree-setup-metadata").is_some());
+        click(&mut runtime, "initial-prompt");
+        runtime.paste("Save my follow-up");
+        runtime.frame(0.01);
+
+        publish(
+            &mut runtime,
+            Event::ThreadLaunched {
+                project_id: "project".into(),
+                thread_id: "worktree".into(),
+            },
+        );
+        assert!(runtime.find("worktree-setup-work-locally").is_some());
+        publish(&mut runtime, shell_with_thread("worktree"));
+        publish(
+            &mut runtime,
+            Event::Thread {
+                thread_id: "worktree".into(),
+                entries: vec![],
+            },
+        );
+        assert!(runtime.find("worktree-setup-work-locally").is_none());
+        assert!(runtime.find("worktree-setup-metadata").is_some());
+        assert_eq!(prompt_text(&runtime, "prompt"), "Save my follow-up");
     }
 }

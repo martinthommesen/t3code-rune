@@ -322,6 +322,7 @@ fn launch_uses_legacy_project_model_only_until_settings_are_folded() {
     .unwrap();
     let draft = launch::Draft {
         project_id: "project".into(),
+        thread_id: "thread".into(),
         prompt: "Start a thread".into(),
         workspace: LaunchWorkspace::Root,
     };
@@ -329,16 +330,16 @@ fn launch_uses_legacy_project_model_only_until_settings_are_folded() {
         "defaultModelSelection": {"instanceId": "environment", "model": "environment-model"},
         "defaultRuntimeMode": "auto"
     });
-    let payload = launch::payload(settings.clone(), &project, &draft, "thread").unwrap();
+    let payload = launch::payload(settings.clone(), &project, &draft).unwrap();
     assert_eq!(payload["modelSelection"]["instanceId"], "codex");
 
     settings["projectSettingsFolded"] = json!(true);
-    let payload = launch::payload(settings.clone(), &project, &draft, "thread").unwrap();
+    let payload = launch::payload(settings.clone(), &project, &draft).unwrap();
     assert_eq!(payload["modelSelection"]["instanceId"], "environment");
     assert_eq!(payload["runtimeMode"], "auto");
 
     settings["projectSettingsOverrides"] = json!({"project": {"defaultModelSelection": null}});
-    let payload = launch::payload(settings, &project, &draft, "thread").unwrap();
+    let payload = launch::payload(settings, &project, &draft).unwrap();
     assert!(payload["modelSelection"].is_null());
 }
 
@@ -350,6 +351,7 @@ fn disabled_and_hidden_project_models_inherit_the_environment_default() {
     .unwrap();
     let draft = launch::Draft {
         project_id: "project".into(),
+        thread_id: "thread".into(),
         prompt: "Start a thread".into(),
         workspace: LaunchWorkspace::Root,
     };
@@ -363,7 +365,8 @@ fn disabled_and_hidden_project_models_inherit_the_environment_default() {
         "providerModelPreferences": {"other": {"hiddenModels": ["custom"]}}
     });
     let model = |settings: &Value| {
-        launch::payload(settings.clone(), &project, &draft, "thread").unwrap()["modelSelection"]["model"].clone()
+        launch::payload(settings.clone(), &project, &draft).unwrap()["modelSelection"]["model"]
+            .clone()
     };
     assert_eq!(model(&settings), "fallback");
     settings["projectSettingsOverrides"]["project"]["providerInstances"] =
