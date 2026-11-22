@@ -16,6 +16,7 @@ use super::{Palette, ProjectSelection, ProjectView, SMALL, State, conversation::
 
 mod control;
 mod history;
+mod links;
 mod menu;
 mod mouse;
 mod selection;
@@ -61,6 +62,7 @@ pub(super) struct Pane {
     close_prompt: Option<ClosePrompt>,
     menu: Option<menu::Menu>,
     mouse: mouse::Mouse,
+    links: links::Links,
     resize_preview: Option<f32>,
     wheel_remainder: f32,
     viewport_height: f32,
@@ -88,6 +90,7 @@ impl Pane {
             close_prompt: None,
             menu: None,
             mouse: mouse::Mouse::default(),
+            links: links::Links::default(),
             resize_preview: None,
             wheel_remainder: 0.0,
             viewport_height: 0.0,
@@ -145,6 +148,7 @@ impl Pane {
             TerminalScreen::new(snapshot.rows.unwrap_or(rows), snapshot.cols.unwrap_or(cols));
         self.wheel_remainder = 0.0;
         self.mouse = mouse::Mouse::default();
+        self.links = links::Links::default();
         self.screen.process(snapshot.history.as_bytes());
         self.mouse.sync_mode(*self.screen.term.mode());
         self.screen.take_replies();
@@ -893,7 +897,8 @@ fn viewport(terminal: &Pane, active: bool, palette: Palette) -> El {
     } else {
         format!("{INPUT_KEY}-{attachment}")
     };
-    let (contents, spans) = screen_text(terminal, palette);
+    let hovered_link = links::highlighted_cells(terminal);
+    let (contents, spans) = screen_text(terminal, palette, hovered_link.as_ref());
     let mut output = col()
         .w_full()
         .grow(1.0)
@@ -920,6 +925,11 @@ fn viewport(terminal: &Pane, active: bool, palette: Palette) -> El {
         })
         .focusable(active)
         .no_focus_ring()
+        .cursor(if hovered_link.is_some() {
+            rune::Cursor::Pointer
+        } else {
+            rune::Cursor::Text
+        })
         .on_secondary_press(move |state: &mut State, point, tx| {
             if !state.terminal_mouse_captured(attachment, tx.mods()) {
                 state.open_terminal_menu(attachment, point, tx);
@@ -930,7 +940,13 @@ fn viewport(terminal: &Pane, active: bool, palette: Palette) -> El {
         })
         .pointer_buttons([rune::PointerButton::Middle, rune::PointerButton::Secondary])
         .on_pointer_move_local(move |state: &mut State, event, tx| {
-            state.terminal_pointer_move(attachment, event, tx)
+            state.terminal_pointer_move(attachment, event, tx);
+            state.terminal_link_hover(attachment, Some(event), tx);
+        })
+        .on_hover_change(move |state: &mut State, hovered, tx| {
+            if !hovered {
+                state.terminal_link_hover(attachment, None, tx);
+            }
         })
         .on_key(State::terminal_key)
         .on_wheel(move |state: &mut State, event, _| state.terminal_wheel(attachment, event))
@@ -942,7 +958,11 @@ fn viewport(terminal: &Pane, active: bool, palette: Palette) -> El {
     viewport
 }
 
-fn screen_text(terminal: &Pane, palette: Palette) -> (String, Vec<Span>) {
+fn screen_text(
+    terminal: &Pane,
+    palette: Palette,
+    hovered_link: Option<&std::ops::RangeInclusive<Point>>,
+) -> (String, Vec<Span>) {
     let term = &terminal.screen.term;
     let grid = term.grid();
     let content = term.renderable_content();
@@ -995,9 +1015,13 @@ fn screen_text(terminal: &Pane, palette: Palette) -> (String, Vec<Span>) {
                 {
                     bg = selection::background(bg, palette.dark);
                 }
+                let underline = flags.intersects(Flags::ALL_UNDERLINES)
+                    || hovered_link
+                        .is_some_and(|link| link.contains(&Point::new(line, Column(col))));
                 if fg != palette.ink
                     || bg != palette.canvas
-                    || flags.intersects(Flags::BOLD_ITALIC | Flags::DIM | Flags::ALL_UNDERLINES)
+                    || underline
+                    || flags.intersects(Flags::BOLD_ITALIC | Flags::DIM)
                 {
                     let mut span =
                         Span::new(start, contents.len()).color(if flags.contains(Flags::DIM) {
@@ -1014,7 +1038,7 @@ fn screen_text(terminal: &Pane, palette: Palette) -> (String, Vec<Span>) {
                     if flags.contains(Flags::ITALIC) {
                         span = span.italic();
                     }
-                    if flags.intersects(Flags::ALL_UNDERLINES) {
+                    if underline {
                         span = span.underline(fg);
                     }
                     spans.push(span);

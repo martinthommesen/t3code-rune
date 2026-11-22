@@ -59,7 +59,7 @@ impl State {
         };
         let Some(button) = tracking else {
             if tx.button() == PointerButton::Primary {
-                self.drag_terminal_selection(attachment, drag, tx);
+                self.terminal_link_drag(attachment, drag, tx);
             } else if tx.button() == PointerButton::Middle && drag.phase == Phase::Down {
                 let selected = primary_paste
                     .then(|| super::selection::selected_text(pane))
