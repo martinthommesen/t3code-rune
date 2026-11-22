@@ -1035,6 +1035,10 @@ impl State {
                 }
             }
             Event::ProviderCatalogUnavailable => self.onboarding.finish_refresh(),
+            Event::WorkspaceConfiguration(settings) => self.set_workspace_configuration(settings),
+            Event::WorkspaceModeSettled { operation, result } => {
+                self.settle_workspace_mode(operation, result);
+            }
             Event::ProjectEditSettled {
                 project_id,
                 kind,
@@ -1438,6 +1442,11 @@ impl State {
                 ..
             } => self.project_notice = Some(message),
             event @ (Event::Reconnecting | Event::Reconnected) => {
+                if matches!(event, Event::Reconnecting) {
+                    self.workspace_settings_disconnected(false);
+                } else {
+                    self.ensure_open_workspace_settings();
+                }
                 self.question_auto_advance = None;
                 for questions in self.questions.values_mut() {
                     questions.pause();
@@ -1469,6 +1478,7 @@ impl State {
                 }
             }
             Event::Disconnected(reason) => {
+                self.workspace_settings_disconnected(true);
                 self.onboarding.finish_refresh();
                 sidebar::cancel_rename(self);
                 self.connection = None;

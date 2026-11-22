@@ -14,6 +14,7 @@ mod terminal;
 #[cfg(test)]
 mod tests;
 mod workspace_retry;
+mod workspace_settings;
 pub(crate) mod worktree_setup;
 
 use std::cell::Cell;
@@ -60,6 +61,7 @@ pub(crate) use terminal::{
     TerminalAttach, TerminalSnapshot, TerminalStatus, TerminalTarget, TerminalUpdate,
 };
 pub(crate) use workspace_retry::WorkspaceRetry;
+pub(crate) use workspace_settings::WorkspaceSetting;
 pub(crate) use worktree_setup::WorktreeSetup;
 
 const PROTOCOL_VERSION: u32 = 2;
@@ -119,6 +121,11 @@ pub(crate) enum Event {
     },
     Providers(ProviderCatalog),
     ProviderCatalogUnavailable,
+    WorkspaceConfiguration(Option<WorkspaceSetting>),
+    WorkspaceModeSettled {
+        operation: Uuid,
+        result: Result<(), String>,
+    },
     Thread {
         thread_id: String,
         entries: Vec<ConversationEntry>,
@@ -250,6 +257,11 @@ pub(crate) enum Event {
 
 enum Command {
     RefreshProviderCatalog,
+    EnsureWorkspaceSettings,
+    UpdateWorkspaceMode {
+        mode: Option<WorkspaceMode>,
+        operation: Uuid,
+    },
     LoadProjectFavicons(Vec<FaviconTarget>),
     OpenThread(String),
     CloseThread,
@@ -1138,6 +1150,7 @@ struct Session {
     initial_shell: bool,
     archive: ArchiveState,
     providers_request_id: Option<String>,
+    workspace_settings: workspace_settings::Subscription,
     project_clones_request_id: Option<String>,
     command_output_streaming: bool,
     command_outputs: command_output::Subscriptions,
@@ -1254,6 +1267,13 @@ impl Session {
                 ArchiveState::Disabled
             },
             providers_request_id: None,
+            workspace_settings: workspace_settings::Subscription::new(scope.is_some_and(
+                |scopes| {
+                    scopes
+                        .split_whitespace()
+                        .any(|scope| scope == "settings:write")
+                },
+            )),
             project_clones_request_id: None,
             command_output_streaming: capabilities.command_output_streaming,
             command_outputs: command_output::Subscriptions::default(),
@@ -1620,6 +1640,14 @@ impl Session {
         events: &EventSender<impl Fn()>,
     ) -> Result<(), SessionStop> {
         match command {
+            Command::EnsureWorkspaceSettings => {
+                if self.providers_request_id.is_none() {
+                    self.subscribe_provider_catalog().await?;
+                }
+            }
+            Command::UpdateWorkspaceMode { mode, operation } => {
+                self.save_workspace_mode(mode, operation, events).await?;
+            }
             Command::RefreshProviderCatalog => {
                 if let Some(request) = self.providers_request_id.take() {
                     self.interrupt(&request).await?;
@@ -2358,6 +2386,9 @@ impl Session {
                             can_start: self.scratch_projects,
                         });
                     }
+                    if let Some(settings) = self.workspace_settings.apply(&values) {
+                        events.send(Event::WorkspaceConfiguration(Some(settings)));
+                    }
                     if let Some(providers) = provider_metadata::last_catalog(values) {
                         events.send(Event::Providers(providers));
                     }
@@ -2435,8 +2466,13 @@ impl Session {
                 }
             }
             ServerFrame::Exit { request_id, exit } => {
+                if self.workspace_write_matches(&request_id) {
+                    self.workspace_write_result(exit.into_result(), events);
+                    return Ok(());
+                }
                 if self.providers_request_id.as_ref() == Some(&request_id) {
                     self.providers_request_id = None;
+                    events.send(Event::WorkspaceConfiguration(None));
                     if exit.into_result().is_err() {
                         events.send(Event::ProviderCatalogUnavailable);
                     }
@@ -2854,6 +2890,10 @@ async fn run(
             attempt = 0;
         }
         events.send(Event::Reconnecting);
+        session.fail_workspace_write(
+            events,
+            "The connection closed before confirming the workspace setting.",
+        );
         session.unconfirm_runtime_responses(events);
         session.finish_interrupted_ref_requests(events);
         for (_, resume) in session.pending_resumes.drain() {
@@ -3035,6 +3075,7 @@ async fn run_socket(
                 }
                 session.expire_terminal(events).await?;
                 session.expire_workspace_retries(events);
+                session.expire_workspace_write(events);
                 session.favicons.expire(events);
                 session.request_project_favicons().await?;
                 session.expire_command_outputs(events).await?;

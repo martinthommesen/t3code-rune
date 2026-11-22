@@ -4,6 +4,7 @@ use super::{Palette, State, error_text, sidebar_header};
 
 mod appearance;
 mod project;
+mod workspace;
 
 pub(super) use project::{
     gear as project_settings_gear, poll as poll_project, settle as settle_project_edit,
@@ -37,6 +38,10 @@ static APPEARANCE: Icon = glyph!(
     "palette",
     r#"<path d="M12 3a9 9 0 1 0 0 18h1.5a1.5 1.5 0 0 0 0-3H13a1 1 0 0 1 0-2h2a6 6 0 0 0 0-12z"/><circle cx="7.5" cy="12" r=".5"/><circle cx="9" cy="8" r=".5"/><circle cx="13" cy="7.5" r=".5"/><circle cx="16.5" cy="10" r=".5"/>"#
 );
+static THREADS: Icon = glyph!(
+    "messages-square",
+    r#"<path d="M14 9a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v7l3-3h7a2 2 0 0 0 2-2zM22 17a2 2 0 0 0-2-2h-6a2 2 0 0 0-2 2v2a2 2 0 0 0 2 2h5l3 3z"/>"#
+);
 static CLOSE: Icon = glyph!("x", r#"<path d="m18 6-12 12M6 6l12 12"/>"#);
 static CHEVRON: Icon = glyph!("chevron-right", r#"<path d="m9 18 6-6-6-6"/>"#);
 static RESET: Icon = glyph!(
@@ -49,6 +54,7 @@ pub(super) struct Panel {
     error: Option<String>,
     page: Page,
     project: Option<project::Form>,
+    workspace: workspace::Panel,
     return_focus: &'static str,
 }
 
@@ -65,6 +71,7 @@ impl Default for Panel {
             error: None,
             page: Page::General,
             project: None,
+            workspace: workspace::Panel::default(),
             return_focus: "open-client-settings",
         }
     }
@@ -75,6 +82,7 @@ enum Page {
     #[default]
     General,
     Appearance,
+    Threads,
     Projects,
 }
 
@@ -83,6 +91,7 @@ impl Page {
         match self {
             Self::General => "General",
             Self::Appearance => "Appearance",
+            Self::Threads => "Threads",
             Self::Projects => "Projects",
         }
     }
@@ -99,6 +108,7 @@ impl State {
     fn close_client_settings(&mut self, tx: &mut Tx) {
         self.save_project_name();
         self.settings.open = false;
+        self.settings.workspace.highlighted = None;
         self.settings.error = None;
         tx.focus(self.settings.return_focus, tx.focus_visible());
     }
@@ -123,7 +133,41 @@ impl State {
     fn select_settings_page(&mut self, page: Page) {
         self.save_project_name();
         self.settings.page = page;
+        self.settings.workspace.highlighted = None;
+        self.ensure_open_workspace_settings();
         self.settings.error = None;
+    }
+
+    pub(super) fn set_workspace_configuration(
+        &mut self,
+        setting: Option<crate::connection::WorkspaceSetting>,
+    ) {
+        self.settings.workspace.current = setting;
+    }
+
+    pub(super) fn settle_workspace_mode(
+        &mut self,
+        operation: uuid::Uuid,
+        result: Result<(), String>,
+    ) {
+        self.settings.workspace.settle(operation, result);
+    }
+
+    pub(super) fn workspace_settings_disconnected(&mut self, final_disconnect: bool) {
+        if final_disconnect {
+            self.settings.workspace.stop();
+        } else {
+            self.settings.workspace.disconnect();
+        }
+    }
+
+    pub(super) fn ensure_open_workspace_settings(&self) {
+        if self.settings.open
+            && self.settings.page == Page::Threads
+            && let Some(connection) = &self.connection
+        {
+            connection.ensure_workspace_settings();
+        }
     }
 }
 
@@ -168,6 +212,7 @@ pub(super) fn overlay(state: &State, palette: Palette, width: f32, height: f32) 
     let content = match page {
         Page::General => general(state, palette, content_width, width < 640.0),
         Page::Appearance => appearance::page(state, palette, content_width),
+        Page::Threads => workspace::page(state, palette, content_width),
         Page::Projects => project::page(state, palette, content_width),
     };
     let picker = project::icon_overlay(state, palette, width)
@@ -224,6 +269,9 @@ pub(super) fn overlay(state: &State, palette: Palette, width: f32, height: f32) 
     if let Some(picker) = picker {
         overlay = overlay.child(picker);
     }
+    if let Some(items) = workspace::overlay(state, palette) {
+        overlay = overlay.children(items);
+    }
     Some(overlay)
 }
 
@@ -241,6 +289,7 @@ fn navigation(active: Page, width: f32, colors: sidebar_header::Colors) -> El {
     for (page, glyph, key) in [
         (Page::General, &GENERAL, "settings-general"),
         (Page::Appearance, &APPEARANCE, "settings-appearance"),
+        (Page::Threads, &THREADS, "settings-threads"),
         (Page::Projects, &GEAR, "settings-projects"),
     ] {
         let selected = active == page;
