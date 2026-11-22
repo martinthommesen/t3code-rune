@@ -424,7 +424,7 @@ pub(super) fn dialog(form: &AddProject, palette: Palette) -> El {
         browse.requested_path == form.path.text.trim()
             && browse.pending.is_none()
             && browse.error.is_none()
-            && (browse.path_missing || browse.listing.is_some() && !browse.exact_entry)
+            && (browse.directory_unavailable || browse.listing.is_some() && !browse.exact_entry)
     });
     let label = if busy {
         "Cloning"

@@ -1512,6 +1512,9 @@ fn mutate_project(
                 "cause": { "name": "ProjectInvalidError", "message": detail },
             }),
         ),
+        Err(error @ ProjectCommandError::WorkspaceDirectoryConflict { .. }) => {
+            workspace_directory_conflict(id, &command_id, error)
+        }
         Err(error) => failure(
             id,
             RpcError::ProjectMutationError {
@@ -1520,6 +1523,49 @@ fn mutate_project(
             },
         ),
     }
+}
+
+fn workspace_directory_conflict(
+    id: RequestId,
+    command_id: &str,
+    error: ProjectCommandError,
+) -> Value {
+    let message = error.to_string();
+    let ProjectCommandError::WorkspaceDirectoryConflict {
+        project_id,
+        path,
+        ancestor,
+    } = error
+    else {
+        unreachable!("workspace directory conflict")
+    };
+    let cause = if ancestor {
+        json!({
+            "name": "WorkspaceRootStatFailedError",
+            "message": message,
+            "cause": {
+                "name": "PlatformError",
+                "message": format!("BadResource: FileSystem.stat ({path})"),
+                "cause": {
+                    "name": "Error",
+                    "message": format!("ENOTDIR: not a directory, stat '{path}'"),
+                },
+            },
+        })
+    } else {
+        json!({ "name": "WorkspaceRootNotDirectoryError", "message": message })
+    };
+    failure(
+        id,
+        json!({
+            "_tag":"ProjectMutationError", "commandId":command_id, "message":"Failed to mutate project.",
+            "cause": {
+                "name": "ProjectOperationError",
+                "message": format!("Project operation 'normalize-workspace' failed for {project_id}."),
+                "cause": cause,
+            },
+        }),
+    )
 }
 
 fn dispatch_thread(

@@ -280,6 +280,9 @@ pub(crate) enum Event {
         command_id: String,
         result: Result<ProjectCreated, String>,
     },
+    ProjectFolderCollision {
+        command_id: String,
+    },
     ProjectEditSettled {
         project_id: String,
         kind: ProjectEditKind,
@@ -1182,7 +1185,7 @@ enum RpcExit {
 #[serde(tag = "_tag")]
 enum RpcCause {
     Fail {
-        error: RpcError,
+        error: Box<RpcError>,
     },
     #[serde(other)]
     Other,
@@ -1194,6 +1197,8 @@ struct RpcError {
     detail: Option<String>,
     #[serde(default, rename = "pathMissing")]
     path_missing: bool,
+    #[serde(default, rename = "cause")]
+    defect: Value,
     #[serde(flatten)]
     file: file_preview::FailureFields,
 }
@@ -2919,6 +2924,11 @@ impl Session {
                     return self.terminal_exit(&request_id, exit, events).await;
                 }
                 if let Some((command_id, _, kind)) = self.pending_projects.remove(&request_id) {
+                    if matches!(kind, ProjectCreation::Folder) && exit.is_project_folder_collision()
+                    {
+                        events.send(Event::ProjectFolderCollision { command_id });
+                        return Ok(());
+                    }
                     let result = exit.into_result().and_then(|project| {
                         let decoded = match kind {
                             ProjectCreation::Folder => serde_json::from_value::<Project>(project).map(|project| ProjectCreated {

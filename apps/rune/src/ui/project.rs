@@ -8,6 +8,7 @@ use super::{BODY, Palette, SMALL, State, TITLE, button, error_text, form_field, 
 
 pub(super) mod clone_banner;
 mod folder;
+pub(super) mod folder_collision;
 mod git_url;
 mod home;
 
@@ -62,7 +63,7 @@ struct Browse {
     active_row: usize,
     parent: Option<String>,
     exact_entry: bool,
-    path_missing: bool,
+    directory_unavailable: bool,
 }
 
 impl Browse {
@@ -238,7 +239,7 @@ impl State {
         browse.active_row = 0;
         browse.parent = None;
         browse.exact_entry = false;
-        browse.path_missing = false;
+        browse.directory_unavailable = false;
         if form.clone.is_none() && folder::is_relative(path) && browse.cwd.is_none() {
             browse.error = Some("Relative paths require an active project.".into());
             return true;
@@ -294,9 +295,15 @@ impl State {
                     .as_ref()
                     .and_then(|clone| clone.browse_query(&browse.requested_path));
                 browse.parent = folder::parent(query.unwrap_or(&browse.requested_path));
-                browse.path_missing = true;
+                browse.directory_unavailable = true;
             }
-            Err(FolderBrowseError::Other(error)) => browse.error = Some(error),
+            Err(FolderBrowseError::NotDirectory(_)) if form.clone.is_none() => {
+                browse.parent = folder::parent(&browse.requested_path);
+                browse.directory_unavailable = true;
+            }
+            Err(FolderBrowseError::Other(error) | FolderBrowseError::NotDirectory(error)) => {
+                browse.error = Some(error);
+            }
         }
     }
 
@@ -731,7 +738,7 @@ fn browse_dialog(form: &AddProject, browse: &Browse, palette: Palette) -> El {
         && browse.requested_path == typed_path
         && browse.pending.is_none()
         && browse.active_row == 0
-        && (browse.path_missing || browse.listing.is_some() && !browse.exact_entry);
+        && (browse.directory_unavailable || browse.listing.is_some() && !browse.exact_entry);
     let mut options = col().w_full();
     if browse.row_count() > 0 {
         options = options.child(text("Directories").font(SMALL).color(palette.muted));

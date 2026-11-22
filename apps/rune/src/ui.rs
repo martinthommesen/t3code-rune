@@ -310,6 +310,7 @@ struct State {
     added_project: Option<project::AddedProject>,
     scratch_request: Option<project::ScratchRequest>,
     project_notice: Option<String>,
+    project_folder_collision: Option<project::folder_collision::Notice>,
     client_settings: ClientSettings,
     onboarding: onboarding::Onboarding,
     settings: settings::Panel,
@@ -354,6 +355,7 @@ impl Default for State {
             added_project: None,
             scratch_request: None,
             project_notice: None,
+            project_folder_collision: None,
             client_settings: ClientSettings::default(),
             onboarding: onboarding::Onboarding::default(),
             settings: settings::Panel::default(),
@@ -1069,6 +1071,7 @@ impl State {
         }
         changed |= onboarding::Onboarding::poll(self, clock, tx);
         changed |= self.poll_project_browse();
+        changed |= project::folder_collision::poll(self, tx);
         changed |= self.poll_question(clock);
         changed |= sidebar::poll_rename(self);
         changed |= settings::poll_worktree_location(self, tx);
@@ -1452,6 +1455,9 @@ impl State {
             }
             Event::ProjectAdded { command_id, result } => {
                 self.project_added(&command_id, result, tx)
+            }
+            Event::ProjectFolderCollision { command_id } => {
+                project::folder_collision::show(self, &command_id, tx);
             }
             Event::GitRefs { project_id, result } => {
                 let remote = self
@@ -2080,6 +2086,7 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
     body = body.children(settings::add_project_base_scope_warning(
         state, palette, width,
     ));
+    body = body.children(project::folder_collision::overlay(state, palette, width));
     if let Some(caption) = state.window_chrome.overlay(palette.dark) {
         body = body.child(caption);
     }

@@ -127,9 +127,18 @@ impl Project {
 pub(super) enum CommandError {
     InvalidRequest(String),
     InvalidProject(String),
+    WorkspaceDirectoryConflict {
+        project_id: String,
+        path: String,
+        ancestor: bool,
+    },
     Rejected(String),
-    ProjectNotFound { project_id: String },
-    ProjectNotEmpty { project_id: String },
+    ProjectNotFound {
+        project_id: String,
+    },
+    ProjectNotEmpty {
+        project_id: String,
+    },
     Database(rusqlite::Error),
 }
 
@@ -139,6 +148,16 @@ impl fmt::Display for CommandError {
             Self::InvalidRequest(message)
             | Self::InvalidProject(message)
             | Self::Rejected(message) => formatter.write_str(message),
+            Self::WorkspaceDirectoryConflict { path, ancestor, .. } => {
+                if *ancestor {
+                    write!(
+                        formatter,
+                        "Failed to stat workspace root '{path}' during 'validate-existing'."
+                    )
+                } else {
+                    write!(formatter, "Workspace root is not a directory: {path}")
+                }
+            }
             Self::ProjectNotFound { project_id } => {
                 write!(formatter, "Project {project_id} was not found.")
             }
@@ -476,7 +495,11 @@ impl ProjectCommands {
                     };
                     return reject(transaction, &identity, occurred_at, rejection);
                 }
-                ensure_workspace(Path::new(&workspace), *create_workspace_root_if_missing)?;
+                ensure_workspace(
+                    Path::new(&workspace),
+                    *create_workspace_root_if_missing,
+                    identity.project_id,
+                )?;
                 let sequence = append_event(
                     &transaction,
                     &identity,
@@ -832,13 +855,18 @@ fn is_wsl_share(input: &str) -> bool {
     host.is_some_and(|host| host.starts_with("wsl.localhost\\") || host.starts_with("wsl$\\"))
 }
 
-fn ensure_workspace(path: &Path, create: bool) -> Result<(), CommandError> {
+fn ensure_workspace(path: &Path, create: bool, project_id: &str) -> Result<(), CommandError> {
+    let directory_conflict = |ancestor| CommandError::WorkspaceDirectoryConflict {
+        project_id: project_id.into(),
+        path: path.display().to_string(),
+        ancestor,
+    };
     match fs::metadata(path) {
         Ok(metadata) if metadata.is_dir() => Ok(()),
-        Ok(_) => Err(CommandError::InvalidRequest(format!(
-            "'{}' is not a folder.",
-            path.display()
-        ))),
+        Ok(_) => Err(directory_conflict(false)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotADirectory => {
+            Err(directory_conflict(true))
+        }
         Err(error) if create && error.kind() == std::io::ErrorKind::NotFound => {
             fs::create_dir_all(path)
                 .map_err(|error| workspace_error(&path.display().to_string(), error))
