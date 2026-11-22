@@ -209,6 +209,7 @@ impl LocalHost {
                     let archive_cleanup = tokio::spawn(thread_commands::delete_cleanup::run(
                         threads.clone(),
                         Arc::clone(&terminals),
+                        preview.clone(),
                         projection_changes.subscribe(),
                     ));
                     let repository_identities = repository_identity::Identities::default();

@@ -1771,7 +1771,7 @@ fn dispatch_thread(
     let result = if command_type == "thread.delete" {
         local
             .threads
-            .delete_archived(payload)
+            .delete_thread(payload)
             .map(|result| (result.receipt, result.thread_ids))
     } else if command_type == "thread.archive" {
         local.threads.archive(payload)

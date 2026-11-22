@@ -33,7 +33,7 @@ struct Candidate {
 }
 
 impl ThreadCommands {
-    pub(in crate::server) fn delete_archived(
+    pub(in crate::server) fn delete_thread(
         &self,
         payload: Value,
     ) -> Result<DeletedThreads, ThreadCommandError> {
@@ -61,11 +61,10 @@ impl ThreadCommands {
         }
 
         let root = candidate(&transaction, thread_id)?;
-        if !root.archived
-            || root.payload["lineage"]["rootThreadId"] != thread_id
+        if root.payload["lineage"]["rootThreadId"] != thread_id
             || !root.payload["lineage"]["parentThreadId"].is_null()
         {
-            return Err(additional_cleanup());
+            return Err(additional_cleanup(root.archived));
         }
         let children = side_chats(&transaction, thread_id)?;
         let mut members = Vec::with_capacity(children.len() + 1);
@@ -79,14 +78,14 @@ impl ThreadCommands {
                 || lineage["sideChat"] != true
                 || !side_chats(&transaction, &child_id)?.is_empty()
             {
-                return Err(additional_cleanup());
+                return Err(additional_cleanup(root.archived));
             }
             let child_command = format!("{command_id}:side-chat:{child_id}");
             members.push((child_id, child_command, child.payload));
         }
 
         let now = now_timestamp();
-        let mut sequence = archive_member(
+        let mut sequence = delete_member(
             &transaction,
             thread_id,
             command_id,
@@ -97,7 +96,7 @@ impl ThreadCommands {
         let mut thread_ids = Vec::with_capacity(members.len() + 1);
         thread_ids.push(thread_id.to_owned());
         for (child_id, child_command, projection) in members {
-            sequence = archive_member(
+            sequence = delete_member(
                 &transaction,
                 &child_id,
                 command_id,
@@ -149,7 +148,7 @@ fn candidate(
         return Err(ThreadCommandError::MissingProjection(thread_id.to_owned()));
     };
     if !supported {
-        return Err(additional_cleanup());
+        return Err(additional_cleanup(archived));
     }
     let payload: Value = serde_json::from_str(&encoded)
         .map_err(|cause| rusqlite::Error::ToSqlConversionFailure(Box::new(cause)))?;
@@ -173,7 +172,7 @@ fn side_chats(
         .collect()
 }
 
-fn archive_member(
+fn delete_member(
     transaction: &Transaction<'_>,
     thread_id: &str,
     command_id: &str,
@@ -212,10 +211,12 @@ fn archive_member(
     Ok(sequence)
 }
 
-fn additional_cleanup() -> ThreadCommandError {
-    ThreadCommandError::Rejected(
-        "This thread requires additional cleanup before it can be deleted from Archive.".into(),
-    )
+fn additional_cleanup(archived: bool) -> ThreadCommandError {
+    ThreadCommandError::Rejected(if archived {
+        "This thread requires additional cleanup before it can be deleted from Archive.".into()
+    } else {
+        "This thread requires additional cleanup before it can be deleted.".into()
+    })
 }
 
 const SELECT_SIDE_CHATS: &str = "

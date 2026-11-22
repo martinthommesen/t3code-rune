@@ -8,7 +8,7 @@ use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use crate::server::turn_commands::timestamp;
-use crate::server::{ProjectionChange, terminal::TerminalManager};
+use crate::server::{ProjectionChange, browser_preview::Preview, terminal::TerminalManager};
 
 use super::{ThreadCommands, now_timestamp};
 
@@ -23,6 +23,7 @@ const POLL_INTERVAL: Duration = Duration::from_secs(1);
 pub(in crate::server) async fn run(
     commands: ThreadCommands,
     terminals: Arc<TerminalManager>,
+    preview: Option<Arc<Preview>>,
     mut notifications: broadcast::Receiver<ProjectionChange>,
 ) {
     let recovery = commands.clone();
@@ -30,23 +31,23 @@ pub(in crate::server) async fn run(
         tokio::task::spawn_blocking(move || recovery.recover_deleted_thread_cleanup()).await,
         Ok(Ok(()))
     ) {
-        eprintln!("Archived thread cleanup could not recover its pending work.");
+        eprintln!("Thread cleanup could not recover its pending work.");
         return;
     }
     let worker = Arc::new(format!("rune-archive-cleanup:{}", Uuid::new_v4()));
     loop {
-        let commands = commands.clone();
-        let terminals = Arc::clone(&terminals);
-        let worker = Arc::clone(&worker);
-        match tokio::task::spawn_blocking(move || {
-            commands.cleanup_deleted_thread(&terminals, &worker)
-        })
-        .await
+        match commands
+            .cleanup_deleted_thread(
+                Arc::clone(&terminals),
+                preview.as_deref(),
+                Arc::clone(&worker),
+            )
+            .await
         {
             Ok(Ok(true)) => continue,
             Ok(Ok(false)) => {}
-            Ok(Err(error)) => eprintln!("Could not settle archived thread cleanup: {error}"),
-            Err(error) => eprintln!("Archived thread cleanup task stopped: {error}"),
+            Ok(Err(error)) => eprintln!("Could not settle thread cleanup: {error}"),
+            Err(error) => eprintln!("Thread cleanup task stopped: {error}"),
         }
         tokio::select! {
             notification = notifications.recv() => {
@@ -77,23 +78,58 @@ impl ThreadCommands {
         Ok(())
     }
 
-    fn cleanup_deleted_thread(
+    async fn cleanup_deleted_thread(
         &self,
-        terminals: &TerminalManager,
-        worker: &str,
-    ) -> rusqlite::Result<bool> {
-        let Some(effect) = self.claim_deleted_thread_cleanup(worker)? else {
-            return Ok(false);
+        terminals: Arc<TerminalManager>,
+        preview: Option<&Preview>,
+        worker: Arc<String>,
+    ) -> Result<rusqlite::Result<bool>, tokio::task::JoinError> {
+        let commands = self.clone();
+        let claim_owner = Arc::clone(&worker);
+        let effect = match tokio::task::spawn_blocking(move || {
+            commands.claim_deleted_thread_cleanup(&claim_owner)
+        })
+        .await?
+        {
+            Ok(Some(effect)) => effect,
+            Ok(None) => return Ok(Ok(false)),
+            Err(error) => return Ok(Err(error)),
         };
         let outcome = match effect.kind.as_str() {
-            "scheduled-tasks.cleanup" => self
-                .cleanup_deleted_thread_schedules(&effect.thread_id)
-                .map_err(io::Error::other),
-            "terminal.cleanup" => terminals.cleanup_deleted_thread(&effect.thread_id),
-            // Preview sessions live in the process that opens them.
-            "preview.cleanup" => Ok(()),
-            _ => return Err(rusqlite::Error::InvalidQuery),
+            "scheduled-tasks.cleanup" | "terminal.cleanup" => {
+                let schedules = effect.kind == "scheduled-tasks.cleanup";
+                let commands = self.clone();
+                let thread_id = effect.thread_id.clone();
+                tokio::task::spawn_blocking(move || {
+                    if schedules {
+                        commands
+                            .cleanup_deleted_thread_schedules(&thread_id)
+                            .map_err(io::Error::other)
+                    } else {
+                        terminals.cleanup_deleted_thread(&thread_id)
+                    }
+                })
+                .await?
+            }
+            "preview.cleanup" => match preview {
+                Some(preview) => preview.close(&effect.thread_id, None).await,
+                None => Ok(()),
+            },
+            _ => return Ok(Err(rusqlite::Error::InvalidQuery)),
         };
+        let commands = self.clone();
+        tokio::task::spawn_blocking(move || {
+            commands.settle_deleted_thread_cleanup(effect, &worker, outcome)
+        })
+        .await
+    }
+
+    fn settle_deleted_thread_cleanup(
+        &self,
+        effect: Effect,
+        worker: &str,
+        outcome: io::Result<()>,
+    ) -> rusqlite::Result<bool> {
         let now = OffsetDateTime::now_utc();
         let updated = timestamp(now);
         let (status, available, completed, error) = match outcome {
@@ -180,8 +216,7 @@ const SELECT_CLEANUP: &str = "
           AND tombstone.stream_id=effect.thread_id AND tombstone.event_type='thread.deleted'
           AND tombstone.sequence<=receipt.result_sequence
           AND receipt.aggregate_kind='thread' AND receipt.command_type='thread.delete' AND receipt.status='accepted'
-          AND ((receipt.aggregate_id=effect.thread_id AND receipt.command_id=effect.command_id
-                AND thread.archived_at IS NOT NULL)
+          AND ((receipt.aggregate_id=effect.thread_id AND receipt.command_id=effect.command_id)
             OR (receipt.aggregate_id=json_extract(thread.payload_json,'$.lineage.parentThreadId')
                 AND json_extract(thread.payload_json,'$.lineage.sideChat')=1
                 AND effect.command_id=receipt.command_id || ':side-chat:' || effect.thread_id))
