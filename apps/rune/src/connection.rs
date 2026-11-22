@@ -104,6 +104,7 @@ pub(crate) enum Event {
         projects: Vec<Project>,
         threads: Vec<Thread>,
     },
+    ScratchProjectsAvailable,
     ProjectFavicon {
         target: FaviconTarget,
         image: Option<FaviconBytes>,
@@ -266,6 +267,7 @@ enum Command {
         command_id: String,
         name: String,
     },
+    StartScratchProject(String),
     CloneProject {
         project_id: String,
         remote_url: String,
@@ -359,6 +361,10 @@ pub(crate) enum ProjectCloneAction {
 }
 
 impl Connection {
+    pub(crate) fn start_scratch_project(&self, command_id: String) {
+        let _ = self.commands.send(Command::StartScratchProject(command_id));
+    }
+
     pub(crate) fn load_project_favicons(&self, targets: Vec<FaviconTarget>) {
         if !targets.is_empty() {
             let _ = self.commands.send(Command::LoadProjectFavicons(targets));
@@ -645,6 +651,8 @@ struct Capabilities {
     project_writes: Option<bool>,
     #[serde(rename = "t3NamedProjects")]
     named_projects: Option<bool>,
+    #[serde(default, rename = "t3ScratchProjects")]
+    scratch_projects: bool,
     #[serde(rename = "t3CloneProjects")]
     clone_projects: Option<bool>,
     #[serde(rename = "t3PromptWrites")]
@@ -989,6 +997,7 @@ impl LaunchStage {
 enum ProjectCreation {
     Folder,
     Named,
+    Scratch,
     Clone,
 }
 
@@ -1035,6 +1044,7 @@ struct Session {
     project_writes: bool,
     filesystem_read: bool,
     named_projects: bool,
+    scratch_projects: bool,
     clone_writes: bool,
     thread_visits: bool,
     terminals_enabled: bool,
@@ -1180,6 +1190,7 @@ impl Session {
                 .capabilities
                 .named_projects
                 .unwrap_or(!environment.descriptor.capabilities.read_only),
+            scratch_projects: capabilities.scratch_projects && scope.is_some_and(can_operate),
             clone_writes: capabilities
                 .clone_projects
                 .unwrap_or(!capabilities.read_only)
@@ -1594,6 +1605,24 @@ impl Session {
                         (command_id, Instant::now(), ProjectCreation::Named),
                     );
                     self.send_request(&id, "projects.createNew", json!({"name": name}))
+                        .await?;
+                }
+            }
+            Command::StartScratchProject(command_id) => {
+                if !self.project_writes || !self.scratch_projects {
+                    events.send(Event::ProjectAdded {
+                        command_id,
+                        result: Err(
+                            "This environment cannot start a thread without a project.".into()
+                        ),
+                    });
+                } else {
+                    let request = self.allocate_id();
+                    self.pending_projects.insert(
+                        request.clone(),
+                        (command_id, Instant::now(), ProjectCreation::Scratch),
+                    );
+                    self.send_request(&request, "projects.ensureScratch", json!({}))
                         .await?;
                 }
             }
@@ -2267,7 +2296,7 @@ impl Session {
                                 project_id: project.id,
                                 commit_error: None,
                             }),
-                            ProjectCreation::Named | ProjectCreation::Clone => serde_json::from_value(project),
+                            ProjectCreation::Named | ProjectCreation::Scratch | ProjectCreation::Clone => serde_json::from_value(project),
                         };
                         decoded.map_err(|_| "The environment returned an invalid project. Check the project list before retrying.".to_owned())
                     });
@@ -2421,6 +2450,9 @@ async fn run(
         clone_writes: session.clone_writes,
         terminal: session.terminals_enabled,
     });
+    if session.scratch_projects && session.project_writes && session.launch_writes {
+        events.send(Event::ScratchProjectsAvailable);
+    }
 
     let mut attempt = 0;
     loop {

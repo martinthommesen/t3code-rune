@@ -101,6 +101,8 @@ struct Workspace {
     stop_writes: bool,
     native_stop: bool,
     project_writes: bool,
+    scratch_projects: bool,
+    scratch_project: Option<String>,
     filesystem_read: bool,
     named_projects: bool,
     clone_writes: bool,
@@ -254,6 +256,7 @@ struct State {
     draft_workspace_popup: Option<draft_hero::WorkspacePopup>,
     add_project: Option<project::AddProject>,
     added_project: Option<project::AddedProject>,
+    scratch_request: Option<String>,
     project_notice: Option<String>,
     client_settings: ClientSettings,
     settings: settings::Panel,
@@ -285,6 +288,7 @@ impl Default for State {
             draft_workspace_popup: None,
             add_project: None,
             added_project: None,
+            scratch_request: None,
             project_notice: None,
             client_settings: ClientSettings::default(),
             settings: settings::Panel::default(),
@@ -332,6 +336,7 @@ impl State {
         self.question_auto_advance = None;
         self.add_project = None;
         self.added_project = None;
+        self.scratch_request = None;
         self.terminal = None;
     }
 
@@ -944,6 +949,8 @@ impl State {
                     stop_writes,
                     native_stop,
                     project_writes,
+                    scratch_projects: false,
+                    scratch_project: None,
                     filesystem_read,
                     named_projects,
                     clone_writes,
@@ -965,6 +972,11 @@ impl State {
                     && let Some(draft) = self.home_draft()
                 {
                     self.show_destination(draft);
+                }
+            }
+            Event::ScratchProjectsAvailable => {
+                if let Some(workspace) = &mut self.workspace {
+                    workspace.scratch_projects = true;
                 }
             }
             Event::ProjectFavicon { target, image } => {
@@ -1378,6 +1390,7 @@ impl State {
                 self.connection_error = Some(reason);
                 self.add_project = None;
                 self.added_project = None;
+                self.scratch_request = None;
                 self.terminal = None;
                 for draft in self.drafts.values_mut().filter(|draft| draft.pending) {
                     draft.pending = false;
@@ -1833,19 +1846,19 @@ fn detail(
             .find(|project| project.id == selection.id)
             .map(|project| (selection, project))
     }) else {
-        return pane.child(placeholder(
-            if shell.projects.is_empty() {
-                "No projects yet"
-            } else {
-                "Select a project"
-            },
-            if shell.projects.is_empty() {
-                "Add a project in your T3 Code environment to see it here."
-            } else {
-                "Open a project in the sidebar to browse its threads."
-            },
-            palette,
-        ));
+        return if shell
+            .projects
+            .iter()
+            .all(|project| project.archived_at.is_some())
+        {
+            pane.child(project::empty_home(state, workspace, layout, palette))
+        } else {
+            pane.child(placeholder(
+                "Select a project",
+                "Open a project in the sidebar to browse its threads.",
+                palette,
+            ))
+        };
     };
     let conversation = match &selection.view {
         ProjectView::Threads => {

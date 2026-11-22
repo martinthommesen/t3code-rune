@@ -379,6 +379,15 @@ async fn local_requests(
 
 async fn descriptor(State(environment): State<SharedEnvironment>) -> Json<Value> {
     let local = environment.local.is_some();
+    let scratch_projects = if let Some(base) = environment
+        .local
+        .as_ref()
+        .and_then(|operations| operations.named_projects_root.parent())
+    {
+        scratch_project::available_root(base).await.is_ok()
+    } else {
+        false
+    };
     let os = match std::env::consts::OS {
         "macos" => "darwin",
         "linux" => "linux",
@@ -396,7 +405,7 @@ async fn descriptor(State(environment): State<SharedEnvironment>) -> Json<Value>
         "platform": {"os": os, "arch": arch},
         "serverVersion": env!("CARGO_PKG_VERSION"),
         "orchestrationProtocolVersion": PROTOCOL_VERSION,
-        "capabilities": {"t3ReadOnly": true, "t3ProjectWrites": local, "t3NamedProjects": local, "t3CloneProjects": local, "t3PromptWrites": local, "t3ThreadLaunch": local, "t3WorktreeLaunch": local, "t3RemoteWorktreeLaunch": local, "t3WorktreeSetup": local, "t3WorktreeQueue": local, "t3ShellHttp": local, "t3CheckoutSwitch": local, "t3ThreadStop": local, "t3ArchiveSnapshots": local, "t3ThreadVisits": local, "t3Terminal": local, "commandOutputStreaming": local}
+        "capabilities": {"t3ReadOnly": true, "t3ProjectWrites": local, "t3NamedProjects": local, "t3ScratchProjects": scratch_projects, "t3CloneProjects": local, "t3PromptWrites": local, "t3ThreadLaunch": local, "t3WorktreeLaunch": local, "t3RemoteWorktreeLaunch": local, "t3WorktreeSetup": local, "t3WorktreeQueue": local, "t3ShellHttp": local, "t3CheckoutSwitch": local, "t3ThreadStop": local, "t3ArchiveSnapshots": local, "t3ThreadVisits": local, "t3Terminal": local, "commandOutputStreaming": local}
     }))
 }
 

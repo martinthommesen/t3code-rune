@@ -7,6 +7,9 @@ use super::{BODY, Palette, SMALL, State, TITLE, button, error_text, form_field, 
 
 pub(super) mod clone_banner;
 mod git_url;
+mod home;
+
+pub(super) use home::empty_home;
 
 #[derive(Default)]
 pub(super) struct AddProject {
@@ -371,6 +374,23 @@ impl State {
         command_id: &str,
         result: Result<ProjectCreated, String>,
     ) {
+        if self.scratch_request.as_deref() == Some(command_id) {
+            self.scratch_request = None;
+            match result {
+                Ok(project) => {
+                    if let Some(workspace) = &mut self.workspace {
+                        workspace.scratch_project = Some(project.project_id.clone());
+                    }
+                    self.added_project = Some(AddedProject {
+                        id: project.project_id,
+                        open_draft: true,
+                    });
+                    self.select_added_project();
+                }
+                Err(message) => self.project_notice = Some(message),
+            }
+            return;
+        }
         let Some(form) = self
             .add_project
             .as_mut()

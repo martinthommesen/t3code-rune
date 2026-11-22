@@ -31,14 +31,18 @@ pub(super) fn view(
     let [viewport_width, viewport_height] = layout.viewport;
     let width = (layout.pane_width - 2.0 * gutter(layout)).clamp(0.0, MAX_LANE);
     let compact = viewport_height <= 544.0;
+    let scratch = workspace.scratch_project.as_deref() == Some(project.id.as_str());
     let clearance = if viewport_width < 640.0 { 16.0 } else { 20.0 };
     let mut stack = col()
         .key("draft-composer-stack")
         .w_full()
         .min_w(0.0)
         .max_w(MAX_LANE)
-        .child(form)
-        .child(workspace::view(
+        .child(form);
+    if scratch {
+        stack = stack.child(el().h(32.0).a11y_hidden());
+    } else {
+        stack = stack.child(workspace::view(
             state,
             workspace,
             &project.id,
@@ -47,6 +51,7 @@ pub(super) fn view(
             width,
             palette,
         ));
+    }
     let clone = workspace
         .pending_clone(&project.id)
         .map(|clone| clone_banner::view(workspace, clone, palette));
@@ -65,6 +70,7 @@ pub(super) fn view(
         width,
         layout,
         draft.pending || workspace.reconnecting,
+        scratch,
         palette,
     );
     stack = stack.child(headline);
@@ -98,6 +104,7 @@ fn headline(
     width: f32,
     layout: Layout,
     disabled: bool,
+    scratch: bool,
     palette: Palette,
 ) -> (El, f32) {
     let [window_width, window_height] = layout.viewport;
@@ -122,7 +129,7 @@ fn headline(
     let lead = rune::text::measure(phrase, &[], regular, None).0 + 8.0;
     let total = lead + name_width + rune::text::measure("?", &[], regular, None).0;
     let show_greeting = window_height > 448.0;
-    let inline = show_greeting && window_width >= 1024.0 && total <= width;
+    let inline = !scratch && show_greeting && window_width >= 1024.0 && total <= width;
     let project_id = project.id.clone();
     let button = el()
         .key("draft-project-selector")
@@ -164,10 +171,14 @@ fn headline(
         let mut content = col().items_center().gap(8.0);
         if show_greeting {
             content = content.child(
-                text("What should we build?")
-                    .font(regular)
-                    .color(ink)
-                    .truncate(),
+                text(if scratch {
+                    "What should we work on?"
+                } else {
+                    "What should we build?"
+                })
+                .font(regular)
+                .color(ink)
+                .truncate(),
             );
         }
         (
@@ -176,10 +187,11 @@ fn headline(
             width / 2.0,
         )
     };
+    let composer_gap = if scratch { 16.0 } else { 48.0 };
     (
         content.key("draft-headline").role("heading").pin(
             Some(0.0),
-            Some(-height - 48.0),
+            Some(-height - composer_gap),
             Some(0.0),
             None,
         ),
