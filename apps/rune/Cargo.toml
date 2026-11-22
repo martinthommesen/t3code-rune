@@ -42,6 +42,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 subtle = "2"
 tempfile = "3"
+tiff = { version = "=0.11.3", default-features = false, features = ["deflate", "lzw"] }
 time = { version = "0.3", features = ["formatting", "local-offset", "parsing"] }
 tokio = { version = "1", features = [
   "io-util",

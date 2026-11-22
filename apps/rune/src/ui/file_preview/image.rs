@@ -6,7 +6,7 @@ use rune::{
 };
 
 use crate::connection::file_preview::AssetOutcome;
-use crate::workspace_image::{self, Source};
+use crate::workspace_image::{self, RasterCopy, Source};
 
 use super::{
     CRUMB, Colors, ERROR, Layout, Load, Palette, Preview, State, binary::Phase, control, filename,
@@ -63,7 +63,7 @@ enum Contents {
 struct Raster {
     picture: Image,
     size: (u32, u32),
-    clipboard: Option<ClipboardImage>,
+    clipboard: RasterCopy,
 }
 
 impl PreviewImage {
@@ -107,7 +107,7 @@ impl PreviewImage {
                 Contents::Decoding(Raster {
                     picture: cache.load(source),
                     size: clipboard.size(),
-                    clipboard: Some(clipboard),
+                    clipboard: RasterCopy::Pixels(clipboard),
                 })
             }
             (AssetOutcome::Image(Source::Decoded(raster)), Some(cache)) => {
@@ -121,7 +121,7 @@ impl PreviewImage {
                 Contents::Decoding(Raster {
                     picture: cache.load(animation.bytes),
                     size: animation.size,
-                    clipboard: animation.clipboard,
+                    clipboard: animation.clipboard.into(),
                 })
             }
             (AssetOutcome::InvalidImage, _) => Contents::Invalid,
@@ -148,7 +148,7 @@ impl PreviewImage {
             outcome @ (AssetOutcome::Image(_) | AssetOutcome::InvalidImage) => {
                 self.loaded(outcome, cache);
                 if let Contents::Decoding(raster) = &self.contents
-                    && let Some(clipboard) = &raster.clipboard
+                    && let RasterCopy::Pixels(clipboard) = &raster.clipboard
                 {
                     return Ok(clipboard.clone());
                 }

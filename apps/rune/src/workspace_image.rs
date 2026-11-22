@@ -6,6 +6,8 @@ use image::{AnimationDecoder, DynamicImage, ImageDecoder, ImageEncoder, Limits, 
 use rune::ClipboardImage;
 use rune::clipboard::MAX_IMAGE_BYTES;
 
+mod tiff;
+
 pub(crate) enum Source {
     Png(Arc<[u8]>),
     Decoded(Raster),
@@ -16,7 +18,20 @@ pub(crate) struct Raster {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) pixels: Arc<[u8]>,
-    pub(crate) clipboard: Option<ClipboardImage>,
+    pub(crate) clipboard: RasterCopy,
+}
+
+#[derive(Clone)]
+pub(crate) enum RasterCopy {
+    Pixels(ClipboardImage),
+    Unavailable,
+    DecodeError,
+}
+
+impl From<Option<ClipboardImage>> for RasterCopy {
+    fn from(image: Option<ClipboardImage>) -> Self {
+        image.map_or(Self::Unavailable, Self::Pixels)
+    }
 }
 
 pub(crate) struct Animation {
@@ -35,6 +50,8 @@ pub(crate) fn mime_type(path: &str) -> Option<&'static str> {
         Some("image/bmp")
     } else if extension.eq_ignore_ascii_case("ico") {
         Some("image/x-icon")
+    } else if extension.eq_ignore_ascii_case("tif") || extension.eq_ignore_ascii_case("tiff") {
+        Some("image/tiff")
     } else if extension.eq_ignore_ascii_case("gif") {
         Some("image/gif")
     } else if extension.eq_ignore_ascii_case("webp") {
@@ -66,6 +83,12 @@ impl Source {
         }
         if bytes.starts_with(b"\x00\x00\x01\x00") {
             return tokio::task::spawn_blocking(move || decode_ico(bytes))
+                .await
+                .ok()?
+                .map(Self::Decoded);
+        }
+        if bytes.starts_with(b"II*\0") || bytes.starts_with(b"MM\0*") {
+            return tokio::task::spawn_blocking(move || tiff::decode(&bytes))
                 .await
                 .ok()?
                 .map(Self::Decoded);
@@ -169,7 +192,7 @@ fn decode_still(mut decoder: impl ImageDecoder) -> Option<Raster> {
     Some(Raster {
         width,
         height,
-        clipboard: clipboard_png(&rgba),
+        clipboard: clipboard_png(&rgba).into(),
         pixels: rgba.into_raw().into(),
     })
 }

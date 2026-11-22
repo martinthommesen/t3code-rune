@@ -6,6 +6,8 @@ use rune::{
 
 use crate::connection::file_preview::AssetPurpose;
 
+use crate::workspace_image::RasterCopy;
+
 use super::super::{Load, State, binary::Phase, image_notice};
 use super::{Bounds, PICTURE, PreviewImage, expanded::SCROLLER};
 
@@ -95,7 +97,7 @@ impl Action {
                 image.invalid()
                     || image
                         .ready()
-                        .is_some_and(|raster| raster.clipboard.is_some())
+                        .is_some_and(|raster| !matches!(raster.clipboard, RasterCopy::Unavailable))
             }
             _ => true,
         }
@@ -181,8 +183,10 @@ impl State {
                 self.request_preview_asset(AssetPurpose::CopyImage);
             }
             Action::CopyImage => {
-                if let Some(clipboard) = image.ready().and_then(|raster| raster.clipboard.clone()) {
-                    tx.copy_rich(ClipboardContent::default().with_image(clipboard));
+                if let Some(RasterCopy::Pixels(clipboard)) =
+                    image.ready().map(|raster| &raster.clipboard)
+                {
+                    tx.copy_rich(ClipboardContent::default().with_image(clipboard.clone()));
                 } else {
                     image_notice::show(
                         self,
