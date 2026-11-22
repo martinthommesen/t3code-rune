@@ -42,7 +42,7 @@ pub(crate) struct Binding {
     condition: Option<Condition>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum Condition {
     Identifier {
@@ -62,7 +62,13 @@ pub(crate) enum Condition {
 }
 
 impl Condition {
-    fn expression(&self) -> String {
+    pub(crate) fn parse(input: &str) -> Result<Option<Self>, ()> {
+        crate::server::parse_keybinding_condition(input)?
+            .map(|value| Self::deserialize(value).map_err(|_| ()))
+            .transpose()
+    }
+
+    pub(crate) fn expression(&self) -> String {
         match self {
             Self::Identifier { name } => name.clone(),
             Self::Not { node } => format!("!{}", node.operand()),

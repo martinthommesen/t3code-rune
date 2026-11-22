@@ -45,7 +45,8 @@ pub(crate) use browse::FolderListing;
 pub(crate) use command_output::{CommandInspection, CommandOutput};
 pub(crate) use draft_defaults::WorkspaceMode;
 pub(crate) use keybindings::{
-    Binding, Edit as KeybindingEdit, Keybindings, Rule as KeybindingRule, TERMINAL_TOGGLE,
+    Binding, Condition as KeybindingCondition, Edit as KeybindingEdit, Keybindings,
+    Rule as KeybindingRule, TERMINAL_TOGGLE,
 };
 pub(crate) use launch::{DraftClaudeModel, Workspace as LaunchWorkspace};
 pub(crate) use project_favicon::{FaviconBytes, FaviconTarget};

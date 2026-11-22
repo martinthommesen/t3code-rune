@@ -10,6 +10,7 @@ use super::super::{Palette, State, error_text, sidebar_header::activate_on_retur
 use super::{CONTROL, DESCRIPTION, SECTION, keybinding_catalog as catalog};
 
 mod command_picker;
+mod when_editor;
 
 const SEARCH: &str = "search-keybindings";
 const ADD: &str = "add-keybinding";
@@ -64,6 +65,7 @@ struct Draft {
     command: Option<&'static str>,
     recorded: Option<String>,
     recording: bool,
+    when: Option<when_editor::Editor>,
 }
 
 impl Draft {
@@ -72,6 +74,53 @@ impl Draft {
             .as_ref()
             .map(|rule| rule.command.as_str())
             .or(self.command)
+    }
+
+    fn key(&self) -> Option<&str> {
+        self.recorded
+            .as_deref()
+            .or_else(|| self.original.as_ref().map(|rule| rule.key.as_str()))
+    }
+
+    fn condition(&self) -> Option<String> {
+        if let Some(when) = &self.when {
+            return when.expression();
+        }
+        self.original.as_ref().and_then(|original| {
+            if self.recorded.is_some()
+                && original.when.as_deref() == Some("false")
+                && let Some(default) =
+                    catalog::stock_rule(original).filter(|rule| rule.key == original.key)
+            {
+                return default.when.clone();
+            }
+            original.when.clone()
+        })
+    }
+
+    fn changed(&self) -> bool {
+        self.original.as_ref().map_or_else(
+            || self.recorded.is_some(),
+            |original| {
+                self.key().is_some_and(|key| key != original.key)
+                    || self.condition() != original.when
+            },
+        )
+    }
+
+    fn needs_editor(&self) -> bool {
+        self.original.is_none()
+            || self.recording
+            || self.changed()
+            || self.when.as_ref().is_some_and(|when| !when.valid())
+    }
+
+    fn can_save(&self) -> bool {
+        !self.recording
+            && self.command().is_some()
+            && self.key().is_some()
+            && self.when.as_ref().is_none_or(when_editor::Editor::valid)
+            && self.changed()
     }
 }
 
@@ -134,6 +183,7 @@ impl State {
             command: None,
             recorded: None,
             recording: false,
+            when: None,
         });
         command_picker::open(self, tx);
     }
@@ -145,12 +195,21 @@ impl State {
         let panel = &mut self.settings.keybindings;
         panel.actions = None;
         panel.error = None;
-        panel.draft = Some(Draft {
-            original: Some(original),
-            command: None,
-            recorded: None,
-            recording: true,
-        });
+        if let Some(draft) = panel
+            .draft
+            .as_mut()
+            .filter(|draft| draft.original.as_ref() == Some(&original))
+        {
+            draft.recording = true;
+        } else {
+            panel.draft = Some(Draft {
+                original: Some(original),
+                command: None,
+                recorded: None,
+                recording: true,
+                when: None,
+            });
+        }
         tx.focus_when_shown(CAPTURE, true);
     }
 
@@ -188,7 +247,7 @@ impl State {
         {
             draft.recorded = Some(shortcut);
             draft.recording = false;
-            if draft.command().is_some() {
+            if draft.can_save() {
                 tx.focus_when_shown(SAVE, true);
             }
         }
@@ -196,23 +255,22 @@ impl State {
     }
 
     fn save_keybinding_recording(&mut self, _: &mut Tx) {
-        let Some(draft) = &self.settings.keybindings.draft else {
+        let Some(draft) = self
+            .settings
+            .keybindings
+            .draft
+            .as_ref()
+            .filter(|draft| draft.can_save())
+        else {
             return;
         };
-        let (Some(command), Some(key)) = (draft.command(), &draft.recorded) else {
+        let (Some(command), Some(key)) = (draft.command(), draft.key()) else {
             return;
         };
-        let when = draft.original.as_ref().and_then(|original| {
-            if original.when.as_deref() == Some("false") {
-                catalog::stock_rule(original).and_then(|default| default.when.clone())
-            } else {
-                original.when.clone()
-            }
-        });
         let rule = KeybindingRule {
             command: command.to_owned(),
-            key: key.clone(),
-            when,
+            key: key.to_owned(),
+            when: draft.condition(),
         };
         self.send_keybinding_edit(KeybindingEdit::Upsert {
             rule,
@@ -366,13 +424,17 @@ pub(super) fn page(state: &State, palette: Palette, width: f32) -> El {
             .grow(1.0)
             .gap(4.0)
             .child(text("New keybinding").font(CONTROL).color(palette.ink))
-            .child(
-                row()
-                    .gap(10.0)
-                    .items_center()
-                    .child(text("When").font(CAPTION).color(palette.muted))
-                    .child(text("Always").font(MONO).color(palette.muted)),
-            );
+            .child(when_editor::control(
+                None,
+                draft.condition().as_deref(),
+                draft
+                    .when
+                    .as_ref()
+                    .is_some_and(when_editor::Editor::is_open),
+                "new keybinding",
+                panel.pending.is_none(),
+                palette,
+            ));
         let command = command_picker::trigger(state, palette, compact);
         let capture = editor(draft, panel.pending.is_some(), palette, compact);
         let content = if compact {
@@ -407,6 +469,9 @@ pub(super) fn page(state: &State, palette: Palette, width: f32) -> El {
     let mut content = col().w_full().min_h(0.0).grow(1.0).child(scroll);
     if let Some([dismiss, popup]) = command_picker::overlay(state, palette, width) {
         content = content.child(dismiss).child(popup);
+    }
+    for overlay in when_editor::overlays(state, palette, width) {
+        content = content.child(overlay);
     }
     content
 }
@@ -577,18 +642,30 @@ fn binding_row(
     } else {
         label
     };
-    let info = col().grow(1.0).min_w(0.0).gap(4.0).child(label).child(
-        row()
-            .items_center()
-            .gap(10.0)
-            .child(text("When").font(CAPTION).color(palette.muted))
-            .child(
-                text(rule.when.as_deref().unwrap_or("Always"))
-                    .font(MONO)
-                    .color(palette.muted)
-                    .wrap(),
-            ),
-    );
+    let condition = if entry.unassigned() && editing.is_none() {
+        text("No keyboard shortcut assigned. Click Unassigned to set one.")
+            .font(CAPTION)
+            .color(palette.muted)
+            .wrap()
+    } else {
+        let condition = editing.map_or_else(|| rule.when.clone(), Draft::condition);
+        when_editor::control(
+            Some(rule),
+            condition.as_deref(),
+            editing
+                .and_then(|draft| draft.when.as_ref())
+                .is_some_and(when_editor::Editor::is_open),
+            &entry.label,
+            editable && enabled,
+            palette,
+        )
+    };
+    let info = col()
+        .grow(1.0)
+        .min_w(0.0)
+        .gap(4.0)
+        .child(label)
+        .child(condition);
     let pills = if entry.unassigned() {
         row().child(text("Unassigned").font(LABEL).color(palette.muted))
     } else {
@@ -608,7 +685,7 @@ fn binding_row(
                 )
             })
     };
-    let controls = if let Some(draft) = editing {
+    let controls = if let Some(draft) = editing.filter(|draft| draft.needs_editor()) {
         editor(draft, panel.pending.is_some(), palette, compact)
     } else if editable && enabled {
         let edit = rule.clone();
@@ -745,7 +822,7 @@ fn editor(draft: &Draft, pending: bool, palette: Palette, compact: bool) -> El {
     let value = if draft.recording {
         "Press shortcut"
     } else {
-        draft.recorded.as_deref().unwrap_or("Unassigned")
+        draft.key().unwrap_or("Unassigned")
     };
     let field = el()
         .key(CAPTURE)
@@ -782,12 +859,12 @@ fn editor(draft: &Draft, pending: bool, palette: Palette, compact: bool) -> El {
             if pending { "Saving" } else { "Save" },
             palette,
             true,
-            !pending && !draft.recording && draft.recorded.is_some() && draft.command().is_some(),
+            !pending && draft.can_save(),
             State::save_keybinding_recording,
         )
     };
     let mut controls = row().gap(8.0).items_center();
-    if !add && draft.recorded.is_some() {
+    if !add && (draft.changed() || draft.when.as_ref().is_some_and(|when| !when.valid())) {
         controls = controls.child(save());
     }
     controls = controls.child(field);

@@ -10,6 +10,7 @@ pub(in crate::server) mod edit;
 
 const MAX_RULES: usize = 256;
 const MAX_WHEN_DEPTH: usize = 64;
+const MAX_WHEN_LENGTH: usize = 256;
 const INVALID_RULE: &str = "SchemaError: Invalid keybinding rule";
 const LATE_DEFAULT: &str = "composer.sendBackground:mod+enter";
 const BACKGROUND_COMMAND: &str = "composer.sendBackground";
@@ -197,7 +198,7 @@ fn decode_fields(raw: &Value) -> Result<(&str, &str, Option<&str>), String> {
         .ok_or_else(|| command_error(command.is_string()))?;
     let when = fields
         .get("when")
-        .map(|value| string_field(Some(value), "when", 256, true))
+        .map(|value| string_field(Some(value), "when", MAX_WHEN_LENGTH, true))
         .transpose()?;
     Ok((key, command, when))
 }
@@ -319,6 +320,17 @@ fn shortcut(value: &str) -> Option<Value> {
         "altKey": alt,
         "modKey": platform,
     }))
+}
+
+pub(crate) fn parse_keybinding_condition(input: &str) -> Result<Option<Value>, ()> {
+    let input = input.trim_matches(js_whitespace);
+    if input.is_empty() {
+        return Ok(None);
+    }
+    if input.encode_utf16().count() > MAX_WHEN_LENGTH {
+        return Err(());
+    }
+    expression(input).map(Some).ok_or(())
 }
 
 fn expression(input: &str) -> Option<Value> {

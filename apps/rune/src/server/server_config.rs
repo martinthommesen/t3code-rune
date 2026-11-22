@@ -11,6 +11,7 @@ mod keybindings;
 mod providers;
 
 pub(super) use keybindings::edit::Edit as KeybindingEdit;
+pub(crate) use keybindings::parse_keybinding_condition;
 
 const FLAGS: &[&str] = &[
     "environmentThemes",

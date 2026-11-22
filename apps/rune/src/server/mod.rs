@@ -20,6 +20,7 @@ mod repository_identity;
 mod rpc;
 mod scratch_project;
 mod server_config;
+pub(crate) use server_config::parse_keybinding_condition;
 mod settings;
 mod shell_http;
 mod store;
