@@ -30,6 +30,7 @@ macro_rules! glyph {
 }
 
 mod archive;
+mod browser;
 mod keybindings;
 pub(super) mod path_input;
 pub(super) mod search;
@@ -75,6 +76,7 @@ pub(super) struct Panel {
     open: bool,
     pub(super) archive: archive::Panel,
     error: Option<String>,
+    browser_picker: bool,
     page: Page,
     project: Option<project::Form>,
     project_order: project_order::Panel,
@@ -109,6 +111,7 @@ impl Default for Panel {
             open: false,
             archive: archive::Panel::default(),
             error: None,
+            browser_picker: false,
             page: Page::General,
             project: None,
             project_order: project_order::Panel::default(),
@@ -130,6 +133,7 @@ enum Page {
     Threads,
     Projects,
     Worktrees,
+    Integrations,
     Archive,
 }
 
@@ -142,6 +146,7 @@ impl Page {
             Self::Threads => "Threads",
             Self::Projects => "Projects",
             Self::Worktrees => "Worktrees",
+            Self::Integrations => "Integrations",
             Self::Archive => "Archive",
         }
     }
@@ -158,6 +163,7 @@ impl State {
     pub(super) fn close_client_settings(&mut self, tx: &mut Tx) {
         self.save_project_name();
         self.settings.open = false;
+        self.settings.browser_picker = false;
         self.settings.project_order.clear();
         self.settings.keybindings.clear_view();
         self.settings.archive.leave();
@@ -207,6 +213,7 @@ impl State {
             self.settings.keybindings.clear_view();
         }
         if self.settings.page != page {
+            self.settings.browser_picker = false;
             project::dismiss_actions(self);
             self.settings.workspace.submodules.collapse();
         }
@@ -372,6 +379,7 @@ pub(super) fn overlay(
         Page::Threads => workspace::page(state, palette, content_width),
         Page::Worktrees => worktrees::page(state, palette, content_width, width < 640.0),
         Page::Projects => project::page(state, palette, content_width),
+        Page::Integrations => browser::page(state, palette, content_width),
         Page::Archive => archive::page(state, palette, content_width),
     };
     let picker = project::actions_overlay(state, palette, width, height)
@@ -469,6 +477,11 @@ fn navigation(active: Page, width: f32, colors: sidebar_header::Colors) -> El {
         (Page::Threads, &THREADS, "settings-threads"),
         (Page::Projects, &GEAR, "settings-projects"),
         (Page::Worktrees, &WORKTREES, "settings-worktrees"),
+        (
+            Page::Integrations,
+            &browser::INTEGRATIONS,
+            "settings-integrations",
+        ),
         (Page::Archive, &archive::ARCHIVE, "settings-archive"),
     ] {
         let selected = active == page;

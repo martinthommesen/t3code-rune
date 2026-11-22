@@ -41,6 +41,7 @@ pub(super) struct Permissions {
     pub orchestration_operate: bool,
     pub settings_write: bool,
     pub filesystem_read: bool,
+    pub preview_operate: bool,
     pub source_control_write: bool,
     pub terminal_read: bool,
     pub terminal_operate: bool,
@@ -57,6 +58,9 @@ impl Permissions {
         }
         if self.filesystem_read {
             scopes.push("filesystem:read");
+        }
+        if self.preview_operate {
+            scopes.push("preview:operate");
         }
         if self.terminal_read {
             scopes.push("terminal:read");
@@ -121,7 +125,22 @@ impl Credentials {
     }
 
     pub(super) fn authorizes(&self, access_token: Uuid, now: Instant) -> bool {
-        matches!(&self.0, State::Claimed { session, .. } if session.accepts(access_token, now))
+        self.session_permissions(access_token, now).is_some()
+    }
+
+    pub(super) fn session_permissions(
+        &self,
+        access_token: Uuid,
+        now: Instant,
+    ) -> Option<(Instant, Permissions)> {
+        match &self.0 {
+            State::Claimed {
+                session,
+                permissions,
+                ..
+            } if session.accepts(access_token, now) => Some((session.expires, *permissions)),
+            _ => None,
+        }
     }
 
     pub(super) fn consume_ticket(
@@ -157,6 +176,7 @@ mod tests {
             orchestration_operate: true,
             settings_write: true,
             filesystem_read: false,
+            preview_operate: false,
             source_control_write: false,
             terminal_read: false,
             terminal_operate: true,

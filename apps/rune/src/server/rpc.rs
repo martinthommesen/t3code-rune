@@ -26,6 +26,7 @@ use super::{LocalOperations, ProjectionChange, SharedEnvironment, server_config}
 use super::{vcs_checkout, vcs_refs};
 
 mod editor_links;
+mod preview;
 mod queued_run;
 mod shell_stream;
 mod streams;
@@ -199,6 +200,53 @@ pub(super) async fn serve(
             break;
         };
         let response = match message {
+            ClientMessage::Request { id, tag, payload }
+                if matches!(
+                    tag.as_str(),
+                    "preview.open" | "preview.list" | "preview.close" | "subscribePreviewEvents"
+                ) && local.is_some() =>
+            {
+                match preview::Call::decode(&tag, payload) {
+                    Err(message) => Ok(defect(id, message)),
+                    Ok(call) if call.needs_operation() && !permissions.preview_operate => {
+                        Ok(failure(id, preview::denied()))
+                    }
+                    Ok(_) if operation_requests.contains_key(&id) => Ok(failure(
+                        id,
+                        RpcError::InvalidRequest {
+                            message: "Request ID is already in use.",
+                        },
+                    )),
+                    Ok(call) => {
+                        let service = local.as_ref().and_then(|local| local.preview.clone());
+                        match service {
+                            None => Ok(failure(
+                                id,
+                                RpcError::ReadOnlyEnvironment {
+                                    message: "Browser Preview is unavailable in this environment.",
+                                },
+                            )),
+                            Some(service) if matches!(call, preview::Call::Subscribe) => {
+                                streams.start_preview(id, service.subscribe());
+                                continue;
+                            }
+                            Some(service) => {
+                                let store = store.clone();
+                                let request = id.clone();
+                                let worker = operations.spawn(async move {
+                                    let frame = match call.run(&store, &service).await {
+                                        Ok(value) => success(id.clone(), value),
+                                        Err(error) => failure(id.clone(), error),
+                                    };
+                                    (id, frame)
+                                });
+                                operation_requests.insert(request, worker);
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
             ClientMessage::Request { id, tag, payload }
                 if tag == "subscribeServerConfig" && local.is_some() =>
             {

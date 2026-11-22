@@ -82,11 +82,10 @@ impl State {
                         Target::File(path) => file_request(pane, path),
                         Target::Url(_) => None,
                     };
+                    let thread = pane.thread_id.clone();
                     self.activate_terminal_attachment(attachment, tx);
                     match link.target {
-                        Target::Url(url) => {
-                            let _ = tx.open_url(&url);
-                        }
+                        Target::Url(url) => self.open_terminal_web_link(thread, url, tx),
                         Target::File(_) => {
                             if let Some(file) = file
                                 && let Some(connection) = self.connection.as_ref()

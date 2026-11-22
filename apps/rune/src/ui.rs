@@ -14,6 +14,7 @@ use crate::connection::{
 };
 
 mod approval;
+mod browser_preview;
 mod composer;
 mod confirmation;
 mod conversation;
@@ -321,6 +322,7 @@ struct State {
     thread_details: thread_details::Popover,
     file_preview: Option<file_preview::Preview>,
     file_preview_copy_notice: Option<file_preview::copy_notice::Notice>,
+    browser_preview: browser_preview::Dock,
     thread_error_banner: thread_error_banner::Session,
     window_focused: bool,
     window_chrome: window_chrome::ChromeState,
@@ -366,6 +368,7 @@ impl Default for State {
             thread_details: thread_details::Popover::default(),
             file_preview: None,
             file_preview_copy_notice: None,
+            browser_preview: browser_preview::Dock::default(),
             thread_error_banner: thread_error_banner::Session::default(),
             window_focused: true,
             window_chrome: window_chrome::ChromeState::default(),
@@ -415,6 +418,7 @@ impl State {
         self.file_preview = None;
         self.thread_error_banner.reset_expansion();
         self.added_project = None;
+        self.browser_preview = browser_preview::Dock::default();
         self.scratch_request = None;
         self.terminal = None;
         self.terminal_peers.clear();
@@ -1066,6 +1070,7 @@ impl State {
         }
         changed |= self.poll_terminal_output(tx);
         self.poll_terminal_file_links(tx);
+        changed |= self.poll_browser_preview();
         changed |= self.restore_terminal_for_selection(tx);
         if let Some(workspace) = &mut self.workspace {
             changed |= workspace.favicons.poll();
@@ -1649,6 +1654,15 @@ impl State {
             Event::Terminal { attachment, update } => {
                 self.apply_terminal_update(attachment, update);
             }
+            Event::BrowserPreviewOpened {
+                thread,
+                url,
+                snapshot,
+            } => self.browser_preview_opened(&thread, &url, snapshot, tx),
+            Event::BrowserPreviewUpdated(snapshot) => self.browser_preview_updated(snapshot, tx),
+            Event::BrowserPreviewClosed(tab) => self.browser_preview_closed(&tab),
+            Event::BrowserPreviewFrame { tab, frame } => self.browser_preview_frame(&tab, frame),
+            Event::BrowserPreviewStreamLost(tab) => self.browser_preview_stream_lost(&tab),
             Event::TerminalFileLinkChecked {
                 attachment,
                 id,
@@ -1938,7 +1952,9 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
         } else {
             0.0
         };
-    let file_preview_width = if state.file_preview.is_some() {
+    let file_preview_width = if browser_preview::visible(state) {
+        browser_preview::width(width, workspace_width)
+    } else if state.file_preview.is_some() {
         file_preview::dock_width(width, workspace_width)
     } else {
         0.0
@@ -2199,13 +2215,15 @@ fn workspace_view(
 ) -> El {
     let colors = sidebar_header::Colors::new(palette.dark);
     let frame = row().w_full().h_full();
-    let preview = file_preview::view(
-        state,
-        workspace,
-        detail_layout.file_preview_width,
-        detail_layout,
-        palette,
-    );
+    let preview = browser_preview::view(state, detail_layout, palette).or_else(|| {
+        file_preview::view(
+            state,
+            workspace,
+            detail_layout.file_preview_width,
+            detail_layout,
+            palette,
+        )
+    });
     if !state.sidebar_open {
         return frame
             .child(detail(state, workspace, palette, detail_layout))

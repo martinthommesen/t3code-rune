@@ -1,5 +1,9 @@
 mod archive;
 mod browse;
+mod browser_preview;
+pub(crate) use browser_preview::{
+    BrowserFrame, BrowserSnapshot, BrowserTab, Navigation as BrowserNavigation,
+};
 mod command_output;
 mod draft_defaults;
 pub(crate) mod file_preview;
@@ -304,6 +308,18 @@ pub(crate) enum Event {
         attachment: u64,
         update: TerminalUpdate,
     },
+    BrowserPreviewOpened {
+        thread: String,
+        url: String,
+        snapshot: Option<BrowserSnapshot>,
+    },
+    BrowserPreviewUpdated(BrowserSnapshot),
+    BrowserPreviewClosed(BrowserTab),
+    BrowserPreviewFrame {
+        tab: BrowserTab,
+        frame: BrowserFrame,
+    },
+    BrowserPreviewStreamLost(BrowserTab),
     TerminalFileLinkChecked {
         attachment: u64,
         id: Uuid,
@@ -436,6 +452,7 @@ enum Command {
         query: String,
     },
     Terminal(terminal::Command),
+    BrowserPreview(browser_preview::Command),
     TerminalFileLink(terminal_link::Request),
 }
 
@@ -955,6 +972,8 @@ struct Capabilities {
     thread_visits: bool,
     #[serde(rename = "t3Terminal")]
     terminal: Option<bool>,
+    #[serde(default, rename = "serverBrowser")]
+    server_browser: bool,
 }
 
 #[derive(Deserialize)]
@@ -1350,6 +1369,7 @@ struct Session {
     terminals: BTreeMap<u64, terminal::Subscription>,
     pending_terminal: HashMap<String, terminal::PendingOperation>,
     terminal_links: terminal_link::TerminalLinks,
+    browser_preview: browser_preview::Client,
 }
 
 struct GitRefsRequest {
@@ -1551,6 +1571,7 @@ impl Session {
             terminals: BTreeMap::new(),
             pending_terminal: HashMap::new(),
             terminal_links: terminal_link::TerminalLinks::new(scope.is_some_and(can_operate)),
+            browser_preview: browser_preview::Client::new(environment),
         };
         let request_id = session.allocate_id();
         session
@@ -1916,6 +1937,9 @@ impl Session {
                 }
             }
             Command::Terminal(command) => self.terminal_command(command, events).await?,
+            Command::BrowserPreview(command) => {
+                self.browser_preview_command(command, events).await?
+            }
             Command::TerminalFileLink(request) => self.terminal_file_link(request, events).await?,
             Command::ObserveOutput(command) => self.command_output(command, events).await?,
             Command::RespondToRuntimeRequest(response) => {
@@ -2553,6 +2577,10 @@ impl Session {
                     }
                     return Ok(());
                 }
+                if self.browser_preview.is_stream(&request_id) {
+                    self.apply_preview_events(values, events);
+                    return Ok(());
+                }
                 let mut subscribe_providers = false;
                 if request_id == self.shell_request_id {
                     if matches!(self.archive, ArchiveState::Loaded)
@@ -2913,6 +2941,12 @@ impl Session {
                         Err(message) => RuntimeResponseOutcome::Rejected(message),
                     };
                     events.send(response.finish(outcome));
+                    return Ok(());
+                }
+                if self.browser_preview.is_stream(&request_id)
+                    || self.browser_preview.is_opening(&request_id)
+                {
+                    self.preview_exit(&request_id, exit, events);
                     return Ok(());
                 }
                 if self.terminal_links.matches(&request_id) {
@@ -3377,6 +3411,7 @@ async fn run_socket(
                 }
                 session.expire_terminal(events).await?;
                 session.expire_terminal_links(events).await?;
+                session.expire_preview(events).await?;
                 session.expire_workspace_retries(events);
                 session.expire_keybinding_write(events);
                 session.expire_workspace_write(events);
@@ -3394,6 +3429,9 @@ async fn run_socket(
                     events.send(Event::ProjectFavicon { target, image });
                 }
                 session.request_project_favicons().await?;
+            }
+            preview = session.browser_preview.next() => {
+                if let Some(event)=preview { events.send(event); }
             }
             asset = session.preview_downloads.next() => {
                 let (id, result) = asset;

@@ -66,6 +66,41 @@ impl Streams {
         initial
     }
 
+    pub(super) fn start_preview(&mut self, id: RequestId, mut events: broadcast::Receiver<Value>) {
+        self.interrupt(&id);
+        self.next_generation += 1;
+        let generation = self.next_generation;
+        let request = id.clone();
+        let send = self.send.clone();
+        let worker = tokio::spawn(async move {
+            while let Ok(event) = events.recv().await {
+                let frame = chunk(request.clone(), event);
+                if send
+                    .send(Update {
+                        id: request.clone(),
+                        generation,
+                        frame,
+                        done: false,
+                    })
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            let frame = success(request.clone(), Value::Null);
+            let _ = send
+                .send(Update {
+                    id: request,
+                    generation,
+                    frame,
+                    done: true,
+                })
+                .await;
+        });
+        self.workers.insert(id, (generation, worker));
+    }
+
     pub(super) fn start_command_output(
         &mut self,
         id: RequestId,

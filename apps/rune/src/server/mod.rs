@@ -1,4 +1,5 @@
 mod bootstrap;
+mod browser_preview;
 mod claude_worker;
 mod config_updates;
 mod config_watch;
@@ -15,6 +16,7 @@ mod legacy_thread_shells;
 mod locale;
 mod migrations;
 mod named_projects;
+mod preview_browser;
 mod project_clone;
 mod project_commands;
 mod project_favicon;
@@ -102,6 +104,7 @@ struct LocalOperations {
     workspace_search: workspace_search::Indexes,
     named_projects_root: PathBuf,
     project_clones: ProjectClones,
+    preview: Option<Arc<browser_preview::Preview>>,
     repository_identities: repository_identity::Identities,
     threads: ThreadCommands,
     turns: TurnCommands,
@@ -156,6 +159,7 @@ impl LocalHost {
         let environment_id = environment_identity::load_id(&state_dir)?;
         let terminals = Arc::new(terminal::TerminalManager::with_state_dir(&state_dir)?);
         let named_projects_root = named_projects::root_for(&state_dir);
+        let preview = browser_preview::Preview::configured(&state_dir);
         let settings = SettingsFile::new(state_dir.join("settings.json"));
         if settings.reconcile_projects_on_startup(&database).is_err() {
             eprintln!("Project settings could not be reconciled at startup.");
@@ -225,6 +229,7 @@ impl LocalHost {
                         workspace_search: workspace_search::Indexes::default(),
                         named_projects_root,
                         project_clones: project_clones.clone(),
+                        preview: preview.clone(),
                         repository_identities,
                         threads,
                         turns,
@@ -262,6 +267,9 @@ impl LocalHost {
                     let _ = titles.await;
                     let _ = archive_cleanup.await;
                     project_clones.shutdown().await;
+                    if let Some(preview) = preview {
+                        let _ = preview.shutdown().await;
+                    }
                     if let Err(error) = turn_worker.shutdown().await {
                         eprintln!("The local Codex worker stopped: {error}");
                     }
@@ -382,6 +390,7 @@ fn router(environment: SharedEnvironment) -> Router {
             get(workspace_attachment::get),
         )
         .route("/api/assets/{*tail}", get(project_favicon::get))
+        .route("/api/preview-stream/ws", get(browser_preview::upgrade))
         .route("/ws", get(upgrade))
         .layer(DefaultBodyLimit::max(8 * 1024))
         .layer(middleware::from_fn_with_state(
@@ -438,6 +447,10 @@ async fn environment_description(environment: &Environment) -> (Value, Option<Pa
         None
     };
     let scratch_projects = scratch_root.is_some();
+    let server_browser = environment
+        .local
+        .as_ref()
+        .is_some_and(|local| local.preview.is_some());
     let os = match std::env::consts::OS {
         "macos" => "darwin",
         "linux" => "linux",
@@ -455,7 +468,7 @@ async fn environment_description(environment: &Environment) -> (Value, Option<Pa
         "platform": {"os": os, "arch": arch},
         "serverVersion": env!("CARGO_PKG_VERSION"),
         "orchestrationProtocolVersion": PROTOCOL_VERSION,
-        "capabilities": {"t3ReadOnly": true, "t3ProjectWrites": local, "t3NamedProjects": local, "t3ScratchProjects": scratch_projects, "t3CloneProjects": local, "t3PromptWrites": local, "t3ThreadLaunch": local, "t3WorktreeLaunch": local, "t3RemoteWorktreeLaunch": local, "t3WorktreeSetup": local, "t3WorktreeQueue": local, "t3ShellHttp": local, "t3CheckoutSwitch": local, "t3ThreadStop": local, "t3ArchiveSnapshots": local, "t3ThreadArchive": local, "t3ThreadUnarchive": local, "t3ArchivedThreadDelete": local, "t3ThreadVisits": local, "t3Terminal": local, "commandOutputStreaming": local, "projectOrganization": local, "worktreesDirectory": local}
+        "capabilities": {"t3ReadOnly": true, "t3ProjectWrites": local, "t3NamedProjects": local, "t3ScratchProjects": scratch_projects, "t3CloneProjects": local, "t3PromptWrites": local, "t3ThreadLaunch": local, "t3WorktreeLaunch": local, "t3RemoteWorktreeLaunch": local, "t3WorktreeSetup": local, "t3WorktreeQueue": local, "t3ShellHttp": local, "t3CheckoutSwitch": local, "t3ThreadStop": local, "t3ArchiveSnapshots": local, "t3ThreadArchive": local, "t3ThreadUnarchive": local, "t3ArchivedThreadDelete": local, "t3ThreadVisits": local, "t3Terminal": local, "serverBrowser": server_browser, "commandOutputStreaming": local, "projectOrganization": local, "worktreesDirectory": local}
     });
     (description, scratch_root)
 }
@@ -499,6 +512,7 @@ async fn exchange(
         orchestration_operate: allows("orchestration:operate"),
         settings_write: allows("settings:write"),
         filesystem_read: allows("filesystem:read"),
+        preview_operate: allows("preview:operate"),
         source_control_write: allows("source-control:write"),
         terminal_read: allows("terminal:read"),
         terminal_operate: allows("terminal:operate"),

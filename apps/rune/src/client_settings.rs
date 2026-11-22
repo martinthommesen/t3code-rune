@@ -8,6 +8,8 @@ use serde_json::{Map, Value};
 use crate::server::parse_settings_json;
 
 mod appearance;
+mod browser;
+pub(crate) use browser::BrowserLinkTarget;
 mod chromium;
 mod editor;
 mod project_order;
@@ -45,6 +47,7 @@ pub(crate) struct ClientSettings {
     closed_thread_details: ClosedThreadDetails,
     last_project_actions: BTreeMap<String, String>,
     appearance: AppearancePreference,
+    browser_link_target: BrowserLinkTarget,
     reasoning: reasoning::Preferences,
     project_order: project_order::Preferences,
 }
@@ -61,6 +64,7 @@ impl Default for ClientSettings {
             closed_thread_details: ClosedThreadDetails::new(),
             last_project_actions: BTreeMap::new(),
             appearance: AppearancePreference::default(),
+            browser_link_target: BrowserLinkTarget::default(),
             reasoning: reasoning::Preferences::default(),
             project_order: project_order::Preferences::default(),
         }
@@ -70,7 +74,8 @@ impl Default for ClientSettings {
 impl ClientSettings {
     pub(crate) fn at_state_dir(state_dir: &Path) -> Self {
         let path = state_dir.join(FILE_NAME);
-        let document = read_document(&path).ok();
+        let mut document = read_document(&path).ok();
+        let browser_link_target = browser::read(document.as_mut());
         let confirm_terminal_close = document
             .as_ref()
             .and_then(|document| confirmation(document, TERMINAL_CONFIRMATION, true).ok())
@@ -108,6 +113,7 @@ impl ClientSettings {
                 .and_then(|document| last_project_actions(document).ok())
                 .unwrap_or_default(),
             appearance: AppearancePreference::at_state_dir(state_dir),
+            browser_link_target,
             project_order: document
                 .as_ref()
                 .map(project_order::Preferences::read)
