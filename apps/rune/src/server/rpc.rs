@@ -941,7 +941,7 @@ fn response(
             thread_snapshot(store, id, &thread.thread_id, local.is_some())
         }
         "orchestration.dispatchCommand" => {
-            dispatch_thread(local, permissions.orchestration_operate, id, payload)
+            dispatch_thread(local, store, permissions.orchestration_operate, id, payload)
         }
         "t3.canStopThread" if local.is_some() => {
             let thread_id = payload["threadId"].as_str().unwrap_or_default();
@@ -949,6 +949,15 @@ fn response(
                 && local
                     .is_some_and(|local| local.turns.can_stop_thread(thread_id).unwrap_or(false));
             success(id, json!({"available":available}))
+        }
+        "t3.threadActions" if local.is_some() => {
+            let thread_id = payload["threadId"].as_str().unwrap_or_default();
+            let permitted = local.filter(|_| permissions.orchestration_operate);
+            let stop = permitted
+                .is_some_and(|local| local.turns.can_stop_thread(thread_id).unwrap_or(false));
+            let queue_worktree = permitted
+                .is_some_and(|local| local.turns.can_queue_worktree(thread_id).unwrap_or(false));
+            success(id, json!({"available":stop,"queueWorktree":queue_worktree}))
         }
         _ => failure(
             id,
@@ -1040,6 +1049,7 @@ fn mutate_project(
 
 fn dispatch_thread(
     local: Option<&LocalOperations>,
+    store: &Store,
     can_manage: bool,
     id: RequestId,
     payload: Value,
@@ -1066,6 +1076,10 @@ fn dispatch_thread(
         );
     };
     let command_type = payload["type"].as_str().unwrap_or_default();
+    if command_type == "queue.resume" {
+        let thread_id = payload["threadId"].as_str().unwrap_or_default();
+        return resume_worktree_queue(local, id, thread_id, &command_id);
+    }
     if matches!(
         command_type,
         "message.dispatch" | "runtime-request.respond" | "thread.stop"
@@ -1106,6 +1120,10 @@ fn dispatch_thread(
         return match result {
             Ok((sequence, committed)) => {
                 if committed {
+                    if command_type == "thread.stop" {
+                        let _ =
+                            thread_launch::request_worktree_cancellation(store.path(), &thread_id);
+                    }
                     let _ = local
                         .projection_changes
                         .send(ProjectionChange::Thread(thread_id));
@@ -1173,6 +1191,62 @@ fn dispatch_thread(
             RpcError::OrchestrationV2DispatchCommandError {
                 command_id: &command_id,
                 command_type: &command_type,
+                message: &error.to_string(),
+            },
+        ),
+    }
+}
+
+fn resume_worktree_queue(
+    local: &LocalOperations,
+    id: RequestId,
+    thread_id: &str,
+    command_id: &str,
+) -> Value {
+    use super::turn_commands::queued_worktree::{ResumeOutcome, UNRESOLVED_WORKTREE};
+
+    const COMMAND_TYPE: &str = "queue.resume";
+    match local.turns.resume_worktree_queue(thread_id, command_id) {
+        Ok(ResumeOutcome::Accepted {
+            sequence,
+            committed,
+        }) => {
+            if committed {
+                let _ = local
+                    .projection_changes
+                    .send(ProjectionChange::Thread(thread_id.to_owned()));
+            }
+            local.turn_queue.wake();
+            success(id, json!({"sequence":sequence}))
+        }
+        Ok(ResumeOutcome::Unresolved) => failure(
+            id,
+            json!({
+                "_tag":"OrchestrationV2DispatchCommandError", "commandId": command_id,
+                "commandType": COMMAND_TYPE, "message": UNRESOLVED_WORKTREE, "detail": UNRESOLVED_WORKTREE,
+                "cause": {
+                    "name": "OrchestratorDispatchError",
+                    "message": format!("Failed to dispatch orchestration command {COMMAND_TYPE} ({command_id})."),
+                    "cause": UNRESOLVED_WORKTREE,
+                },
+            }),
+        ),
+        Ok(ResumeOutcome::PreviouslyRejected(detail)) => {
+            let message = format!("Command {command_id} was previously rejected: {detail}");
+            failure(
+                id,
+                json!({
+                    "_tag":"OrchestrationV2DispatchCommandError", "commandId": command_id,
+                    "commandType": COMMAND_TYPE, "message": message, "detail": message,
+                    "cause": {"name": "OrchestratorCommandPreviouslyRejectedError", "message": message},
+                }),
+            )
+        }
+        Err(error) => failure(
+            id,
+            RpcError::OrchestrationV2DispatchCommandError {
+                command_id,
+                command_type: COMMAND_TYPE,
                 message: &error.to_string(),
             },
         ),

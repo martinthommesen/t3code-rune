@@ -20,7 +20,7 @@ use uuid::Uuid;
 pub(super) use self::execute::launch;
 pub(super) use self::input::LaunchInput;
 use self::input::{Trimmed, WorkspaceStrategy};
-pub(super) use self::reservation::cancel_worktree_setup;
+pub(super) use self::reservation::{cancel_worktree_setup, request_worktree_cancellation};
 pub(super) use self::setup_progress::subscribe_worktree_setup;
 use super::terminal::TerminalManager;
 use super::turn_commands::encode_id_part;

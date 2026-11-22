@@ -7,7 +7,7 @@ pub(super) mod interrupt_effect;
 mod projection;
 pub(super) mod provider_session;
 pub(super) mod provider_turn;
-mod queued_worktree;
+pub(super) mod queued_worktree;
 pub(super) mod reasoning;
 pub(super) mod runtime_requests;
 mod settlement_events;
@@ -17,6 +17,7 @@ pub(super) mod start_recovery;
 pub(super) mod title_effect;
 
 pub(super) mod native_events;
+mod todo_list;
 pub(super) mod tool_events;
 pub(super) mod turn_text;
 

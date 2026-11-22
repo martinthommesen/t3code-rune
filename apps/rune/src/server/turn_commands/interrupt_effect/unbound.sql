@@ -20,7 +20,8 @@ WHERE thread.thread_id = ?1 AND thread.archived_at IS NULL AND thread.deleted_at
   AND json_extract(thread.payload_json, '$.lineage.parentThreadId') IS NULL
   AND json_extract(thread.payload_json, '$.lineage.rootThreadId') = thread.thread_id
   AND json_extract(thread.payload_json, '$.forkedFrom') IS NULL
-  AND json_extract(thread.payload_json, '$.worktreePath') IS NULL
+  AND (json_extract(thread.payload_json, '$.worktreePath') IS NULL
+       OR json_extract(run.payload_json, '$.workspacePreparation.type') = 'worktree')
   AND thread.active_provider_thread_id = provider.provider_thread_id
   AND provider.driver = 'codex' AND provider.provider_instance_id = 'codex'
   AND provider.provider_session_id = 'provider-session:provider-instance:codex:shared'
@@ -34,7 +35,7 @@ WHERE thread.thread_id = ?1 AND thread.archived_at IS NULL AND thread.deleted_at
   AND node.kind = 'root_turn' AND node.parent_node_id IS NULL AND node.status = 'pending'
   AND node.provider_turn_id IS NULL AND node.provider_thread_id = provider.provider_thread_id
   AND (
-    (run.status = 'preparing' AND json_extract(run.payload_json, '$.workspacePreparation.type') = 'root'
+    (run.status = 'preparing' AND json_extract(run.payload_json, '$.workspacePreparation.type') IN ('root', 'worktree')
      AND preparation.turn_item_id IS NOT NULL)
     OR (run.status = 'starting' AND EXISTS (
       SELECT 1 FROM orchestration_v2_effect_outbox AS effect
@@ -45,13 +46,15 @@ WHERE thread.thread_id = ?1 AND thread.archived_at IS NULL AND thread.deleted_at
         AND receipt.aggregate_kind = 'thread' AND receipt.aggregate_id = run.thread_id
         AND receipt.status = 'accepted'
         AND (receipt.command_type = 'message.dispatch' OR (receipt.command_type = 'prepared-run.release'
-             AND json_extract(run.payload_json, '$.workspacePreparation.type') = 'root'))
+             AND json_extract(run.payload_json, '$.workspacePreparation.type') IN ('root', 'worktree')))
     ))
   )
   AND NOT EXISTS (
     SELECT 1 FROM orchestration_v2_projection_runs AS other
     WHERE other.thread_id = thread.thread_id AND other.run_id <> run.run_id
-      AND other.status IN ('preparing', 'queued', 'starting', 'running', 'waiting')
+      AND (other.status IN ('preparing', 'starting', 'running', 'waiting')
+           OR (other.status = 'queued'
+               AND json_extract(run.payload_json, '$.workspacePreparation.type') IS NOT 'worktree'))
   )
   AND NOT EXISTS (
     SELECT 1 FROM orchestration_v2_projection_provider_turns AS native_turn

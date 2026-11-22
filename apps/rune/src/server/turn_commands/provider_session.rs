@@ -33,14 +33,20 @@ impl TurnCommands {
             return Ok(Some(SessionAttachment::AlreadyAttached));
         }
         let now = timestamp(OffsetDateTime::now_utc());
-        let payload = if reuse {
-            let payload: String = transaction.query_row(
-                "SELECT payload_json FROM orchestration_v2_projection_provider_sessions
+        let previous = if reuse {
+            transaction
+                .query_row(
+                    "SELECT payload_json FROM orchestration_v2_projection_provider_sessions
                  WHERE provider_session_id = ?1 AND status = 'ready'",
-                [&binding.provider_session_id],
-                |row| row.get(0),
-            )?;
-            serde_json::from_str(&payload)?
+                    [&binding.provider_session_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+        } else {
+            None
+        };
+        let payload = if let Some(previous) = previous {
+            serde_json::from_str(&previous)?
         } else {
             json!({
             "id": binding.provider_session_id,

@@ -15,6 +15,12 @@ static SEND_UP: Icon = Icon {
     body: r#"<path d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5L11 6.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
 
+static QUEUE: Icon = Icon {
+    name: "composer-queue",
+    view: 24.0,
+    body: r#"<path d="M11 12H3m13-6H3m13 12H3m15-9v6m-3-3h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+
 static STOP: Icon = Icon {
     name: "composer-stop",
     view: 12.0,
@@ -132,6 +138,8 @@ fn surface(
     };
     let clone = project_id.and_then(|id| workspace.pending_clone(id));
     let has_draft = !draft.edit.text.trim().is_empty();
+    let queue =
+        matches!(&target, Target::Thread { id, .. } if workspace.queue_worktree_message(id));
     let stop = match &target {
         Target::Thread { id, .. } => workspace
             .stop_generation(id)
@@ -222,6 +230,8 @@ fn surface(
     }
     let (submit_key, idle, pending) = if starting_thread {
         ("start-thread", "Start thread", "Starting…")
+    } else if queue {
+        ("send", "Queue message", "Queuing…")
     } else {
         ("send", "Send", "Sending…")
     };
@@ -252,13 +262,16 @@ fn surface(
         .focus_ring(2.0, 1.0, palette.accent)
         .on_press_tx(submit)
         .child(
-            icon(&SEND_UP, 14.0)
-                .color(if can_send {
-                    palette.on_accent
-                } else {
-                    colors.muted
-                })
-                .a11y_hidden(),
+            icon(
+                if queue { &QUEUE } else { &SEND_UP },
+                if queue { 16.0 } else { 14.0 },
+            )
+            .color(if can_send {
+                palette.on_accent
+            } else {
+                colors.muted
+            })
+            .a11y_hidden(),
         );
     if has_draft || stop.is_none() {
         footer = footer.child(send);

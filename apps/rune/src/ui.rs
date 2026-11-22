@@ -51,6 +51,7 @@ struct Conversation {
     expanded_messages: HashSet<String>,
     approvals: approval::Approvals,
     stop_available: bool,
+    queue_worktree_available: bool,
     stop_requested_at: Option<Instant>,
     worktree_setup: Option<Box<WorktreeSetup>>,
     worktree_cancel_pending: bool,
@@ -93,6 +94,17 @@ struct Workspace {
 }
 
 impl Workspace {
+    fn queue_worktree_message(&self, thread_id: &str) -> bool {
+        !self.reconnecting
+            && self.selection.as_ref().is_some_and(|selection| {
+                matches!(
+                    &selection.view,
+                    ProjectView::Conversation(conversation)
+                        if conversation.id == thread_id && conversation.queue_worktree_available
+                )
+            })
+    }
+
     fn stop_generation(&self, thread_id: &str) -> Option<bool> {
         if !self.stop_writes || self.reconnecting {
             return None;
@@ -423,6 +435,7 @@ impl State {
                     expanded_messages: HashSet::new(),
                     approvals: approval::Approvals::default(),
                     stop_available: false,
+                    queue_worktree_available: false,
                     stop_requested_at: None,
                     worktree_setup: None,
                     worktree_cancel_pending: false,
@@ -986,13 +999,15 @@ impl State {
                     }
                 }
             }
-            Event::ThreadStopAvailability {
+            Event::ThreadActions {
                 thread_id,
-                available,
+                stop,
+                queue_worktree,
             } => {
                 if let Some(conversation) = self.conversation_mut(&thread_id) {
-                    conversation.stop_available = available;
-                    if !available {
+                    conversation.stop_available = stop;
+                    conversation.queue_worktree_available = queue_worktree;
+                    if !stop {
                         conversation.stop_requested_at = None;
                     }
                 }

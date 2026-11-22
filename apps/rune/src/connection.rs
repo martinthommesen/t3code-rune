@@ -97,9 +97,10 @@ pub(crate) enum Event {
         thread_id: String,
         messages: Vec<Message>,
     },
-    ThreadStopAvailability {
+    ThreadActions {
         thread_id: String,
-        available: bool,
+        stop: bool,
+        queue_worktree: bool,
     },
     ThreadStopFailed {
         thread_id: String,
@@ -583,6 +584,8 @@ struct Capabilities {
     remote_worktree_launch: Option<bool>,
     #[serde(rename = "t3WorktreeSetup")]
     worktree_setup: Option<bool>,
+    #[serde(rename = "t3WorktreeQueue")]
+    worktree_queue: Option<bool>,
     #[serde(rename = "t3CheckoutSwitch")]
     checkout_switch: Option<bool>,
     #[serde(rename = "t3ThreadStop")]
@@ -830,8 +833,9 @@ struct ThreadSubscription {
     reported_approvals: Vec<PendingApproval>,
     reported_questions: Option<Vec<PendingQuestion>>,
     reported_stop: Option<bool>,
-    stop_request_id: Option<String>,
-    stop_refresh_needed: bool,
+    reported_queue_worktree: bool,
+    actions_request_id: Option<String>,
+    actions_refresh_needed: bool,
     setup_request_id: Option<String>,
 }
 
@@ -905,6 +909,7 @@ struct Session {
     worktree_launch: bool,
     remote_worktree_launch: bool,
     worktree_setup: bool,
+    worktree_queue: bool,
     checkout_switch: bool,
     native_model_discovery: bool,
     native_stop: bool,
@@ -1017,6 +1022,8 @@ impl Session {
                             .any(|scope| scope == "orchestration:read")
                     }),
             ),
+            worktree_queue: capabilities.worktree_queue == Some(true)
+                && scope.is_some_and(can_operate),
             checkout_switch: capabilities
                 .checkout_switch
                 .unwrap_or(!capabilities.read_only)
@@ -1156,8 +1163,9 @@ impl Session {
             reported_approvals: Vec::new(),
             reported_questions: None,
             reported_stop: None,
-            stop_request_id: None,
-            stop_refresh_needed: false,
+            reported_queue_worktree: false,
+            actions_request_id: None,
+            actions_refresh_needed: false,
             setup_request_id: setup_request_id.clone(),
         });
         if let Some(previous) = previous {
@@ -1212,26 +1220,27 @@ impl Session {
         Ok(())
     }
 
-    async fn refresh_stop(&mut self) -> Result<(), SessionStop> {
-        if !self.native_stop || !self.stop_writes {
+    async fn refresh_thread_actions(&mut self) -> Result<(), SessionStop> {
+        if !self.worktree_queue && !(self.native_stop && self.stop_writes) {
             return Ok(());
         }
         let request_id = self.allocate_id();
         let Some(thread) = &mut self.thread else {
             return Ok(());
         };
-        if thread.stop_request_id.is_some() {
-            thread.stop_refresh_needed = true;
+        if thread.actions_request_id.is_some() {
+            thread.actions_refresh_needed = true;
             return Ok(());
         }
-        thread.stop_request_id = Some(request_id.clone());
+        thread.actions_request_id = Some(request_id.clone());
         let thread_id = thread.thread_id.clone();
-        self.send_request(
-            &request_id,
-            "t3.canStopThread",
-            json!({"threadId":thread_id}),
-        )
-        .await
+        let tag = if self.worktree_queue {
+            "t3.threadActions"
+        } else {
+            "t3.canStopThread"
+        };
+        self.send_request(&request_id, tag, json!({"threadId":thread_id}))
+            .await
     }
 
     async fn interrupt(&mut self, request_id: &str) -> Result<(), SessionStop> {
@@ -1562,7 +1571,11 @@ impl Session {
                     });
                 } else {
                     let request_id = self.allocate_id();
-                    let payload = prompt_payload(&thread_id, &prompt);
+                    let queue = self.worktree_queue
+                        && self.thread.as_ref().is_some_and(|thread| {
+                            thread.thread_id == thread_id && thread.reported_queue_worktree
+                        });
+                    let payload = prompt_payload(&thread_id, &prompt, queue);
                     self.pending_prompts.insert(request_id.clone(), thread_id);
                     self.send_request(&request_id, "orchestration.dispatchCommand", payload)
                         .await?;
@@ -1849,7 +1862,7 @@ impl Session {
                             return Ok(());
                         }
                     }
-                    self.refresh_stop().await?;
+                    self.refresh_thread_actions().await?;
                 }
                 self.send(json!({"_tag": "Ack", "requestId": request_id}))
                     .await?;
@@ -1964,23 +1977,25 @@ impl Session {
                 if let Some(thread) = self
                     .thread
                     .as_mut()
-                    .filter(|thread| thread.stop_request_id.as_ref() == Some(&request_id))
+                    .filter(|thread| thread.actions_request_id.as_ref() == Some(&request_id))
                 {
-                    thread.stop_request_id = None;
-                    let available = exit
-                        .into_result()
-                        .ok()
-                        .and_then(|value| value["available"].as_bool())
-                        .unwrap_or(false);
-                    if thread.reported_stop != Some(available) {
-                        thread.reported_stop = Some(available);
-                        events.send(Event::ThreadStopAvailability {
+                    thread.actions_request_id = None;
+                    let actions = exit.into_result().unwrap_or(Value::Null);
+                    let stop = actions["available"].as_bool().unwrap_or(false);
+                    let queue_worktree = actions["queueWorktree"].as_bool().unwrap_or(false);
+                    if thread.reported_stop != Some(stop)
+                        || thread.reported_queue_worktree != queue_worktree
+                    {
+                        thread.reported_stop = Some(stop);
+                        thread.reported_queue_worktree = queue_worktree;
+                        events.send(Event::ThreadActions {
                             thread_id: thread.thread_id.clone(),
-                            available,
+                            stop,
+                            queue_worktree,
                         });
                     }
-                    if std::mem::take(&mut thread.stop_refresh_needed) {
-                        self.refresh_stop().await?;
+                    if std::mem::take(&mut thread.actions_refresh_needed) {
+                        self.refresh_thread_actions().await?;
                     }
                     return Ok(());
                 }
@@ -2110,8 +2125,13 @@ fn apply(
     Ok(changed)
 }
 
-fn prompt_payload(thread_id: &str, prompt: &str) -> Value {
-    json!({
+fn prompt_payload(thread_id: &str, prompt: &str, queue: bool) -> Value {
+    let dispatch = if queue {
+        "queue_after_active"
+    } else {
+        "start_immediately"
+    };
+    let mut payload = json!({
         "type": "message.dispatch",
         "commandId": Uuid::new_v4().to_string(),
         "messageId": Uuid::new_v4().to_string(),
@@ -2120,9 +2140,12 @@ fn prompt_payload(thread_id: &str, prompt: &str) -> Value {
         "creationSource": "web",
         "text": prompt,
         "attachments": [],
-        "dispatchMode": { "type": "start_immediately" },
-        "deliveryIntent": "auto",
-    })
+        "dispatchMode": { "type": dispatch },
+    });
+    if !queue {
+        payload["deliveryIntent"] = json!("auto");
+    }
+    payload
 }
 
 #[derive(Deserialize)]

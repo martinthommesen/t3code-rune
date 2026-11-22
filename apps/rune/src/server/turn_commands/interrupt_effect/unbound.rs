@@ -1,6 +1,7 @@
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::json;
 
+use super::super::queued_worktree::hold_queue;
 use super::super::{
     CODEX_INSTANCE, ThreadEventStream, TurnCommandError, allocate_turn_item_in_run, encode_id_part,
 };
@@ -87,12 +88,11 @@ pub(super) fn interrupt(
             &super::settlement::interrupted(&payload, now)?,
         )?;
     }
-    let sequence = stream.append(
-        "run.updated",
-        now,
-        &metadata,
-        &super::settlement::interrupted(&run.run, now)?,
-    )?;
+    let interrupted = super::settlement::interrupted(&run.run, now)?;
+    let mut sequence = stream.append("run.updated", now, &metadata, &interrupted)?;
+    if interrupted["workspacePreparation"]["type"] == "worktree" {
+        sequence = hold_queue(&stream, now)?.unwrap_or(sequence);
+    }
     transaction.execute(
         "UPDATE orchestration_v2_effect_outbox SET status = 'cancelled', lease_owner = NULL,
              lease_expires_at = NULL, completed_at = ?3, updated_at = ?3, last_error = ?4

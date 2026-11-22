@@ -1,6 +1,6 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use rusqlite::{OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde_json::{Value, json};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -12,6 +12,9 @@ use super::{
     record_projected_sequence, root_checkpoint_scope, timestamp, user_message_item,
     validate_model_selection,
 };
+
+mod resume;
+pub(in crate::server) use resume::{ResumeOutcome, UNRESOLVED_WORKTREE};
 
 #[cfg(test)]
 mod tests;
@@ -64,14 +67,37 @@ const READY: &str = "
     LEFT JOIN orchestration_v2_projection_checkpoint_scopes AS scope
          ON scope.scope_id = json_extract(node.payload_json, '$.checkpointScopeId')
     WHERE run.thread_id = ?1 AND run.status = 'queued' AND run.ordinal > 1
-      AND first.status = 'completed' AND json_extract(first.payload_json, '$.workspacePreparation.type') = 'worktree'
-      AND predecessor.status = 'completed' AND predecessor.provider_thread_id = provider.provider_thread_id
+      AND first.status IN ('completed', 'interrupted')
+      AND json_extract(first.payload_json, '$.workspacePreparation.type') = 'worktree'
+      AND predecessor.provider_thread_id = provider.provider_thread_id
       AND thread.archived_at IS NULL AND thread.deleted_at IS NULL
       AND project.archived_at IS NULL AND project.deleted_at IS NULL
       AND json_type(thread.payload_json, '$.worktreePath') = 'text'
       AND thread.active_provider_thread_id = provider.provider_thread_id
-      AND provider.driver = 'codex' AND provider.provider_instance_id = 'codex' AND provider.status = 'idle'
-      AND json_extract(provider.payload_json, '$.nativeThreadRef.strength') = 'strong'
+      AND provider.driver = 'codex' AND provider.provider_instance_id = 'codex'
+      AND (
+           (predecessor.status = 'completed' AND provider.status = 'idle'
+            AND json_extract(provider.payload_json, '$.nativeThreadRef.strength') = 'strong')
+           OR (predecessor.ordinal = 1 AND predecessor.status = 'interrupted'
+               AND provider.status = 'not_loaded' AND json_extract(provider.payload_json, '$.nativeThreadRef') IS NULL
+               AND EXISTS (
+                   SELECT 1 FROM orchestration_v2_projection_turn_items AS stop
+                   WHERE stop.thread_id = run.thread_id AND stop.run_id = predecessor.run_id
+                     AND stop.type = 'run_interrupt_result' AND stop.status = 'interrupted'
+                     AND stop.provider_turn_id IS NULL
+                     AND json_extract(stop.payload_json, '$.message') = 'Run interrupted before provider start'
+               )
+               AND EXISTS (
+                   SELECT 1 FROM orchestration_events AS unhold
+                   JOIN orchestration_command_receipts AS receipt ON receipt.command_id = unhold.command_id
+                   WHERE unhold.aggregate_kind = 'thread' AND unhold.stream_id = run.thread_id
+                     AND unhold.application_event_version = 2 AND unhold.event_type = 'run.updated'
+                     AND json_extract(unhold.payload_json, '$.id') = run.run_id
+                     AND json_type(unhold.payload_json, '$.queueHeld') = 'false'
+                     AND receipt.aggregate_kind = 'thread' AND receipt.aggregate_id = run.thread_id
+                     AND receipt.command_type = 'queue.resume' AND receipt.status = 'accepted'
+               ))
+      )
       AND run.provider_instance_id = 'codex' AND attempt.status = 'pending' AND node.status = 'pending'
       AND json_extract(run.payload_json, '$.queueHeld') IS NOT 1
       AND json_extract(run.payload_json, '$.modelSelection') = json_extract(thread.payload_json, '$.modelSelection')
@@ -133,7 +159,113 @@ pub(super) const START_ORIGIN: &str = "
         )
     )";
 
+struct QueueIntake {
+    starting: bool,
+    provider_thread_id: String,
+    model_selection: Value,
+    worktree: Option<PathBuf>,
+    ordinal: i64,
+    position: i64,
+}
+
+pub(super) fn hold_queue(
+    stream: &ThreadEventStream<'_>,
+    now: &str,
+) -> Result<Option<i64>, TurnCommandError> {
+    let mut tail = None;
+    for mut run in queued_runs(stream.transaction, stream.thread_id)? {
+        if run["queueHeld"] == true {
+            continue;
+        }
+        run["queueHeld"] = json!(true);
+        tail = Some(append_hold_state(stream, now, &run)?);
+    }
+    Ok(tail)
+}
+
+fn queued_runs(connection: &Connection, thread_id: &str) -> Result<Vec<Value>, TurnCommandError> {
+    let mut query = connection.prepare(
+        "SELECT payload_json FROM orchestration_v2_projection_runs
+         WHERE thread_id = ?1 AND status = 'queued' ORDER BY ordinal",
+    )?;
+    query
+        .query_map([thread_id], |row| row.get::<_, String>(0))?
+        .map(|encoded| Ok(serde_json::from_str(&encoded?)?))
+        .collect()
+}
+
+fn append_hold_state(
+    stream: &ThreadEventStream<'_>,
+    now: &str,
+    run: &Value,
+) -> rusqlite::Result<i64> {
+    stream.append(
+        "run.updated",
+        now,
+        &json!({"runId": run["id"], "providerInstanceId": run["providerInstanceId"]}),
+        run,
+    )
+}
+
+impl QueueIntake {
+    fn read(connection: &Connection, thread_id: &str) -> Result<Option<Self>, TurnCommandError> {
+        let intake = connection
+            .query_row(INTAKE, [thread_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?.map(PathBuf::from),
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                ))
+            })
+            .optional()?;
+        intake
+            .map(
+                |(status, provider_thread_id, model_selection, worktree, ordinal, position)| {
+                    Ok(Self {
+                        starting: status == "starting",
+                        provider_thread_id,
+                        model_selection: serde_json::from_str(&model_selection)?,
+                        worktree,
+                        ordinal,
+                        position,
+                    })
+                },
+            )
+            .transpose()
+    }
+
+    fn checkpoint_workspace(&self) -> Result<Option<&Path>, TurnCommandError> {
+        if !self.starting {
+            return Ok(None);
+        }
+        self.worktree
+            .as_deref()
+            .filter(|path| path.is_dir())
+            .map(Some)
+            .ok_or(TurnCommandError::Unsupported(
+                "The worktree must be available before this turn can queue.",
+            ))
+    }
+}
+
 impl TurnCommands {
+    pub(in crate::server) fn can_queue_worktree(
+        &self,
+        thread_id: &str,
+    ) -> Result<bool, TurnCommandError> {
+        let connection = self.read_connection()?;
+        let intake = QueueIntake::read(&connection, thread_id)?;
+        Ok(intake.is_some_and(|intake| {
+            validate_model_selection(&intake.model_selection).is_ok()
+                && intake.checkpoint_workspace().is_ok()
+                && next(intake.ordinal).is_ok()
+                && next(intake.position).is_ok()
+        }))
+    }
+
     pub(in crate::server) fn recover_queued_worktrees(
         &self,
     ) -> Result<Vec<String>, TurnCommandError> {
@@ -187,44 +319,28 @@ impl TurnCommands {
         if let Some(receipt) = existing_dispatch(&transaction, &command_id, &thread_id)? {
             return Ok(receipt);
         }
-        let Some((status, provider, selection, workspace, ordinal, position)) = transaction
-            .query_row(INTAKE, [&thread_id], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, Option<String>>(3)?.map(PathBuf::from),
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, i64>(5)?,
-                ))
-            })
-            .optional()?
-        else {
+        let Some(intake) = QueueIntake::read(&transaction, &thread_id)? else {
             return Err(TurnCommandError::Unsupported(
                 "Queueing here requires a Codex worktree launch in progress.",
             ));
         };
-        let selected: Value = serde_json::from_str(&selection)?;
-        validate_model_selection(&selected)?;
+        validate_model_selection(&intake.model_selection)?;
         if model_selection
             .as_ref()
-            .is_some_and(|requested| requested != &selected)
+            .is_some_and(|requested| requested != &intake.model_selection)
         {
             return Err(TurnCommandError::Unsupported(
                 "Queued worktree prompts use the thread's Codex model.",
             ));
         }
-        let checkpoint_workspace = if status == "starting" {
-            Some(workspace.as_deref().filter(|path| path.is_dir()).ok_or(
-                TurnCommandError::Unsupported(
-                    "The worktree must be available before this turn can queue.",
-                ),
-            )?)
-        } else {
-            None
-        };
-        let run_ordinal = next(ordinal)?;
-        let turn = TurnIds::for_run(&thread_id, &message_id, run_ordinal, Some(&provider));
+        let checkpoint_workspace = intake.checkpoint_workspace()?;
+        let run_ordinal = next(intake.ordinal)?;
+        let turn = TurnIds::for_run(
+            &thread_id,
+            &message_id,
+            run_ordinal,
+            Some(&intake.provider_thread_id),
+        );
         let now = timestamp(OffsetDateTime::now_utc());
         let sequence = append_dispatch(
             &transaction,
@@ -234,14 +350,14 @@ impl TurnCommands {
                 thread_id: &thread_id,
                 message_id: &message_id,
                 start: DispatchStart::Queued {
-                    position: next(position)?,
+                    position: next(intake.position)?,
                     checkpoint_workspace,
                     follows_thread_selection: model_selection.is_none(),
                 },
                 run_ordinal,
                 provider_thread: None,
                 text: &text,
-                model_selection: selected,
+                model_selection: intake.model_selection.clone(),
                 ordinal: None,
                 now: &now,
                 activity: None,

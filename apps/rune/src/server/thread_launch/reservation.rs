@@ -69,7 +69,18 @@ impl Drop for PreparationReservation {
 }
 
 pub(in super::super) async fn cancel_worktree_setup(database: &Path, thread_id: &str) -> bool {
-    let finished = PREPARATIONS
+    let Some(mut finished) = request_worktree_cancellation(database, thread_id) else {
+        return false;
+    };
+    let _ = finished.wait_for(|done| *done).await;
+    true
+}
+
+pub(in super::super) fn request_worktree_cancellation(
+    database: &Path,
+    thread_id: &str,
+) -> Option<watch::Receiver<bool>> {
+    PREPARATIONS
         .lock()
         .unwrap()
         .iter()
@@ -79,10 +90,5 @@ pub(in super::super) async fn cancel_worktree_setup(database: &Path, thread_id: 
         .map(|(_, active)| {
             active.cancel.send_replace(true);
             active.finished.clone()
-        });
-    let Some(mut finished) = finished else {
-        return false;
-    };
-    let _ = finished.wait_for(|done| *done).await;
-    true
+        })
 }
