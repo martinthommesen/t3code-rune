@@ -1,12 +1,13 @@
-use std::process::Command;
-
 use rune::raw_window_handle::RawWindowHandle;
 use rune::{Cursor, El, Phase, WindowHandle, WindowResizeDirection, el};
 
 use super::{CaptionLayout, State};
 
+mod settings;
+
 pub(super) struct Frame {
     pub(super) decorated: bool,
+    settings: Option<settings::Watch>,
 }
 
 impl Frame {
@@ -17,25 +18,26 @@ impl Frame {
         {
             return None;
         }
-        let frame = Self {
-            decorated: window.is_decorated().unwrap_or(true),
-        };
-        Some((frame, desktop_layout().unwrap_or_default()))
+        let decorated = window.is_decorated().unwrap_or(true);
+        let (settings, layout) = settings::open();
+        Some((
+            Self {
+                decorated,
+                settings,
+            },
+            layout,
+        ))
     }
-}
 
-fn desktop_layout() -> Option<CaptionLayout> {
-    let output = Command::new("gsettings")
-        .args(["get", "org.gnome.desktop.wm.preferences", "button-layout"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
+    pub(super) fn poll_layout(&self, layout: &mut CaptionLayout) -> bool {
+        if let Some(next) = self.settings.as_ref().and_then(settings::Watch::latest)
+            && next != *layout
+        {
+            *layout = next;
+            return true;
+        }
+        false
     }
-    let value = std::str::from_utf8(&output.stdout).ok()?.trim();
-    Some(CaptionLayout::from_desktop_order(
-        value.strip_prefix('\'')?.strip_suffix('\'')?,
-    ))
 }
 
 pub(super) fn drag_region(element: El) -> El {
