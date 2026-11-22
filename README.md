@@ -90,6 +90,7 @@ We wanted something performant, remote-ready, and truly open. If we ever go the 
 - [Permission modes](./docs/user/permission-modes.md)
 - [Source control](./docs/user/source-control.md)
 - [Connect outside agents over MCP](./docs/user/outside-agents.md)
+- [Native Rust client and local history server](./apps/rune/README.md)
 - [FAQ](./docs/user/faq.md)
 
 [All docs](./docs/README.md) has the full list.

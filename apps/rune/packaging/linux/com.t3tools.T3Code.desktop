@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=T3 Code
+Comment=Desktop GUI for coding agents
+Exec=/usr/bin/t3code --desktop
+Icon=com.t3tools.T3Code
+Terminal=false
+Type=Application
+Categories=Development;
+StartupWMClass=com.t3tools.T3Code

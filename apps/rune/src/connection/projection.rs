@@ -1,0 +1,883 @@
+use std::collections::{HashMap, HashSet};
+
+use serde::Deserialize;
+use serde_json::Value;
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+
+use super::launch::ModelSelection;
+use super::runtime_approval::{ApprovalDetails, ApprovalProjection, RuntimeRequest};
+use super::runtime_question::{QuestionDetails, QuestionProjection};
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub(crate) struct Project {
+    pub(crate) id: String,
+    #[serde(rename = "title")]
+    pub(crate) name: String,
+    #[serde(rename = "workspaceRoot")]
+    pub(crate) path: String,
+}
+
+#[derive(Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ProjectRow {
+    #[serde(flatten)]
+    project: Project,
+    pub(super) default_model_selection: Option<ModelSelection>,
+    pub(super) archived_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub(crate) struct Thread {
+    pub(crate) id: String,
+    pub(crate) title: String,
+    #[serde(rename = "projectId")]
+    pub(crate) project_id: String,
+    #[serde(default)]
+    pub(crate) status: String,
+    #[serde(rename = "updatedAt")]
+    pub(crate) updated_at: Option<String>,
+    #[serde(flatten)]
+    pub(crate) activity: ThreadActivity,
+    #[serde(flatten)]
+    pub(crate) providers: ThreadProviders,
+    #[serde(rename = "worktreePath")]
+    pub(crate) worktree_path: Option<String>,
+    #[serde(skip)]
+    pub(crate) archived: bool,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ThreadActivity {
+    latest_user_message_at: Option<String>,
+    latest_run_requested_at: Option<String>,
+    latest_run_started_at: Option<String>,
+    latest_run_completed_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ThreadProviders {
+    model_selection: Option<ModelSelection>,
+    latest_run_id: Option<String>,
+    provider_instance_id: Option<String>,
+    #[serde(default)]
+    provider_instance_history: Vec<String>,
+}
+
+impl ThreadProviders {
+    pub(crate) fn current_instance(&self) -> Option<&str> {
+        let model = self
+            .model_selection
+            .as_ref()
+            .map(ModelSelection::instance_id);
+        let runtime = self.provider_instance_id.as_deref();
+        if self.latest_run_id.is_some() {
+            runtime.or(model)
+        } else {
+            model.or(runtime)
+        }
+    }
+
+    pub(crate) fn previous_instances(&self, current: &str) -> impl Iterator<Item = &str> {
+        let mut previous = self
+            .provider_instance_history
+            .iter()
+            .rev()
+            .map(String::as_str)
+            .filter(|instance| *instance != current);
+        let recent = previous.next();
+        let earlier = previous.next();
+        earlier.into_iter().chain(recent)
+    }
+}
+
+impl Thread {
+    pub(crate) fn has_started_run(&self) -> bool {
+        self.activity.latest_run_started_at.is_some()
+    }
+
+    pub(crate) fn activity_timestamp(&self) -> Option<OffsetDateTime> {
+        let parse = |timestamp: &str| OffsetDateTime::parse(timestamp, &Rfc3339).ok();
+        [
+            self.activity.latest_user_message_at.as_deref(),
+            self.activity.latest_run_requested_at.as_deref(),
+            self.activity.latest_run_started_at.as_deref(),
+            self.activity.latest_run_completed_at.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .filter_map(parse)
+        .max()
+        .or_else(|| self.updated_at.as_deref().and_then(parse))
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub(crate) struct Message {
+    pub(crate) id: String,
+    pub(crate) role: String,
+    pub(crate) text: String,
+    #[serde(rename = "createdBy")]
+    pub(crate) created_by: Option<String>,
+}
+
+#[derive(Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct ThreadLineage {
+    relationship_to_parent: Option<String>,
+    #[serde(default)]
+    side_chat: bool,
+}
+
+#[derive(Deserialize, PartialEq, Eq)]
+struct ThreadRow {
+    #[serde(flatten)]
+    thread: Thread,
+    lineage: Option<ThreadLineage>,
+}
+
+impl ThreadRow {
+    fn listed(&self) -> bool {
+        self.lineage.as_ref().is_none_or(|lineage| {
+            lineage.relationship_to_parent.as_deref() != Some("subagent") && !lineage.side_chat
+        })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ThreadLocation {
+    Active,
+    Archive,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ShellSnapshot {
+    snapshot_sequence: u64,
+    projects: Vec<ProjectRow>,
+    threads: Vec<ThreadRow>,
+    #[serde(default)]
+    archived_threads: Vec<ThreadRow>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ArchiveSnapshot {
+    snapshot_sequence: u64,
+    threads: Vec<ThreadRow>,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all_fields = "camelCase")]
+enum ShellItem {
+    #[serde(rename = "snapshot")]
+    Snapshot {
+        snapshot: ShellSnapshot,
+        resolved_repository_identity_roots: Option<Vec<String>>,
+    },
+    #[serde(rename = "project.updated")]
+    ProjectUpdated { sequence: u64, project: ProjectRow },
+    #[serde(rename = "project.removed")]
+    ProjectRemoved { sequence: u64, project_id: String },
+    #[serde(rename = "thread.updated")]
+    ThreadUpdated {
+        sequence: u64,
+        location: ThreadLocation,
+        thread: Box<ThreadRow>,
+    },
+    #[serde(rename = "thread.removed")]
+    ThreadRemoved {
+        sequence: u64,
+        location: ThreadLocation,
+        thread_id: String,
+    },
+    #[serde(other)]
+    Ignored,
+}
+
+#[derive(Default)]
+pub(crate) struct Shell {
+    sequence: u64,
+    projects: Vec<ProjectRow>,
+    threads: Vec<ThreadRow>,
+    archive: Vec<ThreadRow>,
+    archive_sequence: Option<u64>,
+}
+
+impl Shell {
+    pub(crate) fn apply(&mut self, value: Value) -> Result<bool, serde_json::Error> {
+        let changed = match serde_json::from_value(value)? {
+            ShellItem::Snapshot {
+                snapshot,
+                resolved_repository_identity_roots,
+            } => {
+                // Repository identity enrichment carries partial projects and empty thread lists.
+                if resolved_repository_identity_roots.is_some() {
+                    return Ok(false);
+                }
+                if snapshot.snapshot_sequence < self.sequence {
+                    return Ok(false);
+                }
+                self.sequence = snapshot.snapshot_sequence;
+                self.projects = snapshot.projects;
+                self.threads = unique_threads(snapshot.threads, false);
+                if self.archive_sequence.is_none() {
+                    self.archive = unique_threads(snapshot.archived_threads, true);
+                    self.remove_active_from_archive();
+                } else if self.archive_not_newer_than(self.sequence) {
+                    self.remove_active_from_archive();
+                }
+                true
+            }
+            ShellItem::ProjectUpdated { sequence, project } => self
+                .apply_delta(sequence, |shell| {
+                    upsert(&mut shell.projects, project, |row| &row.project.id)
+                }),
+            ShellItem::ProjectRemoved {
+                sequence,
+                project_id,
+            } => self.apply_delta(sequence, |shell| {
+                remove(&mut shell.projects, |row| row.project.id == project_id)
+            }),
+            ShellItem::ThreadUpdated {
+                sequence,
+                location,
+                mut thread,
+            } => self.apply_delta(sequence, |shell| {
+                thread.thread.archived = matches!(location, ThreadLocation::Archive);
+                let id = thread.thread.id.clone();
+                if thread.thread.archived {
+                    let removed = remove(&mut shell.threads, |row| row.thread.id == id);
+                    let archived = shell.archive_not_newer_than(sequence)
+                        && upsert(&mut shell.archive, *thread, |row| &row.thread.id);
+                    removed || archived
+                } else {
+                    let unarchived = shell.archive_not_newer_than(sequence)
+                        && remove(&mut shell.archive, |row| row.thread.id == id);
+                    let updated = upsert(&mut shell.threads, *thread, |row| &row.thread.id);
+                    unarchived || updated
+                }
+            }),
+            ShellItem::ThreadRemoved {
+                sequence,
+                location,
+                thread_id,
+            } => self.apply_delta(sequence, |shell| match location {
+                ThreadLocation::Active => {
+                    remove(&mut shell.threads, |row| row.thread.id == thread_id)
+                }
+                ThreadLocation::Archive => {
+                    shell.archive_not_newer_than(sequence)
+                        && remove(&mut shell.archive, |row| row.thread.id == thread_id)
+                }
+            }),
+            ShellItem::Ignored => false,
+        };
+        Ok(changed)
+    }
+
+    pub(super) fn apply_archive_snapshot(
+        &mut self,
+        value: Value,
+    ) -> Result<bool, serde_json::Error> {
+        let snapshot: ArchiveSnapshot = serde_json::from_value(value)?;
+        if snapshot.snapshot_sequence < self.sequence
+            || !self.archive_not_newer_than(snapshot.snapshot_sequence)
+        {
+            return Ok(false);
+        }
+        self.archive_sequence = Some(snapshot.snapshot_sequence);
+        self.archive = unique_threads(snapshot.threads, true);
+        Ok(true)
+    }
+
+    fn archive_not_newer_than(&self, sequence: u64) -> bool {
+        self.archive_sequence
+            .is_none_or(|archive| sequence >= archive)
+    }
+
+    fn remove_active_from_archive(&mut self) {
+        let active: HashSet<_> = self
+            .threads
+            .iter()
+            .map(|row| row.thread.id.as_str())
+            .collect();
+        self.archive
+            .retain(|row| !active.contains(row.thread.id.as_str()));
+    }
+
+    fn apply_delta(&mut self, sequence: u64, update: impl FnOnce(&mut Self) -> bool) -> bool {
+        if sequence <= self.sequence {
+            return false;
+        }
+        self.sequence = sequence;
+        update(self)
+    }
+
+    pub(crate) fn view(&self) -> (Vec<Project>, Vec<Thread>) {
+        let archived: HashSet<_> = self
+            .archive
+            .iter()
+            .map(|row| row.thread.id.as_str())
+            .collect();
+        (
+            self.projects
+                .iter()
+                .map(|row| row.project.clone())
+                .collect(),
+            self.threads
+                .iter()
+                .filter(|row| !archived.contains(row.thread.id.as_str()))
+                .chain(self.archive.iter())
+                .filter(|row| row.listed())
+                .map(|row| row.thread.clone())
+                .collect(),
+        )
+    }
+
+    pub(super) fn project(&self, project_id: &str) -> Option<&ProjectRow> {
+        self.projects
+            .iter()
+            .find(|row| row.project.id == project_id)
+    }
+}
+
+fn unique_threads(threads: Vec<ThreadRow>, archived: bool) -> Vec<ThreadRow> {
+    let mut seen = HashSet::new();
+    threads
+        .into_iter()
+        .filter_map(|mut row| {
+            row.thread.archived = archived;
+            seen.insert(row.thread.id.clone()).then_some(row)
+        })
+        .collect()
+}
+
+fn upsert<T: Eq>(rows: &mut Vec<T>, row: T, id: impl Fn(&T) -> &str) -> bool {
+    if let Some(existing) = rows.iter_mut().find(|existing| id(existing) == id(&row)) {
+        if *existing == row {
+            return false;
+        }
+        *existing = row;
+    } else {
+        rows.push(row);
+    }
+    true
+}
+
+fn remove<T>(rows: &mut Vec<T>, matches: impl Fn(&T) -> bool) -> bool {
+    let count = rows.len();
+    rows.retain(|row| !matches(row));
+    count != rows.len()
+}
+
+#[derive(Deserialize)]
+struct ThreadProjection {
+    messages: Vec<Message>,
+    #[serde(rename = "visibleTurnItems")]
+    visible_turn_items: Option<Vec<TimelineRow>>,
+    #[serde(default, rename = "runtimeRequests")]
+    runtime_requests: Vec<RuntimeRequest>,
+    #[serde(default, rename = "turnItems")]
+    turn_items: Vec<RuntimeRequestItem>,
+}
+
+impl ThreadProjection {
+    fn take_runtime_requests(&mut self) -> (ApprovalProjection, QuestionProjection) {
+        let mut approvals = ApprovalProjection::default();
+        let mut questions = QuestionProjection::default();
+        for request in self.runtime_requests.drain(..) {
+            if request.kind == "user_input" {
+                questions.request(request);
+            } else {
+                approvals.request(request);
+            }
+        }
+        for item in self.turn_items.drain(..) {
+            match item {
+                RuntimeRequestItem::ApprovalRequest(details) => {
+                    approvals.detail(details);
+                }
+                RuntimeRequestItem::UserInputRequest(details) => {
+                    questions.detail(details);
+                }
+                RuntimeRequestItem::Other => {}
+            }
+        }
+        (approvals, questions)
+    }
+
+    fn visible_messages(self) -> Vec<Message> {
+        let Some(rows) = self.visible_turn_items else {
+            return self.messages;
+        };
+        let mut messages = self
+            .messages
+            .into_iter()
+            .map(|message| (message.id.clone(), message))
+            .collect::<HashMap<_, _>>();
+        rows.into_iter()
+            .filter_map(|row| {
+                let (role, entry) = match row.item {
+                    TimelineItem::UserMessage(entry) => ("user", entry),
+                    TimelineItem::AssistantMessage(entry) => ("assistant", entry),
+                    _ => return None,
+                };
+                if let Some(mut message) = messages.remove(&entry.message_id) {
+                    if let Some(text) = entry.text {
+                        message.text = text;
+                    }
+                    Some(message)
+                } else {
+                    entry.into_message(role)
+                }
+            })
+            .collect()
+    }
+}
+
+#[derive(Deserialize)]
+struct TimelineRow {
+    item: TimelineItem,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum TimelineItem {
+    UserMessage(TimelineMessage),
+    AssistantMessage(TimelineMessage),
+    ApprovalRequest(ApprovalDetails),
+    UserInputRequest(QuestionDetails),
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum RuntimeRequestItem {
+    ApprovalRequest(ApprovalDetails),
+    UserInputRequest(QuestionDetails),
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TimelineMessage {
+    message_id: String,
+    text: Option<String>,
+    created_by: Option<String>,
+}
+
+impl TimelineMessage {
+    fn into_message(self, role: &str) -> Option<Message> {
+        Some(Message {
+            id: self.message_id,
+            role: role.into(),
+            text: self.text?,
+            created_by: self.created_by,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type")]
+enum ThreadEvent {
+    #[serde(rename = "message.updated")]
+    MessageUpdated { payload: Message },
+    #[serde(rename = "turn-item.updated")]
+    ItemUpdated { payload: TimelineItem },
+    #[serde(rename = "runtime-request.updated")]
+    RuntimeRequestUpdated { payload: RuntimeRequest },
+    #[serde(other)]
+    Ignored,
+}
+
+#[derive(Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "lowercase",
+    rename_all_fields = "camelCase"
+)]
+enum ThreadItem {
+    Snapshot {
+        snapshot_sequence: u64,
+        projection: ThreadProjection,
+    },
+    Event {
+        sequence: u64,
+        event: ThreadEvent,
+    },
+    #[serde(other)]
+    Ignored,
+}
+
+#[derive(Default)]
+pub(crate) struct Conversation {
+    sequence: u64,
+    messages: Vec<Message>,
+    message_index: HashMap<String, usize>,
+    pub(super) approvals: ApprovalProjection,
+    pub(super) questions: QuestionProjection,
+}
+
+impl Conversation {
+    pub(crate) fn apply(&mut self, value: Value) -> Result<bool, serde_json::Error> {
+        let changed = match serde_json::from_value(value)? {
+            ThreadItem::Snapshot {
+                snapshot_sequence,
+                mut projection,
+            } if snapshot_sequence >= self.sequence => {
+                self.sequence = snapshot_sequence;
+                (self.approvals, self.questions) = projection.take_runtime_requests();
+                self.messages.clear();
+                self.message_index.clear();
+                for message in projection.visible_messages() {
+                    self.upsert_message(message);
+                }
+                true
+            }
+            ThreadItem::Event { sequence, event } if sequence > self.sequence => {
+                self.sequence = sequence;
+                match event {
+                    ThreadEvent::MessageUpdated { payload } => self.upsert_message(payload),
+                    ThreadEvent::ItemUpdated {
+                        payload: TimelineItem::AssistantMessage(entry),
+                    } => entry
+                        .into_message("assistant")
+                        .is_some_and(|message| self.upsert_message(message)),
+                    ThreadEvent::ItemUpdated {
+                        payload: TimelineItem::ApprovalRequest(details),
+                    } => self.approvals.detail(details),
+                    ThreadEvent::ItemUpdated {
+                        payload: TimelineItem::UserInputRequest(details),
+                    } => self.questions.detail(details),
+                    ThreadEvent::RuntimeRequestUpdated { payload }
+                        if payload.kind == "user_input" =>
+                    {
+                        self.questions.request(payload)
+                    }
+                    ThreadEvent::RuntimeRequestUpdated { payload } => {
+                        self.approvals.request(payload)
+                    }
+                    ThreadEvent::ItemUpdated { .. } => false,
+                    ThreadEvent::Ignored => false,
+                }
+            }
+            _ => false,
+        };
+        Ok(changed)
+    }
+
+    fn upsert_message(&mut self, message: Message) -> bool {
+        if let Some(&index) = self.message_index.get(&message.id) {
+            let existing = &mut self.messages[index];
+            if *existing == message {
+                return false;
+            }
+            *existing = message;
+        } else {
+            self.message_index
+                .insert(message.id.clone(), self.messages.len());
+            self.messages.push(message);
+        }
+        true
+    }
+
+    pub(crate) fn messages(&self) -> Vec<Message> {
+        self.messages.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::connection::{Answer, QuestionResponse};
+    use serde_json::json;
+    use uuid::Uuid;
+
+    #[test]
+    fn live_question_waits_for_its_details_and_rejects_invalid_or_stale_responses() {
+        let active = json!({"id":"q", "kind":"user_input", "status":"pending",
+            "createdAt":"2026-11-22T13:00:00Z", "responseCapability":{"type":"live"}});
+        let details = json!({"type":"user_input_request", "requestId":"q", "status":"waiting",
+            "questions":[{"id":"choice", "header":"Pick", "question":"Which one?", "allowCustomAnswer":false,
+                "options":[{"label":"First", "description":"Description", "value":"first"}]}]});
+        let snapshot = |sequence| {
+            json!({"kind":"snapshot", "snapshotSequence":sequence,
+            "projection":{"messages":[], "runtimeRequests":[active], "turnItems":[details]}})
+        };
+        let mut conversation = Conversation::default();
+        assert!(
+            conversation
+                .apply(json!({"kind":"event", "sequence":1, "event":{
+            "type":"runtime-request.updated", "payload":active}}))
+                .unwrap()
+        );
+        assert!(conversation.questions.visible().is_empty());
+        assert!(conversation.apply(snapshot(2)).unwrap());
+        assert_eq!(
+            conversation.questions.visible()[0].questions[0].options[0].label,
+            "First"
+        );
+        let mut response = QuestionResponse {
+            thread_id: "thread".into(),
+            request_id: "q".into(),
+            command_id: Uuid::new_v4(),
+            answers: [("choice".into(), Answer::Text("first".into()))].into(),
+        };
+        assert!(conversation.questions.allows(&response));
+        assert_eq!(response.payload()["answers"], json!({"choice":"first"}));
+        response
+            .answers
+            .insert("choice".into(), Answer::Text("First".into()));
+        assert!(!conversation.questions.allows(&response));
+        let mut resolved = active.clone();
+        resolved["status"] = "resolved".into();
+        assert!(
+            conversation
+                .apply(json!({"kind":"event", "sequence":3, "event":{
+            "type":"runtime-request.updated", "payload":resolved}}))
+                .unwrap()
+        );
+        assert!(!conversation.apply(snapshot(2)).unwrap());
+        assert!(conversation.questions.visible().is_empty());
+    }
+
+    #[test]
+    fn conversation_uses_wire_timeline_order_and_renders_streaming_text_once() {
+        let mut conversation = Conversation::default();
+        assert!(conversation.apply(json!({
+            "kind": "snapshot", "snapshotSequence": 5,
+            "projection": {
+                "messages": [
+                    {"id":"hidden", "role":"user", "text":"Cancelled"},
+                    {"id":"prompt", "role":"user", "text":"Existing prompt", "createdBy":"agent"}
+                ],
+                "visibleTurnItems": [
+                    {"item":{"type":"user_message", "messageId":"prompt", "text":"Existing prompt"}},
+                    {"item":{"type":"assistant_message", "messageId":"reply", "text":"Working"}},
+                    {"item":{"type":"command_execution", "command":"ls"}}
+                ]
+            },
+        })).unwrap());
+        assert_eq!(
+            conversation.messages[0].created_by.as_deref(),
+            Some("agent")
+        );
+        assert_eq!(conversation.messages[1].text, "Working");
+        assert_eq!(conversation.messages.len(), 2);
+        assert!(conversation.apply(json!({
+            "kind": "event", "sequence": 6,
+            "event": {"type":"turn-item.updated", "payload":{"type":"assistant_message", "messageId":"reply", "text":"Done"}},
+        })).unwrap());
+        assert_eq!(conversation.messages[1].text, "Done");
+        assert_eq!(conversation.messages.len(), 2);
+    }
+
+    #[test]
+    fn project_updates_and_archiving_preserve_the_rest_of_the_shell() {
+        let mut shell = Shell::default();
+        let project = json!({"id": "p", "title": "Old name", "workspaceRoot": "/workspace"});
+        let thread = json!({"id": "t", "projectId": "p", "title": "First", "status": "idle"});
+        let archived = json!({"id": "old", "projectId": "p", "title": "Archived"});
+        let child = json!({
+            "id": "child", "projectId": "p", "title": "Child", "status": "running",
+            "lineage": {"relationshipToParent": "subagent"}
+        });
+        assert!(shell.apply(json!({"kind": "snapshot", "snapshot": {
+            "snapshotSequence": 5, "projects": [project.clone()], "threads": [thread.clone(), child],
+            "archivedThreads": [archived],
+        }})).unwrap());
+        assert_eq!(shell.view().1[0].id, "t");
+        assert_eq!(shell.view().1.len(), 2);
+        assert!(shell.view().1[1].archived);
+        assert!(shell.threads.iter().any(|row| row.thread.id == "child"));
+
+        assert!(
+            !shell
+                .apply(json!({"kind": "snapshot", "snapshot": {
+            "snapshotSequence": 6, "projects": [project], "threads": [],
+        }, "resolvedRepositoryIdentityRoots": ["/workspace"]}))
+                .unwrap()
+        );
+        assert_eq!(shell.view().1.len(), 2);
+
+        assert!(
+            shell
+                .apply(json!({"kind": "project.updated", "sequence": 6,
+                    "project": {"id": "p", "title": "Renamed", "workspaceRoot": "/workspace"}
+                }))
+                .unwrap()
+        );
+        assert!(
+            shell
+                .apply(json!({"kind": "thread.updated", "sequence": 7,
+                    "location": "archive", "thread": thread.clone()
+                }))
+                .unwrap()
+        );
+        assert!(
+            !shell
+                .apply(json!({"kind": "thread.updated", "sequence": 6,
+                    "location": "active", "thread": thread
+                }))
+                .unwrap()
+        );
+        let (projects, threads) = shell.view();
+        assert_eq!(projects[0].name, "Renamed");
+        assert_eq!(threads.len(), 2);
+        assert!(threads.iter().all(|thread| thread.archived));
+        assert!(
+            !shell
+                .apply(json!({"kind": "thread.removed", "sequence": 8,
+                    "location": "active", "threadId": "t"
+                }))
+                .unwrap()
+        );
+        assert!(
+            shell
+                .apply(json!({"kind": "thread.removed", "sequence": 9,
+                    "location": "archive", "threadId": "t"
+                }))
+                .unwrap()
+        );
+        assert_eq!(shell.view().1[0].id, "old");
+    }
+
+    #[test]
+    fn archive_snapshot_preserves_the_active_cursor_and_wins_over_delayed_archive_changes() {
+        let mut shell = Shell::default();
+        let thread = json!({"id": "t", "projectId": "p", "title": "Before archive"});
+        let archived = json!({"id": "t", "projectId": "p", "title": "Archived"});
+        assert!(
+            shell
+                .apply(json!({"kind": "snapshot", "snapshot": {
+                    "snapshotSequence": 5, "projects": [], "threads": [thread],
+                }}))
+                .unwrap()
+        );
+        let archive = json!({"snapshotSequence": 8, "projects": [], "threads": [archived]});
+        assert!(shell.apply_archive_snapshot(archive.clone()).unwrap());
+        assert_eq!(shell.sequence, 5);
+        assert!(shell.view().1[0].archived);
+
+        assert!(
+            !shell
+                .apply(json!({"kind": "thread.removed", "sequence": 7,
+                    "location": "archive", "threadId": "t",
+                }))
+                .unwrap()
+        );
+        assert_eq!(shell.view().1[0].title, "Archived");
+        assert!(shell.apply(json!({"kind": "thread.updated", "sequence": 9,
+            "location": "active", "thread": {"id": "t", "projectId": "p", "title": "Unarchived"},
+        })).unwrap());
+        assert!(!shell.apply_archive_snapshot(archive).unwrap());
+        assert_eq!(shell.view().1[0].title, "Unarchived");
+        assert!(!shell.view().1[0].archived);
+    }
+
+    #[test]
+    fn shell_activity_uses_valid_wire_timestamps_before_the_update_fallback() {
+        let row: ThreadRow = serde_json::from_value(json!({
+            "id": "thread", "projectId": "project", "title": "Conversation",
+            "updatedAt": "2026-11-22T13:15:00Z",
+            "latestUserMessageAt": "invalid",
+            "latestRunRequestedAt": "2026-11-22T13:01:00Z",
+            "latestRunStartedAt": null,
+            "latestRunCompletedAt": "2026-11-22T14:03:00+01:00"
+        }))
+        .unwrap();
+        let fallback: ThreadRow = serde_json::from_value(json!({
+            "id": "thread", "projectId": "project", "title": "Conversation",
+            "updatedAt": "2026-11-22T13:15:00Z"
+        }))
+        .unwrap();
+        let timestamp = |time| Some(OffsetDateTime::parse(time, &Rfc3339).unwrap());
+        assert_eq!(
+            row.thread.activity_timestamp(),
+            timestamp("2026-11-22T13:03:00Z")
+        );
+        assert_eq!(
+            fallback.thread.activity_timestamp(),
+            timestamp("2026-11-22T13:15:00Z")
+        );
+    }
+
+    #[test]
+    fn command_approval_joins_snapshot_details_and_rejects_stale_updates() {
+        use super::super::ApprovalDecision;
+
+        let mut thread = Conversation::default();
+        let mut request = json!({
+            "id": "approval", "kind": "command", "status": "pending",
+            "createdAt": "2026-11-22T12:00:00Z",
+            "responseCapability": {"type": "live", "providerSessionId": "provider"}
+        });
+        let snapshot = json!({"kind": "snapshot", "snapshotSequence": 10, "projection": {
+            "messages": [], "runtimeRequests": [request.clone()], "turnItems": [{
+                "type": "approval_request", "status": "waiting", "requestId": "approval",
+                "requestKind": "command", "prompt": "git status",
+                "options": [{"decision": "accept", "label": "Allow once"},
+                    {"decision": "acceptAlways", "label": "Always allow"}]
+            }]
+        }});
+        assert!(thread.apply(snapshot.clone()).unwrap());
+        let visible = thread.approvals.visible();
+        assert_eq!(visible[0].command.as_deref(), Some("git status"));
+        assert_eq!(visible[0].choices[0].label, "Allow once");
+        assert!(
+            thread
+                .approvals
+                .allows("approval", ApprovalDecision::Accept)
+        );
+        assert!(
+            !thread
+                .approvals
+                .allows("approval", ApprovalDecision::Decline)
+        );
+        request["status"] = json!("resolved");
+        assert!(
+            thread
+                .apply(json!({"kind": "event", "sequence": 11, "event": {
+                    "type": "runtime-request.updated", "payload": request
+                }}))
+                .unwrap()
+        );
+        assert!(!thread.apply(snapshot).unwrap());
+        assert!(thread.approvals.visible().is_empty());
+    }
+
+    #[test]
+    fn message_updates_replace_text_in_place_and_ignore_replayed_sequences() {
+        let mut thread = Conversation::default();
+        assert!(
+            thread
+                .apply(json!({"kind": "snapshot", "snapshotSequence": 10,
+                    "projection": {"messages": [
+                        {"id": "1", "role": "user", "text": "Question", "createdBy": "agent"},
+                        {"id": "2", "role": "assistant", "text": "A"},
+                        {"id": "2", "role": "assistant", "text": "An"}
+                    ]}
+                }))
+                .unwrap()
+        );
+        assert!(thread.apply(json!({"kind": "event", "sequence": 11, "event": {
+            "type": "message.updated", "payload": {"id": "2", "role": "assistant", "text": "Answer"}
+        }})).unwrap());
+        assert!(thread.apply(json!({"kind": "event", "sequence": 12, "event": {
+            "type": "message.updated", "payload": {"id": "3", "role": "user", "text": "Follow-up"}
+        }})).unwrap());
+        assert!(!thread.apply(json!({"kind": "event", "sequence": 10, "event": {
+            "type": "message.updated", "payload": {"id": "2", "role": "assistant", "text": "Stale"}
+        }})).unwrap());
+        let messages = thread.messages();
+        assert_eq!(messages[0].created_by.as_deref(), Some("agent"));
+        assert!(messages[1].created_by.is_none());
+        let transcript: Vec<_> = messages.iter().map(|row| row.text.as_str()).collect();
+        assert_eq!(transcript, ["Question", "Answer", "Follow-up"]);
+    }
+}
