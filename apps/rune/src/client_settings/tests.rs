@@ -50,15 +50,29 @@ fn patching_legacy_json_preserves_other_document_values() {
         &file,
         r#"{
             // Valid older desktop wrapper
-            "settings": {"confirmTerminalClose": false, "timestampFormat": "24-hour", },
+            "settings": {"confirmTerminalClose": false, "timestampFormat": "24-hour", "onboardingCompletedAt": null, },
             "version": 1,
         }"#,
     )
     .unwrap();
     let mut settings = ClientSettings::at_state_dir(state.path());
     assert!(!settings.confirm_terminal_close());
+    assert!(!settings.onboarding_completed().unwrap());
+    settings.complete_onboarding().unwrap();
+    let completed = read_document(&file).unwrap()["settings"][ONBOARDING_COMPLETED].clone();
+    assert!(
+        time::OffsetDateTime::parse(
+            completed.as_str().expect("completion timestamp"),
+            &time::format_description::well_known::Rfc3339,
+        )
+        .is_ok()
+    );
     settings.set_confirm_terminal_close(true).unwrap();
+    let reopened = ClientSettings::at_state_dir(state.path());
+    assert!(reopened.onboarding_completed().unwrap());
+    reopened.complete_onboarding().unwrap();
     let saved = read_document(&file).unwrap();
+    assert_eq!(saved["settings"][ONBOARDING_COMPLETED], completed);
     assert_eq!(saved["version"], 1);
     assert_eq!(saved["settings"]["timestampFormat"], "24-hour");
     assert_eq!(saved["settings"]["confirmTerminalClose"], true);

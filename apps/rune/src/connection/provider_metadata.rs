@@ -15,10 +15,49 @@ pub(crate) struct ProviderMetadata {
     #[serde(default)]
     pub(crate) enabled: bool,
     status: Option<String>,
+    installed: Option<bool>,
+    auth: Option<ProviderAuth>,
+    pub(crate) message: Option<String>,
     availability: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+struct ProviderAuth {
+    status: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum ProviderReadiness {
+    Ready,
+    SignIn,
+    Attention,
+    Install,
+    Disabled,
+    Checking,
+}
+
 impl ProviderMetadata {
+    pub(crate) fn readiness(&self) -> ProviderReadiness {
+        let auth = self.auth.as_ref().map(|auth| auth.status.as_str());
+        match (
+            self.availability.as_deref(),
+            self.enabled,
+            self.installed,
+            self.status.as_deref(),
+            auth,
+        ) {
+            (Some("unavailable"), _, _, _, _) => ProviderReadiness::Attention,
+            (_, false, _, _, _) | (_, _, _, Some("disabled"), _) => ProviderReadiness::Disabled,
+            (_, _, Some(false), Some("warning"), Some("unknown")) | (_, _, None, None, _) => {
+                ProviderReadiness::Checking
+            }
+            (_, _, Some(false), _, _) => ProviderReadiness::Install,
+            (_, _, _, _, Some("unauthenticated")) => ProviderReadiness::SignIn,
+            (_, _, Some(true), Some("ready"), _) => ProviderReadiness::Ready,
+            _ => ProviderReadiness::Attention,
+        }
+    }
+
     pub(crate) fn selectable(&self, explicitly_requested: bool) -> bool {
         self.enabled
             && self.availability.as_deref() != Some("unavailable")

@@ -16,6 +16,7 @@ use appearance::AppearancePreference;
 const FILE_NAME: &str = "client-settings.json";
 const TERMINAL_CONFIRMATION: &str = "confirmTerminalClose";
 const THREAD_DETAILS_CLOSED: &str = "threadDetailsInlineClosed";
+const ONBOARDING_COMPLETED: &str = "onboardingCompletedAt";
 const MAX_SYMLINK_HOPS: usize = 40;
 
 type ClosedThreadDetails = BTreeMap<String, BTreeSet<String>>;
@@ -56,6 +57,33 @@ impl ClientSettings {
             closed_thread_details,
             appearance: AppearancePreference::at_state_dir(state_dir),
         }
+    }
+
+    pub(crate) fn onboarding_completed(&self) -> io::Result<bool> {
+        self.path.as_deref().map_or(Ok(true), |path| {
+            onboarding_completion(&read_document(path)?)
+        })
+    }
+
+    pub(crate) fn complete_onboarding(&self) -> io::Result<()> {
+        let Some(path) = &self.path else {
+            return Ok(());
+        };
+        let target = resolve_file_target(path)?;
+        let mut document = read_document(&target)?;
+        if onboarding_completion(&document)? {
+            return Ok(());
+        }
+        let format = time::format_description::parse_borrowed::<2>(
+            "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z",
+        )
+        .expect("static onboarding timestamp format");
+        let timestamp = time::OffsetDateTime::now_utc()
+            .format(&format)
+            .map_err(io::Error::other)?;
+        preference_object(&mut document)?
+            .insert(ONBOARDING_COMPLETED.to_owned(), Value::String(timestamp));
+        write_document(&target, &document)
     }
 
     pub(crate) fn confirm_terminal_close(&self) -> bool {
@@ -147,6 +175,18 @@ pub(crate) fn read_document(path: &Path) -> io::Result<Map<String, Value>> {
         },
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Map::new()),
         Err(error) => Err(error),
+    }
+}
+
+fn onboarding_completion(document: &Map<String, Value>) -> io::Result<bool> {
+    let preferences = match document.get("settings") {
+        Some(value) => value.as_object().ok_or_else(invalid_document)?,
+        None => document,
+    };
+    match preferences.get(ONBOARDING_COMPLETED) {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::String(_)) => Ok(true),
+        Some(_) => Err(invalid_document()),
     }
 }
 

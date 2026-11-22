@@ -211,6 +211,23 @@ fn artwork(instance: Instance<'_>, size: f32, current: bool, secondary: Color) -
     }
 }
 
+pub(in crate::ui) fn identity(provider: &ProviderMetadata, dark: bool, ink: Color) -> (String, El) {
+    let instance = Instance {
+        id: &provider.instance_id,
+        metadata: Some(provider),
+        brand: brand(&provider.driver, dark),
+    };
+    let name = instance.display_name();
+    let mark = if let Some(brand) = instance.brand {
+        icon(brand.logo, 18.0).color(brand.color.and_then(hex).unwrap_or(ink))
+    } else {
+        el().size(18.0, 18.0)
+            .center()
+            .child(text(initials(&name)).font(BADGE_TEXT).color(ink))
+    };
+    (name, mark.a11y_hidden())
+}
+
 pub(super) fn stack(
     thread: &Thread,
     catalog: Option<&ProviderCatalog>,

@@ -18,7 +18,7 @@ use super::{Project, ProjectView, Shell, State, Thread, Workspace};
 
 pub(super) mod project_badge;
 mod project_scope;
-mod provider_badge;
+pub(super) mod provider_badge;
 
 pub(super) use project_scope::overlay as project_scope_overlay;
 

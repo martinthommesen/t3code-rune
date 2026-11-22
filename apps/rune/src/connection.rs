@@ -44,7 +44,7 @@ pub(crate) use projection::{
     Project, ProjectIcon, QueuedMessage, Thread, TodoListEntry, TodoStepStatus,
 };
 use projection::{Conversation, Shell};
-pub(crate) use provider_metadata::{ProviderCatalog, ProviderMetadata};
+pub(crate) use provider_metadata::{ProviderCatalog, ProviderMetadata, ProviderReadiness};
 pub(crate) use queue_mutation::QueueMutation;
 #[cfg(test)]
 pub(crate) use runtime_approval::ApprovalChoice;
@@ -116,6 +116,7 @@ pub(crate) enum Event {
         image: Option<FaviconBytes>,
     },
     Providers(ProviderCatalog),
+    ProviderCatalogUnavailable,
     Thread {
         thread_id: String,
         entries: Vec<ConversationEntry>,
@@ -241,6 +242,7 @@ pub(crate) enum Event {
 }
 
 enum Command {
+    RefreshProviderCatalog,
     LoadProjectFavicons(Vec<FaviconTarget>),
     OpenThread(String),
     CloseThread,
@@ -433,6 +435,10 @@ impl Connection {
         let _ = self
             .commands
             .send(Command::EditProject { project_id, edit });
+    }
+
+    pub(crate) fn refresh_provider_catalog(&self) {
+        let _ = self.commands.send(Command::RefreshProviderCatalog);
     }
 
     pub(crate) fn load_project_favicons(&self, targets: Vec<FaviconTarget>) {
@@ -1555,6 +1561,12 @@ impl Session {
         events: &EventSender<impl Fn()>,
     ) -> Result<(), SessionStop> {
         match command {
+            Command::RefreshProviderCatalog => {
+                if let Some(request) = self.providers_request_id.take() {
+                    self.interrupt(&request).await?;
+                }
+                self.subscribe_provider_catalog().await?;
+            }
             Command::LoadProjectFavicons(targets) => {
                 self.favicons.enqueue(targets);
                 self.request_project_favicons().await?;
@@ -2257,6 +2269,13 @@ impl Session {
                 }
             }
             ServerFrame::Exit { request_id, exit } => {
+                if self.providers_request_id.as_ref() == Some(&request_id) {
+                    self.providers_request_id = None;
+                    if exit.into_result().is_err() {
+                        events.send(Event::ProviderCatalogUnavailable);
+                    }
+                    return Ok(());
+                }
                 if self.pending_workspace_retries.contains_key(&request_id) {
                     self.workspace_retry_exit(&request_id, exit, events);
                     return Ok(());

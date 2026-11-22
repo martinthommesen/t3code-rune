@@ -18,6 +18,7 @@ mod composer;
 mod conversation;
 mod draft_hero;
 mod navigation_history;
+mod onboarding;
 mod project;
 mod project_favicons;
 mod question;
@@ -264,6 +265,7 @@ struct State {
     scratch_request: Option<project::ScratchRequest>,
     project_notice: Option<String>,
     client_settings: ClientSettings,
+    onboarding: onboarding::Onboarding,
     settings: settings::Panel,
     terminal: Option<terminal::Pane>,
     terminal_tabs: terminal::TabsByThread,
@@ -297,6 +299,7 @@ impl Default for State {
             scratch_request: None,
             project_notice: None,
             client_settings: ClientSettings::default(),
+            onboarding: onboarding::Onboarding::default(),
             settings: settings::Panel::default(),
             terminal: None,
             terminal_tabs: terminal::TabsByThread::default(),
@@ -906,6 +909,7 @@ impl State {
         if let Some(workspace) = &mut self.workspace {
             changed |= workspace.favicons.poll();
         }
+        changed |= onboarding::Onboarding::poll(self, clock, tx);
         changed |= self.poll_project_browse();
         changed |= self.poll_question(clock);
         changed |= sidebar::poll_rename(self);
@@ -1009,10 +1013,12 @@ impl State {
                 }
             }
             Event::Providers(providers) => {
+                self.onboarding.finish_refresh();
                 if let Some(workspace) = &mut self.workspace {
                     workspace.providers = Some(providers);
                 }
             }
+            Event::ProviderCatalogUnavailable => self.onboarding.finish_refresh(),
             Event::ProjectEditSettled {
                 project_id,
                 kind,
@@ -1434,6 +1440,7 @@ impl State {
                 }
             }
             Event::Disconnected(reason) => {
+                self.onboarding.finish_refresh();
                 sidebar::cancel_rename(self);
                 self.connection = None;
                 self.workspace = None;
@@ -1628,7 +1635,13 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
             pane_size[1],
         ],
     };
-    let content = match &state.workspace {
+    let [width, height] = cx.layout_size("t3-code-window").unwrap_or([1100.0, 780.0]);
+    let setup = onboarding::view(state, palette.dark, width, height, chrome_layout.height());
+    let onboarding_open = setup.is_some();
+    if onboarding_open {
+        cx.web_focus();
+    }
+    let content = setup.unwrap_or_else(|| match &state.workspace {
         Some(workspace) => workspace_view(
             state,
             workspace,
@@ -1639,13 +1652,14 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
             detail_layout,
         ),
         None => connection_view(state, palette),
+    });
+    let modal = if onboarding_open {
+        None
+    } else {
+        state
+            .terminal_close_dialog(palette)
+            .or_else(|| settings::overlay(state, palette, width))
     };
-    let width = cx
-        .layout_size("t3-code-window")
-        .map_or(1100.0, |size| size[0]);
-    let modal = state
-        .terminal_close_dialog(palette)
-        .or_else(|| settings::overlay(state, palette, width));
     let modal_open = modal.is_some();
     let mut body = col()
         .key("t3-code-window")
@@ -1656,7 +1670,7 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
         .on_paste(State::paste_terminal)
         .on_window_focus(State::terminal_window_focus)
         .on_key(move |state: &mut State, event, tx| {
-            if modal_open {
+            if modal_open || onboarding_open {
                 return false;
             }
             if event.is_command('j')
@@ -1673,7 +1687,10 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
                     || state.question_shortcut(event, tx)
             }
         });
-    if !modal_open && let Some(message) = &state.project_notice {
+    if !modal_open
+        && !onboarding_open
+        && let Some(message) = &state.project_notice
+    {
         body = body.child(
             col()
                 .absolute(12.0, 48.0)
@@ -1696,12 +1713,13 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
         );
     }
     if !modal_open
-        && state
-            .workspace
-            .as_ref()
-            .is_none_or(|workspace| workspace.selection.is_none())
+        && (onboarding_open
+            || state
+                .workspace
+                .as_ref()
+                .is_none_or(|workspace| workspace.selection.is_none()))
     {
-        let left = if state.workspace.is_none() {
+        let left = if onboarding_open || state.workspace.is_none() {
             0.0
         } else if state.sidebar_open {
             chrome_layout.width()
@@ -1712,14 +1730,17 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
             body = body.child(band);
         }
     }
-    if let Some(dialog) = modal {
-        body = body.child(dialog);
-    } else if let Some(form) = &state.add_project {
-        body = body.child(project::dialog(form, palette));
-    } else if let Some(overlays) = sidebar::project_scope_overlay(state, palette, pane_size[1]) {
-        body = body.children(overlays);
-    } else if let Some(overlays) = worktree_setup::overlay(state, palette, width) {
-        body = body.children(overlays);
+    if !onboarding_open {
+        if let Some(dialog) = modal {
+            body = body.child(dialog);
+        } else if let Some(form) = &state.add_project {
+            body = body.child(project::dialog(form, palette));
+        } else if let Some(overlays) = sidebar::project_scope_overlay(state, palette, pane_size[1])
+        {
+            body = body.children(overlays);
+        } else if let Some(overlays) = worktree_setup::overlay(state, palette, width) {
+            body = body.children(overlays);
+        }
     }
     if let Some(caption) = state.window_chrome.overlay(palette.dark) {
         body = body.child(caption);
@@ -2181,8 +2202,10 @@ pub(crate) fn run(
             ..rune::Chrome::DEFAULT
         })
         .init(move || {
+            let onboarding = onboarding::Onboarding::new(&client_settings);
             let mut state = State {
                 client_settings,
+                onboarding,
                 ..State::default()
             };
             if let Some(url) = url {
