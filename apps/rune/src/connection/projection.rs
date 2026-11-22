@@ -132,6 +132,7 @@ pub(crate) struct ThreadError {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ThreadActivity {
     archived_at: Option<String>,
+    settled_override: Option<String>,
     latest_user_message_at: Option<String>,
     #[serde(default, deserialize_with = "present_timestamp")]
     latest_user_authored_message_at: Option<Option<String>>,
@@ -149,6 +150,10 @@ fn present_timestamp<'de, D: serde::Deserializer<'de>>(
 impl Thread {
     pub(crate) fn archived_at(&self) -> Option<&str> {
         self.activity.archived_at.as_deref()
+    }
+
+    pub(crate) fn is_settled(&self) -> bool {
+        self.activity.settled_override.as_deref() == Some("settled")
     }
 }
 
@@ -267,6 +272,32 @@ impl Thread {
             .filter_map(Option::as_deref)
             .find_map(|value| OffsetDateTime::parse(value, &Rfc3339).ok())
     }
+}
+
+pub(crate) fn latest_thread_by_order<'a>(
+    threads: impl Iterator<Item = &'a Thread>,
+    ordered_by_creation: bool,
+) -> Option<&'a Thread> {
+    threads
+        .map(|thread| (thread_order_timestamp(thread, ordered_by_creation), thread))
+        .max_by(|(left_time, left), (right_time, right)| {
+            left_time
+                .cmp(right_time)
+                .then_with(|| left.id.encode_utf16().cmp(right.id.encode_utf16()))
+        })
+        .map(|(_, thread)| thread)
+}
+
+fn thread_order_timestamp(thread: &Thread, ordered_by_creation: bool) -> Option<i128> {
+    let time = if ordered_by_creation {
+        [&thread.created_at, &thread.updated_at]
+            .into_iter()
+            .filter_map(Option::as_deref)
+            .find_map(|value| OffsetDateTime::parse(value, &Rfc3339).ok())
+    } else {
+        thread.latest_user_activity()
+    }?;
+    Some(time.unix_timestamp_nanos().div_euclid(1_000_000))
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]

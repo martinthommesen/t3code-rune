@@ -7,6 +7,7 @@ use super::settings::path_input;
 use super::{BODY, Palette, SMALL, State, TITLE, button, error_text, form_field, input};
 
 pub(super) mod clone_banner;
+mod existing;
 mod folder;
 pub(super) mod folder_collision;
 mod git_url;
@@ -396,7 +397,7 @@ impl State {
         }
     }
 
-    fn submit_project(&mut self, _: &mut Tx) {
+    fn submit_project(&mut self, tx: &mut Tx) {
         let cwd = self.project_browse_cwd();
         let Some(form) = self
             .add_project
@@ -405,10 +406,7 @@ impl State {
         else {
             return;
         };
-        let Some(connection) = &self.connection else {
-            return;
-        };
-        let typed_path = form.path.text.trim();
+        let typed_path = form.path.text.trim_matches(path_input::whitespace);
         if typed_path.is_empty() {
             return;
         }
@@ -420,6 +418,12 @@ impl State {
         let cwd = browse.map_or(cwd.as_deref(), |browse| browse.cwd.as_deref());
         let Some(workspace_root) = folder::resolve(existing.unwrap_or(typed_path), cwd) else {
             form.error = Some("Relative paths require an active project.".into());
+            return;
+        };
+        if self.open_registered_project(&workspace_root, tx) {
+            return;
+        }
+        let (Some(connection), Some(form)) = (&self.connection, &mut self.add_project) else {
             return;
         };
         let title = folder::title(&workspace_root).to_owned();

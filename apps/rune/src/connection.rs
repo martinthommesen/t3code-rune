@@ -65,6 +65,7 @@ pub(crate) use projection::WorkspaceFailure;
 pub(crate) use projection::{
     CommandEntry, CommandOutputTarget, CommandStatus, CompletedWork, ConversationEntry, Message,
     Project, ProjectIcon, QueuedMessage, Thread, TodoListEntry, TodoStepStatus,
+    latest_thread_by_order,
 };
 use projection::{Conversation, Shell};
 pub(crate) use provider_metadata::{
@@ -486,6 +487,7 @@ pub(crate) enum ProjectEditKind {
     Title,
     Pinned,
     Archived,
+    UnarchiveFromPicker,
     Icon,
 }
 
@@ -493,6 +495,7 @@ pub(crate) enum ProjectEdit {
     Title(String),
     Pinned(bool),
     Archived(bool),
+    UnarchiveFromPicker,
     Icon(Option<ProjectIcon>),
     IconFile(String),
 }
@@ -503,6 +506,7 @@ impl ProjectEdit {
             Self::Title(_) => ProjectEditKind::Title,
             Self::Pinned(_) => ProjectEditKind::Pinned,
             Self::Archived(_) => ProjectEditKind::Archived,
+            Self::UnarchiveFromPicker => ProjectEditKind::UnarchiveFromPicker,
             Self::Icon(_) | Self::IconFile(_) => ProjectEditKind::Icon,
         }
     }
@@ -512,6 +516,7 @@ impl ProjectEdit {
             Self::Title(title) => payload["title"] = json!(title),
             Self::Pinned(pinned) => payload["pinned"] = json!(pinned),
             Self::Archived(archived) => payload["archived"] = json!(archived),
+            Self::UnarchiveFromPicker => payload["archived"] = json!(false),
             Self::Icon(icon) => {
                 payload["projectIcon"] = json!(icon);
                 payload["faviconPath"] = Value::Null;
@@ -2070,8 +2075,12 @@ impl Session {
             Command::EditProject { project_id, edit } => {
                 let kind = edit.kind();
                 if !self.project_writes
-                    || matches!(kind, ProjectEditKind::Pinned | ProjectEditKind::Archived)
-                        && !self.project_organization
+                    || matches!(
+                        kind,
+                        ProjectEditKind::Pinned
+                            | ProjectEditKind::Archived
+                            | ProjectEditKind::UnarchiveFromPicker
+                    ) && !self.project_organization
                     || self.shell.project(&project_id).is_none()
                 {
                     events.send(Event::ProjectEditSettled {

@@ -201,6 +201,8 @@ pub(in crate::ui) fn settle(
                 state.settings.error = Some(message);
             } else if picker {
                 state.project_notice = Some(message);
+            } else if kind == ProjectEditKind::UnarchiveFromPicker {
+                state.project_notice = Some(format!("Failed to unarchive project. {message}"));
             }
         }
     }

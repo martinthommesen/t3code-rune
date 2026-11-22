@@ -28,6 +28,7 @@ const TERMINAL_CONFIRMATION: &str = "confirmTerminalClose";
 const THREAD_DELETE_CONFIRMATION: &str = "confirmThreadDelete";
 const THREAD_ARCHIVE_CONFIRMATION: &str = "confirmThreadArchive";
 const THREAD_DETAILS_CLOSED: &str = "threadDetailsInlineClosed";
+const THREAD_ORDER: &str = "sidebarThreadSortOrder";
 const LAST_PROJECT_ACTIONS: &str = "lastInvokedScriptByProject";
 const ONBOARDING_COMPLETED: &str = "onboardingCompletedAt";
 const SIDEBAR_OPEN: &str = "chat_thread_sidebar_open";
@@ -46,6 +47,7 @@ pub(crate) struct ClientSettings {
     terminal_layouts: terminal::Layouts,
     closed_thread_details: ClosedThreadDetails,
     last_project_actions: BTreeMap<String, String>,
+    threads_ordered_by_creation: bool,
     appearance: AppearancePreference,
     browser_link_target: BrowserLinkTarget,
     reasoning: reasoning::Preferences,
@@ -63,6 +65,7 @@ impl Default for ClientSettings {
             terminal_layouts: terminal::Layouts::new(),
             closed_thread_details: ClosedThreadDetails::new(),
             last_project_actions: BTreeMap::new(),
+            threads_ordered_by_creation: false,
             appearance: AppearancePreference::default(),
             browser_link_target: BrowserLinkTarget::default(),
             reasoning: reasoning::Preferences::default(),
@@ -112,6 +115,14 @@ impl ClientSettings {
                 .as_ref()
                 .and_then(|document| last_project_actions(document).ok())
                 .unwrap_or_default(),
+            threads_ordered_by_creation: document.as_ref().is_some_and(|document| {
+                let preferences = match document.get("settings") {
+                    Some(Value::Object(settings)) => settings,
+                    Some(_) => return false,
+                    None => document,
+                };
+                preferences.get(THREAD_ORDER).and_then(Value::as_str) == Some("created_at")
+            }),
             appearance: AppearancePreference::at_state_dir(state_dir),
             browser_link_target,
             project_order: document
@@ -123,6 +134,10 @@ impl ClientSettings {
                 .and_then(|value| reasoning::Preferences::read(value).ok())
                 .unwrap_or_default(),
         }
+    }
+
+    pub(crate) fn threads_ordered_by_creation(&self) -> bool {
+        self.threads_ordered_by_creation
     }
 
     pub(crate) fn sidebar_open(&self) -> bool {
