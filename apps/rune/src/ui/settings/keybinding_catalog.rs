@@ -2,7 +2,14 @@ use std::collections::HashSet;
 
 use crate::connection::{Binding, KeybindingRule, Keybindings, TERMINAL_TOGGLE};
 
-pub(super) const EDITABLE_COMMANDS: &[&str] = &["sidebar.toggle", TERMINAL_TOGGLE];
+pub(super) const EDITABLE_COMMANDS: &[&str] = &[
+    "sidebar.toggle",
+    "terminal.close",
+    "terminal.new",
+    "terminal.split",
+    "terminal.splitVertical",
+    TERMINAL_TOGGLE,
+];
 
 pub(super) const GROUPS: &[(&str, &[&str])] = &[
     (
