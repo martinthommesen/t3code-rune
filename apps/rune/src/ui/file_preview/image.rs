@@ -7,7 +7,9 @@ use rune::{
 
 use crate::connection::file_preview::AssetOutcome;
 
-use super::{CRUMB, Colors, ERROR, Layout, Load, Palette, Preview, State, binary::Phase, control};
+use super::{
+    CRUMB, Colors, ERROR, Layout, Load, Palette, Preview, State, binary::Phase, control, filename,
+};
 
 pub(super) const PICTURE: &str = "file-preview-image";
 const TOOLBAR_HEIGHT: f32 = 40.0;
@@ -67,6 +69,22 @@ impl PreviewImage {
             menu: None,
             expanded: None,
             save: Phase::Ready,
+        }
+    }
+
+    pub(super) fn save_name(&self, path: &str) -> String {
+        if self.expanded.is_some() {
+            path.replace(['/', '\\'], "_")
+        } else {
+            filename(path).to_owned()
+        }
+    }
+
+    pub(super) fn save_focus(&self) -> &'static str {
+        if self.expanded.is_some() {
+            expanded::SCROLLER
+        } else {
+            PICTURE
         }
     }
 
@@ -213,6 +231,7 @@ pub(super) fn view(
     let body = content_size(bounds, scaled);
     let picture = menu::target(
         el().key(PICTURE)
+            .focusable(true)
             .size(scaled[0], scaled[1])
             .role("button")
             .label(format!("Zoom {}", preview.target.path))
@@ -228,6 +247,7 @@ pub(super) fn view(
                 }
                 true
             }),
+        menu::Surface::Docked,
     );
     let canvas = col()
         .w_full()
@@ -252,7 +272,11 @@ pub(super) fn view(
                 .wrap(),
         );
     }
-    surface.children(image.menu.map(|point| menu::view(image, point, bounds)))
+    surface.children(
+        image
+            .menu
+            .map(|point| menu::view(menu::Surface::Docked, image, point, bounds)),
+    )
 }
 
 fn toolbar(

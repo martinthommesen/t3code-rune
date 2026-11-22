@@ -24,7 +24,7 @@ pub(super) enum Phase {
     Checking,
     Unavailable(String),
     Ready,
-    Preparing,
+    Preparing { name: String },
     Choosing,
     Writing(Receiver<io::Result<()>>),
     SaveError(String),
@@ -55,18 +55,17 @@ impl State {
         } else {
             "Save file"
         };
-        let name = filename(&preview.target.path).to_owned();
         let Some(phase) = preview.save_phase() else {
             return;
         };
         *phase = match (&*phase, result) {
             (Phase::Checking, AssetOutcome::Available) => Phase::Ready,
             (Phase::Checking, AssetOutcome::Failed(message)) => Phase::Unavailable(message),
-            (Phase::Preparing, AssetOutcome::Failed(message)) => Phase::SaveError(message),
-            (Phase::Preparing, AssetOutcome::Prepared(file)) => {
+            (Phase::Preparing { .. }, AssetOutcome::Failed(message)) => Phase::SaveError(message),
+            (Phase::Preparing { name }, AssetOutcome::Prepared(file)) => {
                 let options = FileDialogOptions {
                     title: title.to_owned(),
-                    file_name: Some(name),
+                    file_name: Some(name.clone()),
                     ..Default::default()
                 };
                 tx.save_file(options, move |state: &mut State, answer, tx| {
@@ -92,6 +91,10 @@ impl State {
             return;
         };
         let request = preview.request();
+        let suggested_name = match &preview.load {
+            Load::Image(image) => image.save_name(&preview.target.path),
+            _ => filename(&preview.target.path).to_owned(),
+        };
         let Some(phase) = preview.save_phase() else {
             return;
         };
@@ -99,7 +102,9 @@ impl State {
             (
                 AssetPurpose::Download | AssetPurpose::SaveImage,
                 Phase::Ready | Phase::SaveError(_),
-            ) => Phase::Preparing,
+            ) => Phase::Preparing {
+                name: suggested_name,
+            },
             (AssetPurpose::Inspect, Phase::Unavailable(_)) => Phase::Checking,
             _ => return,
         };
@@ -178,10 +183,9 @@ impl State {
 }
 
 fn preview_save_focus(preview: &Preview) -> &'static str {
-    if matches!(preview.load, Load::Image(_)) {
-        super::image::PICTURE
-    } else {
-        SAVE
+    match &preview.load {
+        Load::Image(image) => image.save_focus(),
+        _ => SAVE,
     }
 }
 
@@ -202,7 +206,7 @@ pub(super) fn view(preview: &Preview, phase: &Phase, colors: Colors, palette: Pa
     let name = filename(&preview.target.path);
     let saving = matches!(
         phase,
-        Phase::Preparing | Phase::Choosing | Phase::Writing(_)
+        Phase::Preparing { .. } | Phase::Choosing | Phase::Writing(_)
     );
     let mut toolbar = row()
         .key("file-preview-binary-toolbar")

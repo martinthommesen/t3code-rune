@@ -7,18 +7,56 @@ use rune::{
 use crate::connection::file_preview::AssetPurpose;
 
 use super::super::{Load, State, binary::Phase};
-use super::{Bounds, PICTURE, PreviewImage};
+use super::{Bounds, PICTURE, PreviewImage, expanded::SCROLLER};
 
-const MENU_SIZE: [f32; 2] = [161.0, 136.0];
 const MENU_FONT: TextStyle = TextStyle::new(14.0, 400.0)
     .lh(20.0)
     .family(Family::Named("Cantarell, DejaVu Sans"));
-const ACTIONS: [Action; 4] = [
+const DOCKED_ACTIONS: [Action; 4] = [
     Action::CopyFullPath,
     Action::CopyRelativePath,
     Action::Save,
     Action::CopyImage,
 ];
+
+const EXPANDED_ACTIONS: [Action; 2] = [Action::Save, Action::CopyImage];
+
+#[derive(Clone, Copy)]
+pub(super) enum Surface {
+    Docked,
+    Expanded,
+}
+
+impl Surface {
+    fn actions(self) -> &'static [Action] {
+        match self {
+            Self::Docked => &DOCKED_ACTIONS,
+            Self::Expanded => &EXPANDED_ACTIONS,
+        }
+    }
+
+    fn focus(self) -> &'static str {
+        match self {
+            Self::Docked => PICTURE,
+            Self::Expanded => SCROLLER,
+        }
+    }
+
+    fn active(self, image: &PreviewImage) -> bool {
+        matches!(self, Self::Expanded) == image.expanded.is_some()
+    }
+
+    fn set_menu(self, image: &mut PreviewImage, point: Option<PointerPress>) {
+        match self {
+            Self::Docked => image.menu = point,
+            Self::Expanded => {
+                if let Some(dialog) = &mut image.expanded {
+                    dialog.menu = point;
+                }
+            }
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 enum Action {
@@ -55,59 +93,64 @@ impl Action {
     }
 }
 
-pub(super) fn target(image: El) -> El {
-    image
-        .focusable(true)
-        .on_secondary_press(State::open_image_menu)
+pub(super) fn target(image: El, surface: Surface) -> El {
+    image.on_secondary_press(move |state: &mut State, point, tx| {
+        state.open_image_menu(surface, point, tx);
+    })
 }
 
 impl State {
-    fn open_image_menu(&mut self, point: PointerPress, tx: &mut Tx) {
+    fn open_image_menu(&mut self, surface: Surface, point: PointerPress, tx: &mut Tx) {
         let Some(preview) = &mut self.file_preview else {
             return;
         };
         let Load::Image(image) = &mut preview.load else {
             return;
         };
+        if !surface.active(image) {
+            return;
+        }
+        let actions = surface.actions();
         if popup_menu_supported() {
             let id = preview.id;
-            let menu = PopupMenu::new().items(ACTIONS.map(|action| {
+            let menu = PopupMenu::new().items(actions.iter().map(|action| {
                 PopupItem::new(action.key(), action.label()).enabled(action.enabled(image))
             }));
             tx.popup_menu(menu, point, move |state: &mut State, picked, tx| {
-                if let Some(action) = ACTIONS
-                    .into_iter()
-                    .find(|action| Some(action.key()) == picked)
+                if let Some(action) = actions.iter().find(|action| Some(action.key()) == picked)
                     && state
                         .file_preview
                         .as_ref()
                         .is_some_and(|preview| preview.id == id)
                 {
-                    state.select_image_action(action, tx);
+                    state.select_image_action(surface, *action, tx);
                 }
             });
         } else {
-            image.menu = Some(point);
-            tx.focus_when_shown(ACTIONS[0].key(), tx.by_keys());
+            surface.set_menu(image, Some(point));
+            tx.focus_when_shown(actions[0].key(), tx.by_keys());
         }
     }
 
-    fn close_image_menu(&mut self, tx: &mut Tx) {
-        if let Some(image) = self.preview_image_mut() {
-            image.menu = None;
-            tx.focus_when_shown(PICTURE, tx.by_keys());
+    fn close_image_menu(&mut self, surface: Surface, tx: &mut Tx) {
+        if let Some(image) = self
+            .preview_image_mut()
+            .filter(|image| surface.active(image))
+        {
+            surface.set_menu(image, None);
+            tx.focus_when_shown(surface.focus(), tx.by_keys());
         }
     }
 
-    fn select_image_action(&mut self, action: Action, tx: &mut Tx) {
-        self.close_image_menu(tx);
+    fn select_image_action(&mut self, surface: Surface, action: Action, tx: &mut Tx) {
+        self.close_image_menu(surface, tx);
         let Some(preview) = &self.file_preview else {
             return;
         };
         let Load::Image(image) = &preview.load else {
             return;
         };
-        if !action.enabled(image) {
+        if !surface.active(image) || !action.enabled(image) {
             return;
         }
         let relative = &preview.target.path;
@@ -134,23 +177,36 @@ impl State {
     }
 }
 
-pub(super) fn view(image: &PreviewImage, point: PointerPress, bounds: Bounds) -> El {
-    let x = (point.x - bounds.x).clamp(0.0, (bounds.width - MENU_SIZE[0]).max(0.0));
-    let y = (point.y - bounds.y).clamp(0.0, (bounds.height - MENU_SIZE[1]).max(0.0));
+pub(super) fn view(
+    surface: Surface,
+    image: &PreviewImage,
+    point: PointerPress,
+    bounds: Bounds,
+) -> El {
+    let actions = surface.actions();
+    let width = match surface {
+        Surface::Docked => 161.0,
+        Surface::Expanded => 118.0,
+    };
+    let height = 8.0 + 32.0 * actions.len() as f32;
+    let x = (point.x - bounds.x).clamp(0.0, (bounds.width - width).max(0.0));
+    let y = (point.y - bounds.y).clamp(0.0, (bounds.height - height).max(0.0));
     let canvas = hex("#fcfcfc").expect("GTK menu canvas");
     let ink = hex("#2e3436").expect("GTK menu text");
     let highlight = hex("#eaeaea").expect("GTK menu highlight");
     col()
         .key("image-file-menu")
         .absolute(x, y)
-        .size(MENU_SIZE[0], MENU_SIZE[1])
+        .size(width, height)
         .py(4.0)
         .fill(canvas)
         .role("menu")
         .label("Image actions")
         .focus_group()
-        .modal_tx(true, State::close_image_menu)
-        .children(ACTIONS.map(|action| {
+        .modal_tx(true, move |state: &mut State, tx| {
+            state.close_image_menu(surface, tx)
+        })
+        .children(actions.iter().copied().map(|action| {
             let enabled = action.enabled(image);
             row()
                 .key(action.key())
@@ -163,13 +219,15 @@ pub(super) fn view(image: &PreviewImage, point: PointerPress, bounds: Bounds) ->
                 .disabled(!enabled)
                 .focusable(enabled)
                 .focus_highlight(highlight)
-                .on_press_tx(move |state: &mut State, tx| state.select_image_action(action, tx))
+                .on_press_tx(move |state: &mut State, tx| {
+                    state.select_image_action(surface, action, tx)
+                })
                 .on_key(move |state: &mut State, event, tx| {
                     if event.key != Key::Enter {
                         return false;
                     }
                     if enabled && !tx.key_repeat() {
-                        state.select_image_action(action, tx);
+                        state.select_image_action(surface, action, tx);
                     }
                     true
                 })

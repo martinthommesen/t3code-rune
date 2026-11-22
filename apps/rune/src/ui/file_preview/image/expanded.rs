@@ -7,10 +7,10 @@ use rune::{
 };
 
 use super::super::{CRUMB, Layout, Load, Palette, State};
-use super::PICTURE;
+use super::{Bounds, PICTURE, menu};
 
 const BACK: &str = "expanded-image-back";
-const SCROLLER: &str = "expanded-image-canvas";
+pub(super) const SCROLLER: &str = "expanded-image-canvas";
 const CAPTION_SPACING: f32 = 24.0;
 const BACK_TEXT: TextStyle = TextStyle::new(14.0, 500.0).lh(20.0);
 static ARROW: Icon = Icon {
@@ -20,6 +20,7 @@ static ARROW: Icon = Icon {
 };
 
 pub(super) struct Dialog {
+    pub(super) menu: Option<PointerPress>,
     zoom: f32,
     window: [f32; 2],
     return_ring: bool,
@@ -31,6 +32,7 @@ pub(super) struct Dialog {
 impl Dialog {
     fn new(return_ring: bool) -> Self {
         Self {
+            menu: None,
             zoom: 1.0,
             window: [0.0; 2],
             return_ring,
@@ -311,7 +313,7 @@ pub(in crate::ui) fn view(state: &State, layout: Layout, palette: Palette) -> Op
                 .a11y_hidden()
                 .on_background_press_tx(State::close_expanded_image),
         )
-        .child(
+        .child(menu::target(
             col()
                 .absolute(x - popup_x, y - popup_y)
                 .w(width)
@@ -324,8 +326,22 @@ pub(in crate::ui) fn view(state: &State, layout: Layout, palette: Palette) -> Op
                         .color(Color::WHITE.alpha(0.8))
                         .truncate(),
                 ),
-        )
-        .child(back(1.0, 1.0));
+            menu::Surface::Expanded,
+        ))
+        .child(back(1.0, 1.0))
+        .children(dialog.menu.map(|point| {
+            menu::view(
+                menu::Surface::Expanded,
+                image,
+                point,
+                Bounds {
+                    x: popup_x,
+                    y: popup_y,
+                    width: popup_width,
+                    height: popup_height,
+                },
+            )
+        }));
     Some(
         el().key("expanded-image-overlay")
             .absolute(0.0, 0.0)
