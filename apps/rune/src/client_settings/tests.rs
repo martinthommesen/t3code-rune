@@ -17,6 +17,32 @@ fn missing_preference_defaults_to_confirming_and_round_trips_when_disabled() {
 }
 
 #[test]
+fn inline_thread_details_persist_only_closed_scoped_threads() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join(FILE_NAME);
+    fs::write(&path, r#"{"settings":{"confirmTerminalClose":false}}"#).unwrap();
+    let mut settings = ClientSettings::at_state_dir(directory.path());
+    assert!(settings.thread_details_inline_open("one", "thread"));
+    settings
+        .set_thread_details_inline_open("one", "thread", false)
+        .unwrap();
+    let mut settings = ClientSettings::at_state_dir(directory.path());
+    assert!(!settings.thread_details_inline_open("one", "thread"));
+    assert!(settings.thread_details_inline_open("two", "thread"));
+    assert!(settings.thread_details_inline_open("one", "other"));
+    assert!(!settings.confirm_terminal_close());
+    settings
+        .set_thread_details_inline_open("one", "thread", true)
+        .unwrap();
+    assert_eq!(
+        read_document(&path).unwrap()["settings"],
+        serde_json::json!({
+            "confirmTerminalClose": false
+        })
+    );
+}
+
+#[test]
 fn patching_legacy_json_preserves_other_document_values() {
     let state = tempfile::tempdir().unwrap();
     let file = state.path().join(FILE_NAME);

@@ -6,6 +6,7 @@ use unicode_normalization::UnicodeNormalization;
 use super::approval;
 use super::navigation_history::Destination;
 use super::sidebar::project_badge;
+use super::thread_details;
 use super::worktree_setup;
 use super::{
     Conversation, ConversationEntry, Message, Palette, Project, ProjectView, State, Thread,
@@ -210,10 +211,18 @@ pub(super) fn header(
                 .h(layout.header_height)
                 .pl(layout.header_left)
                 .pr(layout.header_right())
-                .gap(8.0)
+                .gap(4.0)
                 .center_y(),
         )
         .child(breadcrumb);
+    if let Some(thread) = thread {
+        header = header.child(thread_details::toggle(
+            state,
+            thread,
+            layout,
+            colors.fallbacks,
+        ));
+    }
     if let Some(thread) = thread.filter(|_| workspace.terminal && !workspace.reconnecting) {
         let open = state
             .terminal

@@ -99,6 +99,7 @@ pub(crate) struct Thread {
     pub(crate) activity: ThreadActivity,
     #[serde(flatten)]
     pub(crate) providers: ThreadProviders,
+    pub(crate) branch: Option<String>,
     #[serde(rename = "worktreePath")]
     pub(crate) worktree_path: Option<String>,
     #[serde(skip)]

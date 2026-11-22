@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -14,11 +15,15 @@ use appearance::AppearancePreference;
 
 const FILE_NAME: &str = "client-settings.json";
 const TERMINAL_CONFIRMATION: &str = "confirmTerminalClose";
+const THREAD_DETAILS_CLOSED: &str = "threadDetailsInlineClosed";
 const MAX_SYMLINK_HOPS: usize = 40;
+
+type ClosedThreadDetails = BTreeMap<String, BTreeSet<String>>;
 
 pub(crate) struct ClientSettings {
     path: Option<PathBuf>,
     confirm_terminal_close: bool,
+    closed_thread_details: ClosedThreadDetails,
     appearance: AppearancePreference,
 }
 
@@ -27,6 +32,7 @@ impl Default for ClientSettings {
         Self {
             path: None,
             confirm_terminal_close: true,
+            closed_thread_details: ClosedThreadDetails::new(),
             appearance: AppearancePreference::default(),
         }
     }
@@ -35,18 +41,76 @@ impl Default for ClientSettings {
 impl ClientSettings {
     pub(crate) fn at_state_dir(state_dir: &Path) -> Self {
         let path = state_dir.join(FILE_NAME);
-        let confirm_terminal_close = read_document(&path)
-            .and_then(|document| terminal_confirmation(&document))
+        let document = read_document(&path).ok();
+        let confirm_terminal_close = document
+            .as_ref()
+            .and_then(|document| terminal_confirmation(document).ok())
             .unwrap_or(true);
+        let closed_thread_details = document
+            .as_ref()
+            .and_then(|document| closed_thread_details(document).ok())
+            .unwrap_or_default();
         Self {
             path: Some(path),
             confirm_terminal_close,
+            closed_thread_details,
             appearance: AppearancePreference::at_state_dir(state_dir),
         }
     }
 
     pub(crate) fn confirm_terminal_close(&self) -> bool {
         self.confirm_terminal_close
+    }
+
+    pub(crate) fn thread_details_inline_open(&self, environment: &str, thread: &str) -> bool {
+        !self
+            .closed_thread_details
+            .get(environment)
+            .is_some_and(|closed| closed.contains(thread))
+    }
+
+    pub(crate) fn set_thread_details_inline_open(
+        &mut self,
+        environment: &str,
+        thread: &str,
+        open: bool,
+    ) -> io::Result<()> {
+        let update = |closed: &mut ClosedThreadDetails| {
+            if open {
+                if let Some(threads) = closed.get_mut(environment) {
+                    threads.remove(thread);
+                    if threads.is_empty() {
+                        closed.remove(environment);
+                    }
+                }
+            } else {
+                closed
+                    .entry(environment.to_owned())
+                    .or_default()
+                    .insert(thread.to_owned());
+            }
+        };
+
+        if let Some(path) = &self.path {
+            let target = resolve_file_target(path)?;
+            let mut document = read_document(&target)?;
+            let mut closed = closed_thread_details(&document)?;
+            update(&mut closed);
+            let preferences = preference_object(&mut document)?;
+            if closed.is_empty() {
+                preferences.remove(THREAD_DETAILS_CLOSED);
+            } else {
+                preferences.insert(
+                    THREAD_DETAILS_CLOSED.to_owned(),
+                    serde_json::to_value(&closed)?,
+                );
+            }
+            write_document(&target, &document)?;
+            self.closed_thread_details = closed;
+        } else {
+            update(&mut self.closed_thread_details);
+        }
+        Ok(())
     }
 
     pub(crate) fn appearance_mode(&self) -> AppearanceMode {
@@ -95,6 +159,18 @@ fn terminal_confirmation(document: &Map<String, Value>) -> io::Result<bool> {
         Some(value) => value.as_bool().ok_or_else(invalid_document),
         None => Ok(true),
     }
+}
+
+fn closed_thread_details(document: &Map<String, Value>) -> io::Result<ClosedThreadDetails> {
+    let preferences = match document.get("settings") {
+        Some(value) => value.as_object().ok_or_else(invalid_document)?,
+        None => document,
+    };
+    preferences
+        .get(THREAD_DETAILS_CLOSED)
+        .map(|value| serde_json::from_value(value.clone()).map_err(io::Error::from))
+        .transpose()
+        .map(Option::unwrap_or_default)
 }
 
 fn preference_object(document: &mut Map<String, Value>) -> io::Result<&mut Map<String, Value>> {

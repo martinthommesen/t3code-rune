@@ -25,6 +25,7 @@ mod settings;
 mod sidebar;
 mod sidebar_header;
 mod terminal;
+mod thread_details;
 mod window_chrome;
 mod window_placement;
 mod worktree_setup;
@@ -262,6 +263,7 @@ struct State {
     settings: settings::Panel,
     terminal: Option<terminal::Pane>,
     terminal_tabs: terminal::TabsByThread,
+    thread_details: thread_details::Popover,
     window_focused: bool,
     window_chrome: window_chrome::ChromeState,
     window_placement: window_placement::Tracker,
@@ -294,6 +296,7 @@ impl Default for State {
             settings: settings::Panel::default(),
             terminal: None,
             terminal_tabs: terminal::TabsByThread::default(),
+            thread_details: thread_details::Popover::default(),
             window_focused: true,
             window_chrome: window_chrome::ChromeState::default(),
             window_placement: window_placement::Tracker::default(),
@@ -335,6 +338,7 @@ impl State {
         self.questions.clear();
         self.question_auto_advance = None;
         self.add_project = None;
+        self.thread_details.close();
         self.added_project = None;
         self.scratch_request = None;
         self.terminal = None;
@@ -448,6 +452,7 @@ impl State {
         self.question_auto_advance = None;
         sidebar::close_draft_project_picker(&mut self.sidebar);
         self.draft_workspace_popup = None;
+        self.thread_details.close();
         if let Some(terminal) = self.terminal.take()
             && let Some(connection) = &self.connection
         {
@@ -885,6 +890,7 @@ impl State {
         self.window_placement.poll(tx);
         self.update_terminal_focus(tx);
         let mut changed = self.window_chrome.poll(tx);
+        changed |= self.thread_details.observe_focus(tx);
         while let Some(event) = self.connection.as_ref().and_then(Connection::try_recv) {
             self.apply_event(event, tx);
             changed = true;
@@ -1625,7 +1631,8 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
                 state.toggle_terminal(tx);
                 true
             } else {
-                state.question_shortcut(event, tx)
+                thread_details::shortcut(state, detail_layout, event, tx)
+                    || state.question_shortcut(event, tx)
             }
         });
     if !modal_open && let Some(message) = &state.project_notice {
@@ -1841,6 +1848,9 @@ fn detail(
     let colors = conversation::Colors::new(palette);
     let pane = col()
         .key("detail-pane")
+        .on_layout(move |state, rect| {
+            thread_details::observe_pane(state, rect, layout.header_height);
+        })
         .grow(1.0)
         .h_full()
         .min_w(0.0)
@@ -1913,11 +1923,20 @@ fn detail(
     let pane = pane.child(conversation::header(
         state, workspace, project, thread, layout, colors,
     ));
-    match &conversation.transcript {
-        Transcript::Loading => pane.child(placeholder("Loading conversation…", "", palette)),
+    let details = thread_details::card(state, workspace, project, thread, layout, palette);
+    let content_layout = thread_details::content_layout(state, thread, layout);
+    let body = col().w_full().grow(1.0).min_h(0.0);
+    let body = if content_layout.pane_width < layout.pane_width {
+        body.max_w(content_layout.pane_width)
+    } else {
+        body
+    };
+    let layout = content_layout;
+    let body = match &conversation.transcript {
+        Transcript::Loading => body.child(placeholder("Loading conversation…", "", palette)),
         Transcript::Failed(error) => {
             let id = conversation.id.clone();
-            pane.child(
+            body.child(
                 col()
                     .w_full()
                     .grow(1.0)
@@ -1950,7 +1969,7 @@ fn detail(
             } else {
                 conversation::transcript(conversation, entries, layout, colors, workspace)
             };
-            let pane = pane.child(transcript);
+            let body = body.child(transcript);
             let read_only_reason = if thread.is_some_and(|thread| thread.archived) {
                 Some("This thread is archived.")
             } else if !workspace.prompt_writes {
@@ -1962,38 +1981,38 @@ fn detail(
             } else {
                 None
             };
-            let pane =
-                if let Some(question) = question::view(state, &conversation.id, layout, palette) {
-                    pane.child(question)
-                } else if let Some(read_only_reason) = read_only_reason {
-                    pane.child(
-                        row()
-                            .w_full()
-                            .px(26.0)
-                            .py(14.0)
-                            .border_sides([1.0, 0.0, 0.0, 0.0], palette.line)
-                            .child(text(read_only_reason).font(SMALL).color(palette.muted)),
-                    )
-                } else {
-                    pane.child(composer::thread(
-                        workspace,
-                        &conversation.id,
-                        &state.drafts[&conversation.id],
-                        layout,
-                        palette,
-                    ))
-                };
-            if let Some(terminal) = state
-                .terminal
-                .as_ref()
-                .filter(|terminal| terminal.thread_id == conversation.id)
-            {
-                pane.child(state.terminal_view(terminal, palette))
+            if let Some(question) = question::view(state, &conversation.id, layout, palette) {
+                body.child(question)
+            } else if let Some(read_only_reason) = read_only_reason {
+                body.child(
+                    row()
+                        .w_full()
+                        .px(26.0)
+                        .py(14.0)
+                        .border_sides([1.0, 0.0, 0.0, 0.0], palette.line)
+                        .child(text(read_only_reason).font(SMALL).color(palette.muted)),
+                )
             } else {
-                pane
+                body.child(composer::thread(
+                    workspace,
+                    &conversation.id,
+                    &state.drafts[&conversation.id],
+                    layout,
+                    palette,
+                ))
             }
         }
+    };
+    let mut pane = pane.child(body);
+    if matches!(conversation.transcript, Transcript::Loaded(_))
+        && let Some(terminal) = state
+            .terminal
+            .as_ref()
+            .filter(|terminal| terminal.thread_id == conversation.id)
+    {
+        pane = pane.child(state.terminal_view(terminal, palette));
     }
+    pane.children(details)
 }
 
 fn placeholder(title: &str, description: &str, palette: Palette) -> El {
@@ -2180,6 +2199,7 @@ mod tests {
                 created_at: None,
                 activity: Default::default(),
                 providers: Default::default(),
+                branch: Some("main".into()),
                 worktree_path: None,
                 archived: false,
             }],
