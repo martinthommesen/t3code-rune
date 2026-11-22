@@ -441,7 +441,28 @@ pub(super) fn toggle_draft_project_picker(state: &mut State, project_id: &str, t
         state.sidebar.picker = None;
     } else {
         state.sidebar.picker = Some(ProjectPicker::Draft);
-        tx.focus_when_shown(format!("project-option-{project_id}"), tx.focus_visible());
+        let focus = state.workspace.as_ref().and_then(|workspace| {
+            let shell = workspace.shell.as_ref()?;
+            let current = shell
+                .projects
+                .iter()
+                .find(|project| project.id == project_id)?;
+            if workspace.is_scratch(current) {
+                let first = shell
+                    .projects
+                    .iter()
+                    .find(|project| !workspace.is_scratch(project));
+                Some(first.map_or_else(
+                    || "draft-add-project".to_owned(),
+                    |project| format!("project-option-{}", project.id),
+                ))
+            } else {
+                Some(format!("project-option-{project_id}"))
+            }
+        });
+        if let Some(focus) = focus {
+            tx.focus_when_shown(focus, tx.focus_visible());
+        }
     }
 }
 
@@ -527,6 +548,9 @@ fn project_picker(
 ) -> El {
     let mut items = col().w_full().padding(4.0);
     for project in &shell.projects {
+        if picker == ProjectPicker::Draft && workspace.is_scratch(project) {
+            continue;
+        }
         let id = project.id.clone();
         items = items.child(
             project_option(
@@ -672,27 +696,40 @@ fn thread_list(
                 }),
         );
     if state.sidebar.search.text.trim().is_empty() {
-        rows = rows.children(
-            shell
-                .projects
-                .iter()
-                .filter(|project| state.sidebar.scope.matches(&project.id))
-                .filter(|project| !projects.contains(project.id.as_str()))
-                .map(|project| {
-                    let id = project.id.clone();
-                    project_option(
-                        format!("project-{id}"),
-                        &project.name,
-                        workspace
-                            .selection
-                            .as_ref()
-                            .is_some_and(|selection| selection.id == id),
-                        Some(project_badge::view(project, &workspace.favicons, dark)),
-                        colors,
-                    )
-                    .on_press(move |state: &mut State| state.select_project(&id))
-                }),
-        );
+        let empty = shell
+            .projects
+            .iter()
+            .filter(|project| state.sidebar.scope.matches(&project.id))
+            .filter(|project| !projects.contains(project.id.as_str()));
+        let listed = empty
+            .clone()
+            .filter(|project| !workspace.is_scratch(project));
+        if projects.is_empty()
+            && listed.clone().next().is_none()
+            && empty.clone().any(|project| workspace.is_scratch(project))
+        {
+            rows = rows.child(
+                el().w_full().pt(22.0).center().child(
+                    text("No threads yet")
+                        .font(SMALL.lh(16.0))
+                        .color(colors.muted.alpha(0.60)),
+                ),
+            );
+        }
+        rows = rows.children(listed.map(|project| {
+            let id = project.id.clone();
+            project_option(
+                format!("project-{id}"),
+                &project.name,
+                workspace
+                    .selection
+                    .as_ref()
+                    .is_some_and(|selection| selection.id == id),
+                Some(project_badge::view(project, &workspace.favicons, dark)),
+                colors,
+            )
+            .on_press(move |state: &mut State| state.select_project(&id))
+        }));
     } else if projects.is_empty() {
         rows = rows.child(
             text("No matching threads")

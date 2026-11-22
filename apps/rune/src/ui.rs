@@ -107,6 +107,7 @@ struct Workspace {
     project_writes: bool,
     scratch_projects: bool,
     scratch_project: Option<String>,
+    scratch_workspace_root: Option<String>,
     filesystem_read: bool,
     named_projects: bool,
     clone_writes: bool,
@@ -965,6 +966,7 @@ impl State {
                     project_writes,
                     scratch_projects: false,
                     scratch_project: None,
+                    scratch_workspace_root: None,
                     filesystem_read,
                     named_projects,
                     clone_writes,
@@ -991,6 +993,13 @@ impl State {
             Event::ScratchProjectsAvailable => {
                 if let Some(workspace) = &mut self.workspace {
                     workspace.scratch_projects = true;
+                }
+            }
+            Event::ScratchWorkspace { root, can_start } => {
+                if let Some(workspace) = &mut self.workspace {
+                    workspace.scratch_projects = can_start;
+                    workspace.scratch_workspace_root = root;
+                    workspace.scratch_project = None;
                 }
             }
             Event::ProjectOrganizationAvailable => self.sidebar.enable_project_organization(),

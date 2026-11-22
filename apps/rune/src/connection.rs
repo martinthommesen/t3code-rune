@@ -106,6 +106,10 @@ pub(crate) enum Event {
         threads: Vec<Thread>,
     },
     ScratchProjectsAvailable,
+    ScratchWorkspace {
+        root: Option<String>,
+        can_start: bool,
+    },
     ProjectOrganizationAvailable,
     ProjectFavicon {
         target: FaviconTarget,
@@ -1294,6 +1298,12 @@ impl Session {
             .await
             .map_err(SessionStop::into_message)?;
         session.shell_request_id = request_id;
+        if capabilities.shell_http || capabilities.scratch_projects || !capabilities.read_only {
+            session
+                .subscribe_provider_catalog()
+                .await
+                .map_err(SessionStop::into_message)?;
+        }
         if capabilities.clone_projects == Some(true) || (scope.is_some() && session.clone_writes) {
             session
                 .subscribe_project_clones()
@@ -1332,7 +1342,7 @@ impl Session {
         if matches!(self.archive, ArchiveState::Needed) {
             self.load_archive().await?;
         }
-        if needs_catalog {
+        if needs_catalog && self.providers_request_id.is_none() {
             self.subscribe_provider_catalog().await?;
         }
         Ok(())
@@ -2145,6 +2155,23 @@ impl Session {
                         events.send(Event::ProjectClones(clones));
                     }
                 } else if self.providers_request_id.as_ref() == Some(&request_id) {
+                    if let Some(config) = values.iter().rev().find_map(|event| {
+                        (event["version"] == 1 && event["type"] == "snapshot")
+                            .then(|| event["config"].as_object())
+                            .flatten()
+                    }) {
+                        let root = config
+                            .get("scratchWorkspaceRoot")
+                            .and_then(Value::as_str)
+                            .filter(|path| !path.is_empty())
+                            .map(str::to_owned);
+                        self.scratch_projects =
+                            root.is_some() && self.project_writes && self.launch_writes;
+                        events.send(Event::ScratchWorkspace {
+                            root,
+                            can_start: self.scratch_projects,
+                        });
+                    }
                     if let Some(providers) = provider_metadata::last_catalog(values) {
                         events.send(Event::Providers(providers));
                     }

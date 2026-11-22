@@ -31,7 +31,7 @@ pub(super) fn view(
     let [viewport_width, viewport_height] = layout.viewport;
     let width = (layout.pane_width - 2.0 * gutter(layout)).clamp(0.0, MAX_LANE);
     let compact = viewport_height <= 544.0;
-    let scratch = workspace.scratch_project.as_deref() == Some(project.id.as_str());
+    let scratch = workspace.is_scratch(project);
     let clearance = if viewport_width < 640.0 { 16.0 } else { 20.0 };
     let mut stack = col()
         .key("draft-composer-stack")
@@ -150,20 +150,24 @@ fn headline(
     let medium = TextStyle::new(size, 500.0)
         .lh(height)
         .tracking(-size * 0.025);
-    let name_width = rune::text::measure(&project.name, &[], medium, None).0;
+    let project_name = if scratch { "No project" } else { &project.name };
+    let name_width = rune::text::measure(project_name, &[], medium, None).0;
     let lead = rune::text::measure(phrase, &[], regular, None).0 + 8.0;
     let total = lead + name_width + rune::text::measure("?", &[], regular, None).0;
     let show_greeting = window_height > 448.0;
     let inline = !scratch && show_greeting && window_width >= 1024.0 && total <= width;
     let project_id = project.id.clone();
-    let button = el()
+    let mut button = el()
         .key("draft-project-selector")
         .max_w(width)
         .center()
         .radius(4.0)
         .role("button")
-        .label(CHOOSE_PROJECT)
-        .help(&project.name)
+        .label(if scratch {
+            project_name
+        } else {
+            CHOOSE_PROJECT
+        })
         .expanded(sidebar::draft_picker_open(state))
         .disabled(disabled)
         .focusable(!disabled)
@@ -172,11 +176,14 @@ fn headline(
             sidebar::toggle_draft_project_picker(state, &project_id, tx)
         })
         .child(
-            text(&project.name)
+            text(project_name)
                 .font(if inline { medium } else { SUBTITLE })
                 .color(ink)
                 .truncate(),
         );
+    if !scratch {
+        button = button.help(&project.name);
+    }
     let (content, height, center) = if inline {
         (
             row()
