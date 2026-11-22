@@ -1815,7 +1815,11 @@ impl State {
             &self.client_settings,
             self.draft_environment.as_deref(),
         );
-        self.sidebar.update_project_scope(&shell, order);
+        let current = workspace
+            .selection
+            .as_ref()
+            .map(|selection| selection.id.as_str());
+        self.sidebar.update_project_scope(&shell, order, current);
         if let Some(project) = &mut workspace.selection {
             let project_present = shell.projects.iter().any(|entry| entry.id == project.id);
             if let ProjectView::Conversation(conversation) = &project.view

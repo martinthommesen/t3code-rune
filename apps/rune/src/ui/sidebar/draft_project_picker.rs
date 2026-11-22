@@ -1,17 +1,21 @@
+use std::collections::HashMap;
+
 use rune::color::hex;
 use rune::{
     Align, Color, El, Key, KeyEvent, Mods, ScrollSpec, Shadow, Side, TextEdit, TextStyle, Tx, col,
     el, icon, row, text, text_input,
 };
 
-use super::project_scope::ProjectOrdering;
+use super::project_scope::{self, ProjectOrdering};
 use super::{ADD_PROJECT, ProjectPicker, SEARCH as SEARCH_ICON, normalized_search, project_badge};
+use crate::connection::Keybindings;
 use crate::ui::{Palette, Project, ProjectView, State, Workspace};
 
 pub(in crate::ui) const TRIGGER: &str = "draft-project-selector";
 const SEARCH: &str = "draft-project-search";
 const LIST: &str = "draft-project-options";
 const ADD: &str = "draft-add-project";
+const PIN: &str = "thread.pin";
 const PROMPT: &str = "initial-prompt";
 const OPTION: TextStyle = TextStyle::new(14.0, 400.0).lh(20.0);
 
@@ -19,6 +23,16 @@ const OPTION: TextStyle = TextStyle::new(14.0, 400.0).lh(20.0);
 pub(super) struct Panel {
     query: TextEdit,
     highlighted: Option<String>,
+    order: HashMap<String, usize>,
+}
+
+impl Panel {
+    pub(super) fn remember_order(&mut self, projects: Vec<&Project>) {
+        for project in projects {
+            let next = self.order.len();
+            self.order.entry(project.id.clone()).or_insert(next);
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -57,11 +71,17 @@ pub(in crate::ui) fn toggle(state: &mut State, tx: &mut Tx) {
     } else {
         let mut query = TextEdit::default();
         query.focused = true;
-        state.sidebar.draft_project_picker = Panel {
-            query,
-            highlighted: None,
-        };
         state.sidebar.picker = Some(ProjectPicker::Draft);
+        let mut panel = Panel {
+            query,
+            ..Panel::default()
+        };
+        if let Some((workspace, current)) = context(state)
+            && let Some(shell) = &workspace.shell
+        {
+            panel.remember_order(ProjectOrdering::current(state).picker(shell, Some(current)));
+        }
+        state.sidebar.draft_project_picker = panel;
         tx.focus_when_shown(SEARCH, tx.focus_visible());
     }
 }
@@ -85,11 +105,20 @@ fn context(state: &State) -> Option<(&Workspace, &str)> {
 
 fn choices<'a>(state: &'a State, workspace: &'a Workspace, selected: &str) -> Vec<Choice<'a>> {
     let needle = normalized_search(state.sidebar.draft_project_picker.query.text.trim());
-    workspace
-        .shell
-        .as_ref()
+    let mut projects = workspace.shell.as_ref().map_or_else(Vec::new, |shell| {
+        ProjectOrdering::current(state).picker(shell, Some(selected))
+    });
+    projects.sort_by_key(|project| {
+        state
+            .sidebar
+            .draft_project_picker
+            .order
+            .get(&project.id)
+            .copied()
+            .unwrap_or(usize::MAX)
+    });
+    projects
         .into_iter()
-        .flat_map(|shell| ProjectOrdering::current(state).picker(shell, Some(selected)))
         .filter(|project| !workspace.is_scratch(project))
         .filter(|project| needle.is_empty() || normalized_search(&project.name).contains(&needle))
         .map(Choice::Project)
@@ -119,6 +148,8 @@ pub(in crate::ui) fn overlay(state: &State, palette: Palette) -> Option<El> {
     let options = choices(state, workspace, selected);
     let panel = &state.sidebar.draft_project_picker;
     let active = highlighted(panel, &options, selected);
+    let pin_allowed = can_pin(state, workspace);
+    let pin_shortcut = keybindings(state).shortcut_label(PIN, |flag| flag == "isDesktop");
     let [fill, ink, muted, accent, border] = if palette.dark {
         ["#111111", "#f5f5f5", "#a3a3a3", "#346bf1", "#ffffff"]
     } else {
@@ -206,7 +237,7 @@ pub(in crate::ui) fn overlay(state: &State, palette: Palette) -> Option<El> {
                 } else {
                     0.0
                 };
-                row()
+                let mut option = row()
                     .key(key)
                     .role("option")
                     .label(choice.label())
@@ -231,7 +262,26 @@ pub(in crate::ui) fn overlay(state: &State, palette: Palette) -> Option<El> {
                             .grow(1.0)
                             .min_w(0.0)
                             .truncate(),
-                    )
+                    );
+                if let Choice::Project(project) = choice
+                    && pin_allowed
+                {
+                    let show_pin = Some(index) == active || project.pinned_at.is_some();
+                    option = option.child(
+                        project_scope::pin_button(
+                            &state.sidebar.scope,
+                            project,
+                            muted,
+                            SEARCH,
+                            pin_shortcut.as_deref(),
+                        )
+                        .opacity(if show_pin { 1.0 } else { 0.0 })
+                        .focusable(false)
+                        .preserve_focus_on_press(true)
+                        .a11y_hidden(),
+                    );
+                }
+                option
             }));
     }
     Some(
@@ -271,22 +321,49 @@ pub(in crate::ui) fn overlay(state: &State, palette: Palette) -> Option<El> {
     )
 }
 
+fn keybindings(state: &State) -> &Keybindings {
+    match &state.keybindings {
+        Some(bindings) => bindings,
+        None => Keybindings::stock(),
+    }
+}
+
+fn can_pin(state: &State, workspace: &Workspace) -> bool {
+    state.sidebar.scope.organize_projects && workspace.project_writes && !workspace.reconnecting
+}
+
 fn key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
-    if event.mods != Mods::default() {
+    let Some((workspace, selected)) = context(state) else {
+        return false;
+    };
+    let pin = can_pin(state, workspace)
+        && keybindings(state).command(event, tx, |flag| {
+            matches!(flag, "isDesktop" | "editableFocus")
+        }) == Some(PIN);
+    let navigation = event.mods == Mods::default()
+        && matches!(event.key, Key::Up | Key::Down | Key::Enter | Key::Escape);
+    if !pin && !navigation {
+        return false;
+    }
+    let options = choices(state, workspace, selected);
+    let active = highlighted(&state.sidebar.draft_project_picker, &options, selected);
+    if pin
+        && let Some(id) = active
+            .and_then(|index| options[index].project_id())
+            .map(str::to_owned)
+    {
+        if !tx.key_repeat() {
+            project_scope::toggle_pin(state, &id, SEARCH, tx);
+        }
+        return true;
+    }
+    if !navigation {
         return false;
     }
     if event.key == Key::Escape {
         close(state, tx);
         return true;
     }
-    if !matches!(event.key, Key::Up | Key::Down | Key::Enter) {
-        return false;
-    }
-    let Some((workspace, selected)) = context(state) else {
-        return false;
-    };
-    let options = choices(state, workspace, selected);
-    let active = highlighted(&state.sidebar.draft_project_picker, &options, selected);
     if event.key == Key::Enter {
         if let Some(index) = active {
             let target = options[index].project_id().map(str::to_owned);

@@ -491,7 +491,7 @@ pub(in crate::ui) fn overlay(state: &State, palette: Palette, height: f32) -> Op
                 ));
             }
             if scope.organize_projects && (highlighted || project.pinned_at.is_some()) {
-                option = option.child(pin_button(scope, project, muted));
+                option = option.child(pin_button(scope, project, muted, SEARCH_FIELD, None));
             }
         }
         list = list.child(option);
@@ -567,7 +567,7 @@ fn key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
     if pin_shortcut {
         if let Choice::Project(project) = items[index] {
             let id = project.id.clone();
-            toggle_pin(state, &id, tx);
+            toggle_pin(state, &id, SEARCH_FIELD, tx);
         }
         return true;
     }
@@ -595,7 +595,13 @@ fn key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
     true
 }
 
-fn pin_button(scope: &ProjectScope, project: &Project, ink: Color) -> El {
+pub(super) fn pin_button(
+    scope: &ProjectScope,
+    project: &Project,
+    ink: Color,
+    search: &'static str,
+    shortcut: Option<&str>,
+) -> El {
     let id = project.id.clone();
     let hover = id.clone();
     let pinned = project.pinned_at.is_some();
@@ -606,10 +612,12 @@ fn pin_button(scope: &ProjectScope, project: &Project, ink: Color) -> El {
         "Pin"
     };
     let symbol = project_badge::lookup_icon(symbol).expect("built-in project pin icon");
+    let label = format!("{label} {}", project.name);
+    let help = shortcut.map_or_else(|| label.clone(), |shortcut| format!("{label} ({shortcut})"));
     el().key(format!("pin-project-{id}"))
-        .label(format!("{label} {}", project.name))
+        .label(label)
         .role("button")
-        .help(format!("{label} {}", project.name))
+        .help(help)
         .size(24.0, 24.0)
         .radius(5.0)
         .center()
@@ -618,11 +626,11 @@ fn pin_button(scope: &ProjectScope, project: &Project, ink: Color) -> El {
         .on_hover_change(move |state: &mut State, active, _| {
             state.sidebar.scope.hovered_pin = active.then(|| hover.clone());
         })
-        .on_press_tx(move |state: &mut State, tx| toggle_pin(state, &id, tx))
+        .on_press_tx(move |state: &mut State, tx| toggle_pin(state, &id, search, tx))
         .child(icon(symbol, 14.0).color(ink).a11y_hidden())
 }
 
-fn toggle_pin(state: &mut State, id: &str, tx: &mut Tx) {
+pub(super) fn toggle_pin(state: &mut State, id: &str, search: &str, tx: &mut Tx) {
     let Some(project) = state
         .workspace
         .as_ref()
@@ -645,7 +653,7 @@ fn toggle_pin(state: &mut State, id: &str, tx: &mut Tx) {
             id.to_owned(),
             ProjectEdit::Pinned(project.pinned_at.is_none()),
         );
-        tx.focus(SEARCH_FIELD, false);
+        tx.focus(search, false);
     }
 }
 

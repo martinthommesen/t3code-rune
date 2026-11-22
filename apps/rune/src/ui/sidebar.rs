@@ -172,7 +172,12 @@ impl SidebarState {
         changed
     }
 
-    pub(super) fn update_project_scope(&mut self, shell: &Shell, order: ProjectOrdering<'_>) {
+    pub(super) fn update_project_scope(
+        &mut self,
+        shell: &Shell,
+        order: ProjectOrdering<'_>,
+        current: Option<&str>,
+    ) {
         let projects = &shell.projects;
         self.scope.selected.retain(|id| {
             projects
@@ -184,8 +189,12 @@ impl SidebarState {
         {
             self.picker = None;
         }
-        if self.picker == Some(ProjectPicker::Filter) {
-            self.scope.remember_order(shell, order);
+        match self.picker {
+            Some(ProjectPicker::Filter) => self.scope.remember_order(shell, order),
+            Some(ProjectPicker::Draft) => self
+                .draft_project_picker
+                .remember_order(order.picker(shell, current)),
+            _ => {}
         }
     }
 

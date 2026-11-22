@@ -8,6 +8,7 @@ use super::{Draft, Palette, Project, State, Workspace, sidebar, sidebar_header};
 mod workspace;
 pub(super) use workspace::Popup as WorkspacePopup;
 
+const SCRATCH_LINK: TextStyle = TextStyle::new(14.0, 500.0).lh(20.0);
 const SUBTITLE: TextStyle = TextStyle::new(16.0, 500.0).lh(24.0);
 
 pub(super) fn gutter(layout: Layout) -> f32 {
@@ -93,7 +94,7 @@ pub(super) fn view(
                         .key("draft-start-scratch")
                         .label("or start without a project")
                         .role("button")
-                        .font(TextStyle::new(14.0, 500.0).lh(20.0))
+                        .font(SCRATCH_LINK)
                         .color(muted)
                         .disabled(!enabled)
                         .focusable(enabled)
@@ -151,6 +152,11 @@ fn headline(
     let show_greeting = window_height > 448.0;
     let inline = !scratch && show_greeting && window_width >= 1024.0 && total <= width;
     let picker_open = sidebar::draft_picker_open(state);
+    let project_style = match (scratch, inline) {
+        (true, _) => SCRATCH_LINK,
+        (false, true) => medium,
+        (false, false) => SUBTITLE,
+    };
     let mut button = el()
         .key(sidebar::draft_project_picker::TRIGGER)
         .max_w(width)
@@ -171,12 +177,7 @@ fn headline(
                 sidebar::toggle_draft_project_picker,
             )
         })
-        .child(
-            text(project_name)
-                .font(if inline { medium } else { SUBTITLE })
-                .color(ink)
-                .truncate(),
-        );
+        .child(text(project_name).font(project_style).color(ink).truncate());
     if picker_open {
         button = button.press_on_down();
     } else if !scratch {
@@ -210,6 +211,11 @@ fn headline(
                 .truncate(),
             );
         }
+        let button = if scratch {
+            row().h(24.0).center().child(button)
+        } else {
+            button
+        };
         (
             content.child(button),
             24.0 + if show_greeting { height + 8.0 } else { 0.0 },
