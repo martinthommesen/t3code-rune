@@ -65,6 +65,10 @@ impl Panel {
         self.archivable && !self.pending.contains_key(thread_id)
     }
 
+    pub(in crate::ui) fn can_delete(&self, thread_id: &str) -> bool {
+        self.deletable && !self.pending.contains_key(thread_id)
+    }
+
     pub(in crate::ui) fn update(&mut self, threads: Result<Vec<Thread>, String>) {
         self.threads = Some(threads);
     }
@@ -100,7 +104,7 @@ impl State {
         let enabled = match action {
             ArchiveAction::Archive => archive.archivable,
             ArchiveAction::Unarchive | ArchiveAction::UndoArchive => archive.writable,
-            ArchiveAction::Delete => archive.deletable,
+            ArchiveAction::Delete | ArchiveAction::DeleteActive => archive.deletable,
         };
         let connected = self
             .workspace
@@ -157,6 +161,10 @@ pub(in crate::ui) fn settle(
             thread_actions::settle_undo(state, thread_id, result, tx);
             return;
         }
+        ArchiveAction::DeleteActive => {
+            thread_actions::settle_delete(state, thread_id, result);
+            return;
+        }
         ArchiveAction::Unarchive | ArchiveAction::Delete => {}
     }
     match result {
@@ -178,7 +186,7 @@ pub(in crate::ui) fn settle(
                 ArchiveAction::Unarchive | ArchiveAction::UndoArchive => {
                     "Failed to unarchive thread."
                 }
-                ArchiveAction::Delete => "Failed to delete thread.",
+                ArchiveAction::Delete | ArchiveAction::DeleteActive => "Failed to delete thread.",
             };
             archive.error = Some(format!("{label} {message}"));
         }
@@ -589,7 +597,7 @@ fn unarchive_key(thread_id: &str) -> String {
 
 fn action_key(action: ArchiveAction, thread_id: &str) -> String {
     match action {
-        ArchiveAction::Archive => format!("thread-{thread_id}"),
+        ArchiveAction::Archive | ArchiveAction::DeleteActive => format!("thread-{thread_id}"),
         ArchiveAction::UndoArchive => "sidebar-archive-undo".into(),
         ArchiveAction::Unarchive => unarchive_key(thread_id),
         ArchiveAction::Delete => delete::key(thread_id),

@@ -10,6 +10,7 @@ pub(crate) enum ArchiveAction {
     Unarchive,
     UndoArchive,
     Delete,
+    DeleteActive,
 }
 
 impl ArchiveAction {
@@ -17,7 +18,7 @@ impl ArchiveAction {
         match self {
             Self::Archive => "thread.archive",
             Self::Unarchive | Self::UndoArchive => "thread.unarchive",
-            Self::Delete => "thread.delete",
+            Self::Delete | Self::DeleteActive => "thread.delete",
         }
     }
 
@@ -25,7 +26,7 @@ impl ArchiveAction {
         match self {
             Self::Archive => "archiving",
             Self::Unarchive | Self::UndoArchive => "unarchiving",
-            Self::Delete => "deleting",
+            Self::Delete | Self::DeleteActive => "deleting",
         }
     }
 }
@@ -83,6 +84,9 @@ impl Session {
             ArchiveAction::UndoArchive => self.archive_writes,
             ArchiveAction::Delete => {
                 self.archive_deletes && self.shell.contains_archived_thread(&request.thread_id)
+            }
+            ArchiveAction::DeleteActive => {
+                self.archive_deletes && self.shell.contains_unarchived_thread(&request.thread_id)
             }
         };
         if !allowed {

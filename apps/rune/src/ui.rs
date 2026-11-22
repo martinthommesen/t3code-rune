@@ -1206,7 +1206,12 @@ impl State {
                 operation,
                 result,
             } => {
-                if action == crate::connection::ArchiveAction::Delete && result.is_ok() {
+                if matches!(
+                    action,
+                    crate::connection::ArchiveAction::Delete
+                        | crate::connection::ArchiveAction::DeleteActive
+                ) && result.is_ok()
+                {
                     self.drafts.remove(&thread_id);
                     self.questions.remove(&thread_id);
                     self.terminal_tabs.remove_thread(&thread_id);

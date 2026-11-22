@@ -133,12 +133,30 @@ pub(crate) struct ThreadError {
 pub(crate) struct ThreadActivity {
     archived_at: Option<String>,
     settled_override: Option<String>,
+    snoozed_until: Option<String>,
+    snoozed_at: Option<String>,
+    pending_runtime_request: Option<SnoozeRequest>,
+    pending_guest_message_count: Option<usize>,
+    #[serde(default, deserialize_with = "present_timestamp")]
+    activity_run_status: Option<Option<String>>,
+    #[serde(skip)]
+    waiting_child: bool,
     latest_user_message_at: Option<String>,
     #[serde(default, deserialize_with = "present_timestamp")]
     latest_user_authored_message_at: Option<Option<String>>,
     latest_run_requested_at: Option<String>,
     latest_run_started_at: Option<String>,
-    latest_run_completed_at: Option<String>,
+    #[serde(default, deserialize_with = "present_timestamp")]
+    latest_run_completed_at: Option<Option<String>>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct SnoozeRequest {
+    kind: String,
+    created_at: Option<String>,
+    #[serde(default)]
+    user_only: bool,
 }
 
 fn present_timestamp<'de, D: serde::Deserializer<'de>>(
@@ -155,6 +173,62 @@ impl Thread {
     pub(crate) fn is_settled(&self) -> bool {
         self.activity.settled_override.as_deref() == Some("settled")
     }
+
+    pub(crate) fn is_snoozed(&self, now: OffsetDateTime) -> bool {
+        let activity = &self.activity;
+        activity
+            .snoozed_until
+            .as_deref()
+            .and_then(snooze_time)
+            .is_some_and(|wake| wake > milliseconds(now))
+            && !self.woke_during_snooze()
+    }
+
+    fn woke_during_snooze(&self) -> bool {
+        let activity = &self.activity;
+        let since = activity.snoozed_at.as_deref().and_then(snooze_time);
+        if let Some(request) = &activity.pending_runtime_request
+            && (request.kind != "user_input"
+                || since
+                    .zip(request.created_at.as_deref().and_then(snooze_time))
+                    .is_none_or(|(snoozed, asked)| asked > snoozed))
+        {
+            return true;
+        }
+        if activity.waiting_child || activity.pending_guest_message_count.unwrap_or(0) > 0 {
+            return true;
+        }
+        let status = activity
+            .activity_run_status
+            .as_ref()
+            .and_then(Option::as_deref)
+            .unwrap_or(&self.status);
+        if self.latest_run_id().is_none() || !matches!(status, "error" | "failed") {
+            return false;
+        }
+        let failure = if self.status == "failed" {
+            activity
+                .latest_run_completed_at
+                .as_ref()
+                .map_or(self.updated_at.as_deref(), Option::as_deref)
+        } else {
+            self.updated_at.as_deref()
+        };
+        activity.snoozed_at.is_none()
+            || since
+                .zip(failure.and_then(snooze_time))
+                .is_some_and(|(snoozed, failed)| failed > snoozed)
+    }
+}
+
+fn snooze_time(timestamp: &str) -> Option<i128> {
+    OffsetDateTime::parse(timestamp, &Rfc3339)
+        .ok()
+        .map(milliseconds)
+}
+
+fn milliseconds(time: OffsetDateTime) -> i128 {
+    time.unix_timestamp_nanos().div_euclid(1_000_000)
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
@@ -232,7 +306,10 @@ impl Thread {
     }
 
     pub(crate) fn latest_run_completed_at(&self) -> Option<&str> {
-        self.activity.latest_run_completed_at.as_deref()
+        self.activity
+            .latest_run_completed_at
+            .as_ref()
+            .and_then(Option::as_deref)
     }
 
     pub(crate) fn has_started_run(&self) -> bool {
@@ -249,7 +326,7 @@ impl Thread {
             self.activity.latest_user_message_at.as_deref(),
             self.activity.latest_run_requested_at.as_deref(),
             self.activity.latest_run_started_at.as_deref(),
-            self.activity.latest_run_completed_at.as_deref(),
+            self.latest_run_completed_at(),
         ]
         .into_iter()
         .flatten()
@@ -297,7 +374,7 @@ fn thread_order_timestamp(thread: &Thread, ordered_by_creation: bool) -> Option<
     } else {
         thread.latest_user_activity()
     }?;
-    Some(time.unix_timestamp_nanos().div_euclid(1_000_000))
+    Some(milliseconds(time))
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -316,6 +393,7 @@ pub(crate) struct Message {
 #[serde(rename_all = "camelCase")]
 struct ThreadLineage {
     relationship_to_parent: Option<String>,
+    parent_thread_id: Option<String>,
     #[serde(default)]
     side_chat: bool,
 }
@@ -325,6 +403,8 @@ struct ThreadRow {
     #[serde(flatten)]
     thread: Thread,
     lineage: Option<ThreadLineage>,
+    #[serde(rename = "creationSource")]
+    creation_source: Option<String>,
 }
 
 impl ThreadRow {
@@ -332,6 +412,37 @@ impl ThreadRow {
         self.lineage.as_ref().is_none_or(|lineage| {
             lineage.relationship_to_parent.as_deref() != Some("subagent") && !lineage.side_chat
         })
+    }
+
+    fn waiting_parent(&self) -> Option<&str> {
+        let lineage = self.lineage.as_ref()?;
+        let parent = lineage.parent_thread_id.as_deref()?;
+        let request = self.thread.activity.pending_runtime_request.as_ref()?;
+        if request.kind == "auth_refresh" {
+            return None;
+        }
+        if lineage.side_chat {
+            return Some(parent);
+        }
+        let live = self
+            .thread
+            .activity
+            .activity_run_status
+            .as_ref()
+            .map_or_else(
+                || {
+                    matches!(
+                        self.thread.status.as_str(),
+                        "preparing" | "starting" | "running" | "waiting"
+                    )
+                },
+                Option::is_some,
+            );
+        (lineage.relationship_to_parent.as_deref() == Some("subagent")
+            && self.creation_source.as_deref() != Some("provider")
+            && live
+            && (request.kind != "user_input" || request.user_only))
+            .then_some(parent)
     }
 }
 
@@ -569,6 +680,7 @@ impl Shell {
             .iter()
             .map(|row| row.thread.id.as_str())
             .collect();
+        let waiting_parents = self.waiting_parents();
         (
             self.projects
                 .iter()
@@ -579,9 +691,50 @@ impl Shell {
                 .filter(|row| !archived.contains(row.thread.id.as_str()))
                 .chain(self.archive.iter())
                 .filter(|row| row.listed())
-                .map(|row| row.thread.clone())
+                .map(|row| {
+                    let mut thread = row.thread.clone();
+                    thread.activity.waiting_child = waiting_parents.contains(thread.id.as_str());
+                    thread
+                })
                 .collect(),
         )
+    }
+
+    fn waiting_parents(&self) -> HashSet<&str> {
+        let mut parents = HashSet::new();
+        let mut traversed = HashSet::new();
+        let mut threads = None;
+        for child in &self.threads {
+            let Some(first) = child.waiting_parent() else {
+                continue;
+            };
+            let mut parent = Some(first);
+            if child
+                .lineage
+                .as_ref()
+                .is_some_and(|lineage| lineage.side_chat)
+            {
+                parents.insert(first);
+                continue;
+            }
+            let threads = threads.get_or_insert_with(|| {
+                self.threads
+                    .iter()
+                    .map(|row| (row.thread.id.as_str(), row))
+                    .collect::<HashMap<_, _>>()
+            });
+            while let Some(id) = parent {
+                if id == child.thread.id || !traversed.insert(id) {
+                    break;
+                }
+                parents.insert(id);
+                parent = threads
+                    .get(id)
+                    .filter(|row| !row.listed())
+                    .and_then(|row| row.lineage.as_ref()?.parent_thread_id.as_deref());
+            }
+        }
+        parents
     }
 
     pub(super) fn archived_threads(&self) -> Vec<Thread> {
@@ -1117,6 +1270,60 @@ mod tests {
         let entries = conversation.entries();
         assert!(matches!(&entries[1], ConversationEntry::TodoList(list) if
             list.completed_work.as_ref().is_some_and(|work| work.first_row && work.elapsed_ms == Some(3154))));
+    }
+
+    #[test]
+    fn a_snoozed_thread_wakes_for_new_requests_and_failures() {
+        let now = OffsetDateTime::parse("2026-11-22T16:00:00Z", &Rfc3339).unwrap();
+        let mut thread = json!({
+            "id":"t", "projectId":"p", "title":"Thread",
+            "snoozedAt":"2026-11-22T15:00:00Z",
+            "snoozedUntil":"2026-11-22T17:00:00Z",
+            "latestRunId":"run", "status":"failed",
+            "latestRunCompletedAt":"2026-11-22T14:00:00Z",
+            "updatedAt":"2026-11-22T15:30:00Z",
+            "pendingRuntimeRequest":{"kind":"user_input","createdAt":"2026-11-22T15:00:00Z"},
+        });
+        let snoozed = |thread: &Value| {
+            serde_json::from_value::<Thread>(thread.clone())
+                .unwrap()
+                .is_snoozed(now)
+        };
+        assert!(snoozed(&thread));
+        thread["pendingRuntimeRequest"]["createdAt"] = json!("2026-11-22T15:00:01Z");
+        assert!(!snoozed(&thread));
+        thread["pendingRuntimeRequest"] = Value::Null;
+        thread["latestRunCompletedAt"] = json!("2026-11-22T15:30:00Z");
+        assert!(!snoozed(&thread));
+        thread["latestRunCompletedAt"] = Value::Null;
+        assert!(snoozed(&thread));
+        thread["pendingGuestMessageCount"] = json!(1);
+        assert!(!snoozed(&thread));
+        thread["pendingGuestMessageCount"] = json!(0);
+        thread["snoozedUntil"] = json!("2026-11-22T16:00:00Z");
+        assert!(!snoozed(&thread));
+    }
+
+    #[test]
+    fn a_live_child_approval_wakes_its_listed_parent() {
+        let now = OffsetDateTime::parse("2026-11-22T16:00:00Z", &Rfc3339).unwrap();
+        let snapshot = |status: Value| {
+            json!({"kind":"snapshot","snapshot":{
+                "snapshotSequence":1, "projects":[], "threads":[
+                    {"id":"root","projectId":"p","title":"Thread","snoozedUntil":"2026-11-22T17:00:00Z"},
+                    {"id":"side","projectId":"p","title":"Side chat","lineage":{"parentThreadId":"root","sideChat":true}},
+                    {"id":"child","projectId":"p","title":"Child","lineage":{"parentThreadId":"side","relationshipToParent":"subagent"},
+                     "activityRunStatus":status,"pendingRuntimeRequest":{"kind":"approval"}},
+                ],
+            }})
+        };
+        let mut shell = Shell::default();
+        assert!(shell.apply(snapshot(json!("waiting"))).unwrap());
+        let (_, threads) = shell.view();
+        assert_eq!(threads.len(), 1);
+        assert!(!threads[0].is_snoozed(now));
+        assert!(shell.apply(snapshot(Value::Null)).unwrap());
+        assert!(shell.view().1[0].is_snoozed(now));
     }
 
     #[test]

@@ -15,6 +15,7 @@ pub(in crate::ui) mod undo;
 
 const MENU: &str = "sidebar-thread-menu";
 const ARCHIVE: &str = "sidebar-archive-thread";
+const DELETE: &str = "sidebar-delete-thread";
 const RENAME: &str = "sidebar-rename-thread";
 const COPY: &str = "sidebar-copy-thread-menu";
 const COPY_PATH: &str = "sidebar-copy-thread-path";
@@ -44,20 +45,43 @@ struct Target {
 pub(in crate::ui) struct Panel {
     menu: Option<(Target, PointerPress)>,
     copy_menu_open: bool,
-    confirmation: Option<Target>,
+    confirmation: Option<(Target, ArchiveAction)>,
     pending_archive: HashMap<String, Option<String>>,
+    pending_delete: HashMap<String, Option<Destination>>,
     pub(in crate::ui) undo: undo::Notice,
 }
 
 impl Panel {
     pub(in crate::ui) fn pending_navigation(&self, thread_id: &str) -> bool {
-        self.pending_archive
+        self.pending_delete
             .get(thread_id)
             .is_some_and(Option::is_some)
+            || self
+                .pending_archive
+                .get(thread_id)
+                .is_some_and(Option::is_some)
     }
 }
 
 impl State {
+    fn can_delete_active_thread(&self, id: &str) -> bool {
+        self.connection.is_some()
+            && self.settings.archive.can_delete(id)
+            && self
+                .workspace
+                .as_ref()
+                .filter(|workspace| !workspace.reconnecting)
+                .and_then(|workspace| workspace.thread(id))
+                .is_some_and(|thread| {
+                    !thread.archived
+                        && thread.worktree_path.is_none()
+                        && !matches!(
+                            thread.status.as_str(),
+                            "preparing" | "queued" | "starting" | "running" | "waiting"
+                        )
+                })
+    }
+
     fn can_archive_thread(&self, thread_id: &str) -> bool {
         self.connection.is_some()
             && self.settings.archive.can_archive(thread_id)
@@ -143,6 +167,11 @@ impl State {
                 "Archive".into(),
                 self.can_archive_thread(&target.id),
             ),
+            (
+                DELETE,
+                "Delete".into(),
+                self.can_delete_active_thread(&target.id),
+            ),
         ]);
         items
     }
@@ -173,12 +202,10 @@ impl State {
             FILTER_PROJECT => project_scope::toggle_for_thread(self, &target.project_id, tx),
             PROJECT_SETTINGS => self.open_project_settings(&target.project_id, tx),
             ARCHIVE if self.can_archive_thread(&target.id) => {
-                if self.client_settings.confirm_thread_archive() {
-                    self.thread_actions.confirmation = Some(target.clone());
-                    tx.focus_when_shown(CANCEL, true);
-                } else {
-                    self.archive_active_thread(target, tx);
-                }
+                self.confirm_or_dispatch(target, ArchiveAction::Archive, tx);
+            }
+            DELETE if self.can_delete_active_thread(&target.id) => {
+                self.confirm_or_dispatch(target, ArchiveAction::DeleteActive, tx);
             }
             _ => {}
         }
@@ -190,15 +217,46 @@ impl State {
         }
     }
 
-    fn cancel_active_archive(&mut self, tx: &mut Tx) {
-        if let Some(target) = self.thread_actions.confirmation.take() {
+    fn confirm_or_dispatch(&mut self, target: &Target, action: ArchiveAction, tx: &mut Tx) {
+        let confirm = if action == ArchiveAction::DeleteActive {
+            self.client_settings.confirm_thread_delete()
+        } else {
+            self.client_settings.confirm_thread_archive()
+        };
+        if confirm {
+            self.thread_actions.confirmation = Some((target.clone(), action));
+            tx.focus_when_shown(CANCEL, true);
+        } else {
+            self.dispatch_thread_action(target, action, tx);
+        }
+    }
+
+    fn cancel_thread_confirmation(&mut self, tx: &mut Tx) {
+        if let Some((target, _)) = self.thread_actions.confirmation.take() {
             tx.focus_when_shown(format!("thread-{}", target.id), tx.by_keys());
         }
     }
 
-    fn confirm_active_archive(&mut self, tx: &mut Tx) {
-        if let Some(target) = self.thread_actions.confirmation.take() {
-            self.archive_active_thread(&target, tx);
+    fn confirm_thread_action(&mut self, tx: &mut Tx) {
+        if let Some((target, action)) = self.thread_actions.confirmation.take() {
+            self.dispatch_thread_action(&target, action, tx);
+        }
+    }
+
+    fn dispatch_thread_action(&mut self, target: &Target, action: ArchiveAction, tx: &mut Tx) {
+        match action {
+            ArchiveAction::Archive => self.archive_active_thread(target, tx),
+            ArchiveAction::DeleteActive
+                if self.can_delete_active_thread(&target.id)
+                    && self.submit_archive_action(action, &target.id, tx) =>
+            {
+                let fallback =
+                    active_thread(self, &target.id).then(|| delete_fallback(self, target));
+                self.thread_actions
+                    .pending_delete
+                    .insert(target.id.clone(), fallback);
+            }
+            _ => {}
         }
     }
 
@@ -258,6 +316,68 @@ pub(in crate::ui) fn settle_archive(
 }
 
 pub(in crate::ui) use undo::settle as settle_undo;
+
+fn delete_fallback(state: &State, target: &Target) -> Destination {
+    let Some(shell) = state
+        .workspace
+        .as_ref()
+        .and_then(|workspace| workspace.shell.as_ref())
+    else {
+        return Destination::Home;
+    };
+    let now = time::OffsetDateTime::now_utc();
+    let threads = shell.threads.iter().filter(|thread| {
+        thread.project_id == target.project_id
+            && thread.id != target.id
+            && !thread.archived
+            && !thread.is_settled()
+            && !thread.is_snoozed(now)
+            && !state.thread_actions.pending_delete.contains_key(&thread.id)
+    });
+    crate::connection::latest_thread_by_order(
+        threads,
+        state.client_settings.threads_ordered_by_creation(),
+    )
+    .map_or(Destination::Home, |thread| Destination::Thread {
+        project: target.project_id.clone(),
+        thread: thread.id.clone(),
+    })
+}
+
+pub(in crate::ui) fn settle_delete(state: &mut State, id: &str, result: Result<(), String>) {
+    let fallback = state.thread_actions.pending_delete.remove(id).flatten();
+    if let Err(error) = result {
+        state.project_notice = Some(format!("Failed to delete thread. {error}"));
+        return;
+    }
+    state.thread_actions.undo.invalidate(id);
+    if let Some(shell) = state
+        .workspace
+        .as_mut()
+        .and_then(|workspace| workspace.shell.as_mut())
+    {
+        shell.threads.retain(|thread| thread.id != id);
+    }
+    if let Some(fallback) = fallback
+        && active_thread(state, id)
+        && !show_delete_fallback(state, fallback)
+    {
+        state.show_destination(Destination::Home);
+    }
+}
+
+fn show_delete_fallback(state: &mut State, fallback: Destination) -> bool {
+    if let Destination::Thread { thread, .. } = &fallback
+        && !state
+            .workspace
+            .as_ref()
+            .and_then(|workspace| workspace.thread(thread))
+            .is_some_and(|candidate| !candidate.archived)
+    {
+        return false;
+    }
+    state.show_destination(fallback)
+}
 
 pub(super) fn target(thread: El, id: String, can_rename: bool) -> El {
     thread.on_secondary_press(move |state: &mut State, point, tx| {
@@ -405,8 +525,10 @@ fn menu_row(
 }
 
 pub(in crate::ui) fn confirmation(state: &State, palette: Palette) -> Option<El> {
-    let target = state.thread_actions.confirmation.as_ref()?;
-    let title = format!("Archive thread \"{}\"?", target.title);
+    let (target, action) = state.thread_actions.confirmation.as_ref()?;
+    let destructive = *action == ArchiveAction::DeleteActive;
+    let verb = if destructive { "Delete" } else { "Archive" };
+    let title = format!("{verb} thread \"{}\"?", target.title);
     Some(confirmation::view(
         confirmation::Dialog {
             overlay: "sidebar-archive-overlay",
@@ -414,11 +536,14 @@ pub(in crate::ui) fn confirmation(state: &State, palette: Palette) -> Option<El>
             cancel: CANCEL,
             confirm: CONFIRM,
             title: &title,
-            detail: None,
-            destructive: false,
+            detail: destructive.then_some((
+                "sidebar-delete-description",
+                "This permanently clears conversation history for this thread.",
+            )),
+            destructive,
         },
         palette,
-        State::cancel_active_archive,
-        State::confirm_active_archive,
+        State::cancel_thread_confirmation,
+        State::confirm_thread_action,
     ))
 }
