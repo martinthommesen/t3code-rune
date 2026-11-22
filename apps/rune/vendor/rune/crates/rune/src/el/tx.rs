@@ -125,11 +125,11 @@ pub struct Tx {
     pub(crate) clock: f64,
 }
 
-/// Which asked for focus: [`Tx::focus`], [`Tx::focus_when_shown`], or [`Tx::return_focus`]
-/// handing it back.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Which focus operation a handler requested.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum FocusAsk {
     Focus,
+    Link(String),
     WhenShown,
     Return,
 }
@@ -506,6 +506,13 @@ impl Tx {
     /// in the same change wins over it. Nothing happens when no such element shows.
     pub fn focus(&mut self, key: impl Into<String>, ring: bool) {
         self.focus_to = Some((key.into(), ring, FocusAsk::Focus));
+    }
+
+    /// Focus the first shown link span with `id` in the element keyed `key` or its
+    /// descendants after the change commits. The id is the value passed to
+    /// [`El::on_link`](crate::El::on_link).
+    pub fn focus_link(&mut self, key: impl Into<String>, id: impl Into<String>, ring: bool) {
+        self.focus_to = Some((key.into(), ring, FocusAsk::Link(id.into())));
     }
 
     /// [`Tx::focus`] for an element that may not be shown yet: content still loading, a card that

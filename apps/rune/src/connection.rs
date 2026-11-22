@@ -2,6 +2,7 @@ mod archive;
 mod browse;
 mod command_output;
 mod draft_defaults;
+pub(crate) mod file_preview;
 mod keybindings;
 mod launch;
 mod project_favicon;
@@ -114,6 +115,7 @@ pub(crate) enum Event {
         native_stop: bool,
         project_writes: bool,
         filesystem_read: bool,
+        filesystem_write: bool,
         named_projects: bool,
         clone_writes: bool,
         terminal: bool,
@@ -161,6 +163,10 @@ pub(crate) enum Event {
         thread_id: String,
         attachment: Uuid,
         output: CommandOutput,
+    },
+    FilePreviewLoaded {
+        id: Uuid,
+        result: Result<file_preview::Contents, file_preview::ReadFailure>,
     },
     QueuedMessages {
         thread_id: String,
@@ -371,6 +377,8 @@ enum Command {
         partial_path: String,
         cwd: Option<String>,
     },
+    ReadFilePreview(file_preview::ReadRequest),
+    CancelFilePreview(Uuid),
     SearchProjectImages {
         search_id: Uuid,
         cwd: String,
@@ -723,6 +731,14 @@ impl Connection {
             partial_path,
             cwd,
         });
+    }
+
+    pub(crate) fn read_file_preview(&self, request: file_preview::ReadRequest) {
+        let _ = self.commands.send(Command::ReadFilePreview(request));
+    }
+
+    pub(crate) fn cancel_file_preview(&self, id: Uuid) {
+        let _ = self.commands.send(Command::CancelFilePreview(id));
     }
 
     pub(crate) fn create_named_project(&self, command_id: String, name: String) {
@@ -1106,6 +1122,8 @@ enum RpcCause {
 struct RpcError {
     message: Option<String>,
     detail: Option<String>,
+    #[serde(flatten)]
+    file: file_preview::FailureFields,
 }
 
 impl RpcExit {
@@ -1214,6 +1232,7 @@ struct Session {
     pending_keybinding: Option<keybindings::PendingEdit>,
     pending_project_edits: HashMap<String, (String, ProjectEditKind, Instant)>,
     pending_folder: Option<(String, Uuid, Instant)>,
+    pending_file_preview: Option<file_preview::PendingRead>,
     pending_project_images: Option<(String, Uuid, Instant)>,
     pending_launches: HashMap<String, (LaunchStage, Instant)>,
     pending_git_refs: HashMap<String, GitRefsRequest>,
@@ -1237,6 +1256,7 @@ struct Session {
     runtime_responses: bool,
     project_writes: bool,
     filesystem_read: bool,
+    filesystem_write: bool,
     named_projects: bool,
     scratch_projects: bool,
     project_organization: bool,
@@ -1340,6 +1360,7 @@ impl Session {
             pending_keybinding: None,
             pending_project_edits: HashMap::new(),
             pending_folder: None,
+            pending_file_preview: None,
             pending_project_images: None,
             pending_launches: HashMap::new(),
             pending_git_refs: HashMap::new(),
@@ -1396,6 +1417,11 @@ impl Session {
                 scope
                     .split_whitespace()
                     .any(|scope| scope == "filesystem:read")
+            }),
+            filesystem_write: scope.is_some_and(|scope| {
+                scope
+                    .split_whitespace()
+                    .any(|permission| permission == "filesystem:write")
             }),
             named_projects: environment
                 .descriptor
@@ -1542,6 +1568,7 @@ impl Session {
 
     async fn open_thread(&mut self, thread_id: String, opened: bool) -> Result<(), SessionStop> {
         self.close_command_outputs().await?;
+        self.cancel_file_preview(None).await?;
         if self
             .terminal
             .as_ref()
@@ -1608,6 +1635,7 @@ impl Session {
 
     async fn close_thread(&mut self) -> Result<(), SessionStop> {
         self.close_command_outputs().await?;
+        self.cancel_file_preview(None).await?;
         self.drop_terminal().await?;
         if let Some(thread) = self.thread.take() {
             self.interrupt(&thread.request_id).await?;
@@ -1844,6 +1872,8 @@ impl Session {
                     });
                 }
             }
+            Command::ReadFilePreview(input) => self.read_file_preview(input, events).await?,
+            Command::CancelFilePreview(id) => self.cancel_file_preview(Some(id)).await?,
             Command::AddProject {
                 command_id,
                 workspace_root,
@@ -2543,6 +2573,10 @@ impl Session {
                 }
             }
             ServerFrame::Exit { request_id, exit } => {
+                if self.matches_file_preview(&request_id) {
+                    self.finish_file_preview(exit, events);
+                    return Ok(());
+                }
                 if self.keybinding_write_matches(&request_id) {
                     self.keybinding_write_result(exit.into_result(), events);
                     return Ok(());
@@ -2949,6 +2983,7 @@ async fn run(
         native_stop: session.native_stop,
         project_writes: session.project_writes,
         filesystem_read: session.filesystem_read,
+        filesystem_write: session.filesystem_write,
         named_projects: session.named_projects && session.project_writes,
         clone_writes: session.clone_writes,
         terminal: session.terminals_enabled,
@@ -3121,6 +3156,7 @@ async fn run_socket(
                     false
                 });
                 session.pending_workspace_defaults.retain(|_, (_, started)| started.elapsed() < REQUEST_TIMEOUT);
+                session.expire_file_preview(events).await?;
                 session.pending_project_file_defaults.retain(|_, (_, _, started)| started.elapsed() < REQUEST_TIMEOUT);
                 session.pending_setup_cancels.retain(|_, (thread_id, started)| {
                     if started.elapsed() < REQUEST_TIMEOUT { return true; }

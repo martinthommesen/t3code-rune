@@ -486,12 +486,19 @@ impl RuntimeCore {
                 .or_else(|| candidates.into_iter().next())
                 .map(|j| nodes[j].path.clone())
         });
-        // `Tx::focus`: the first shown element with the key, or its first focusable child.
+        // Resolve focus inside the keyed subtree, including inline links.
         let asked = asked.and_then(|(key, ring, ask)| {
             let anchor = (0..nodes.len()).find(|&j| nodes[j].key.as_deref() == Some(key.as_str()) && shown(j))?;
-            (anchor..nodes.len()).take_while(|&j| within(&nodes[j].path, &nodes[anchor].path))
-                .find(|&j| shown(j) && self.can_take_focus(&nodes[j]))
-                .map(|j| (nodes[j].path.clone(), ring, ask))
+            let mut candidates = (anchor..nodes.len()).take_while(|&j| within(&nodes[j].path, &nodes[anchor].path))
+                .filter(|&j| shown(j) && self.can_take_focus(&nodes[j]));
+            let (node, link) = match &ask {
+                crate::el::FocusAsk::Link(id) => candidates.find_map(|j| {
+                    let link = nodes[j].text.as_ref()?.cold.links.iter().position(|link| link.id == *id)?;
+                    Some((j, Some(link)))
+                })?,
+                _ => (candidates.next()?, None),
+            };
+            Some((nodes[node].path.clone(), ring, ask, link))
         });
         let input_focused = self.kbd.focus.path().is_some_and(|p| {
             nodes.iter().any(|n| n.path == p && !n.inert && n.input.as_ref().is_some_and(|i| i.edit.focused))
@@ -530,12 +537,16 @@ impl RuntimeCore {
         // tree so apply can retain its exit visuals.
         let explicit = asked.as_ref().filter(|(p, ..)| next.as_deref() == Some(p.as_str()));
         let keep_entry = explicit.is_none() && next.as_deref() == self.kbd.focus.path();
-        let keyboard = explicit.map_or_else(|| self.kbd.focus.keyboard(), |(_, ring, _)| *ring);
-        self.kbd.set_focus_returned(matches!(explicit, Some((_, _, crate::el::FocusAsk::Return))));
+        let keyboard = explicit.map_or_else(|| self.kbd.focus.keyboard(), |(_, ring, ..)| *ring);
+        self.kbd.set_focus_returned(matches!(explicit, Some((_, _, crate::el::FocusAsk::Return, _))));
         if asked.is_none() && let Some(owed) = waits { self.kbd.focus_owed = Some(owed); }
         std::mem::swap(&mut self.tree.nodes, nodes);
         self.nodes_replaced();
-        let changed = self.set_focus_entry(app, next, keyboard, keep_entry);
+        let mut changed = self.set_focus_entry(app, next, keyboard, keep_entry);
+        if let Some(link) = explicit.and_then(|(_, _, _, link)| *link) {
+            changed |= self.link_focus() != Some(link);
+            self.set_link_focus(link);
+        }
         std::mem::swap(&mut self.tree.nodes, nodes);
         self.nodes_replaced();
         if self.edit.input_click.dragging_path().is_some_and(|p| !nodes.iter().any(|n| n.path == p && !n.inert && n.input.is_some())) {

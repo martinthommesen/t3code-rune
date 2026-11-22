@@ -4,6 +4,7 @@ use rune_kit::{Markdown, MarkdownStyle};
 use unicode_normalization::UnicodeNormalization;
 
 use super::approval;
+use super::file_preview;
 use super::navigation_history::Destination;
 use super::sidebar::project_badge;
 use super::thread_details;
@@ -57,19 +58,27 @@ pub(super) struct Layout {
     pub(super) header_left: f32,
     pub(super) native_trailing: f32,
     pub(super) pane_width: f32,
+    pub(super) file_preview_width: f32,
     pub(super) viewport: [f32; 2],
 }
 
 impl Layout {
-    fn header_right(self) -> f32 {
-        let native_controls = if cfg!(target_os = "macos") {
+    pub(super) fn native_controls_inset(self) -> f32 {
+        if cfg!(target_os = "macos") {
             12.0
         } else if self.native_trailing > 0.0 {
             self.native_trailing + 12.0
         } else {
             126.0
-        };
-        native_controls + 32.0
+        }
+    }
+
+    fn header_right(self) -> f32 {
+        if self.file_preview_width > 0.0 {
+            12.0
+        } else {
+            self.native_controls_inset() + 32.0
+        }
     }
 
     pub(super) fn timeline_gutter(self) -> f32 {
@@ -223,37 +232,41 @@ pub(super) fn header(
             colors.fallbacks,
         ));
     }
-    if let Some(thread) = thread.filter(|_| workspace.terminal && !workspace.reconnecting) {
-        let open = state
-            .terminal
-            .as_ref()
-            .is_some_and(|terminal| terminal.thread_id == thread.id);
-        header = header.child(
-            el().key("terminal-toggle")
-                .role("button")
-                .label("Toggle terminal drawer")
-                .help("Toggle terminal drawer")
-                .size(28.0, 28.0)
-                .center()
-                .radius(8.0)
-                .checked(open)
-                .focusable(true)
-                .focus_ring(2.0, -1.0, colors.fallbacks.accent)
-                .fill(if open {
-                    colors.accent
-                } else {
-                    Color::TRANSPARENT
-                })
-                .hover(colors.accent)
-                .on_press_tx(State::toggle_terminal)
-                .child(
-                    icon(&TERMINAL, 16.0)
-                        .color(colors.foreground.alpha(0.8))
-                        .a11y_hidden(),
-                ),
-        );
+    if let Some(thread) = thread.filter(|_| {
+        layout.file_preview_width == 0.0 && workspace.terminal && !workspace.reconnecting
+    }) {
+        header = header.child(terminal_control(state, thread, colors));
     }
     header
+}
+
+pub(super) fn terminal_control(state: &State, thread: &Thread, colors: Colors) -> El {
+    let open = state
+        .terminal
+        .as_ref()
+        .is_some_and(|terminal| terminal.thread_id == thread.id);
+    el().key("terminal-toggle")
+        .role("button")
+        .label("Toggle terminal drawer")
+        .help("Toggle terminal drawer")
+        .size(28.0, 28.0)
+        .center()
+        .radius(8.0)
+        .checked(open)
+        .focusable(true)
+        .focus_ring(2.0, -1.0, colors.fallbacks.accent)
+        .fill(if open {
+            colors.accent
+        } else {
+            Color::TRANSPARENT
+        })
+        .hover(colors.accent)
+        .on_press_tx(State::toggle_terminal)
+        .child(
+            icon(&TERMINAL, 16.0)
+                .color(colors.foreground.alpha(0.8))
+                .a11y_hidden(),
+        )
 }
 
 pub(super) fn transcript(
@@ -281,7 +294,9 @@ pub(super) fn transcript(
             layout.viewport[0],
             colors,
         )),
-        ConversationEntry::Message(message) => Some(response(message, colors)),
+        ConversationEntry::Message(message) => {
+            Some(response(message, conversation, workspace, colors))
+        }
         ConversationEntry::WorkspaceFailure(failure) => Some(worktree_setup::failure_row(
             conversation,
             failure,
@@ -477,7 +492,13 @@ fn user_message(
     message_row
 }
 
-fn response(message: &Message, colors: Colors) -> El {
+fn response(
+    message: &Message,
+    conversation: &Conversation,
+    workspace: &Workspace,
+    colors: Colors,
+) -> El {
+    let origin = format!("message-{}", message.id);
     let content = if message.role == "assistant" {
         let style = MarkdownStyle::neutral(colors.fallbacks.dark)
             .body_font(PROSE)
@@ -486,12 +507,20 @@ fn response(message: &Message, colors: Colors) -> El {
             .link(colors.fallbacks.accent)
             .selection(colors.fallbacks.selected)
             .code_block(colors.bubble, colors.fallbacks.line);
-        Markdown::new(message.text.as_str())
+        let markdown = Markdown::new(message.text.as_str())
             .selectable(true)
             .tasks_read_only()
-            .scroll_wide(true)
-            .render(&style)
-            .key("markdown")
+            .scroll_wide(true);
+        let markdown = if workspace.filesystem_read {
+            let thread_id = conversation.id.clone();
+            let origin = origin.clone();
+            markdown.on_link_tx(move |state, href, tx| {
+                file_preview::activate_link(state, &thread_id, &origin, href, tx)
+            })
+        } else {
+            markdown
+        };
+        markdown.render(&style).key("markdown")
     } else {
         text(&message.text)
             .font(PROSE)
@@ -501,7 +530,7 @@ fn response(message: &Message, colors: Colors) -> El {
             .selection_color(colors.fallbacks.selected)
     };
     let mut response = col()
-        .key(format!("message-{}", message.id))
+        .key(origin)
         .role("article")
         .label(if message.role == "assistant" {
             "T3 Code"

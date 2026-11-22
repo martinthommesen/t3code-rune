@@ -17,6 +17,7 @@ mod approval;
 mod composer;
 mod conversation;
 mod draft_hero;
+mod file_preview;
 mod navigation_history;
 mod onboarding;
 mod project;
@@ -112,6 +113,7 @@ struct Workspace {
     scratch_project: Option<String>,
     scratch_workspace_root: Option<String>,
     filesystem_read: bool,
+    filesystem_write: bool,
     named_projects: bool,
     clone_writes: bool,
     clones: Vec<crate::connection::ProjectClone>,
@@ -268,6 +270,7 @@ struct State {
     terminal: Option<terminal::Pane>,
     terminal_tabs: terminal::TabsByThread,
     thread_details: thread_details::Popover,
+    file_preview: Option<file_preview::Preview>,
     thread_error_banner: thread_error_banner::Session,
     window_focused: bool,
     window_chrome: window_chrome::ChromeState,
@@ -305,6 +308,7 @@ impl Default for State {
             terminal: None,
             terminal_tabs: terminal::TabsByThread::default(),
             thread_details: thread_details::Popover::default(),
+            file_preview: None,
             thread_error_banner: thread_error_banner::Session::default(),
             window_focused: true,
             window_chrome: window_chrome::ChromeState::default(),
@@ -348,6 +352,7 @@ impl State {
         self.question_auto_advance = None;
         self.add_project = None;
         self.thread_details.close();
+        self.file_preview = None;
         self.thread_error_banner.reset_expansion();
         self.added_project = None;
         self.scratch_request = None;
@@ -463,6 +468,7 @@ impl State {
         sidebar::close_draft_project_picker(&mut self.sidebar);
         self.draft_workspace_popup = None;
         self.thread_details.close();
+        self.file_preview = None;
         self.thread_error_banner.reset_expansion();
         if let Some(terminal) = self.terminal.take()
             && let Some(connection) = &self.connection
@@ -968,6 +974,7 @@ impl State {
                 native_stop,
                 project_writes,
                 filesystem_read,
+                filesystem_write,
                 named_projects,
                 clone_writes,
                 terminal,
@@ -1001,6 +1008,7 @@ impl State {
                     scratch_project: None,
                     scratch_workspace_root: None,
                     filesystem_read,
+                    filesystem_write,
                     named_projects,
                     clone_writes,
                     clones: Vec::new(),
@@ -1094,6 +1102,7 @@ impl State {
             } => {
                 conversation::command_row::update(self, &thread_id, attachment, output);
             }
+            Event::FilePreviewLoaded { id, result } => self.file_preview_loaded(id, result, tx),
             Event::QueuedMessages {
                 thread_id,
                 messages,
@@ -1470,6 +1479,7 @@ impl State {
             } => self.project_notice = Some(message),
             event @ (Event::Reconnecting | Event::Reconnected) => {
                 if matches!(event, Event::Reconnecting) {
+                    self.file_preview = None;
                     self.workspace_settings_disconnected(false);
                     self.keybindings_catalog_available(false);
                 } else {
@@ -1506,6 +1516,7 @@ impl State {
                 }
             }
             Event::Disconnected(reason) => {
+                self.file_preview = None;
                 self.workspace_settings_disconnected(true);
                 self.reset_keybindings_panel();
                 self.onboarding.finish_refresh();
@@ -1684,6 +1695,18 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
     let chrome = cx.chrome_insets();
     let chrome_layout = sidebar_header::Layout::new(chrome, state.window_chrome.leading_inset());
     let pane_size = cx.layout_size("detail-pane").unwrap_or([864.0, 740.0]);
+    let [width, height] = cx.layout_size("t3-code-window").unwrap_or([1100.0, 780.0]);
+    let workspace_width = width
+        - if state.sidebar_open {
+            chrome_layout.width()
+        } else {
+            0.0
+        };
+    let file_preview_width = if state.file_preview.is_some() {
+        file_preview::dock_width(width, workspace_width)
+    } else {
+        0.0
+    };
     let detail_layout = conversation::Layout {
         header_height: chrome_layout.height(),
         header_left: if state.sidebar_open {
@@ -1692,18 +1715,10 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
             chrome_layout.content_left()
         },
         native_trailing: chrome.trailing.max(state.window_chrome.trailing_inset()),
-        pane_width: pane_size[0],
-        viewport: [
-            pane_size[0]
-                + if state.sidebar_open {
-                    chrome_layout.width()
-                } else {
-                    0.0
-                },
-            pane_size[1],
-        ],
+        pane_width: workspace_width - file_preview_width,
+        file_preview_width,
+        viewport: [width, height],
     };
-    let [width, height] = cx.layout_size("t3-code-window").unwrap_or([1100.0, 780.0]);
     let setup = onboarding::view(state, palette.dark, width, height, chrome_layout.height());
     let onboarding_open = setup.is_some();
     if onboarding_open {
@@ -1908,9 +1923,17 @@ fn workspace_view(
 ) -> El {
     let colors = sidebar_header::Colors::new(palette.dark);
     let frame = row().w_full().h_full();
+    let preview = file_preview::view(
+        state,
+        workspace,
+        detail_layout.file_preview_width,
+        detail_layout,
+        palette,
+    );
     if !state.sidebar_open {
         return frame
             .child(detail(state, workspace, palette, detail_layout))
+            .children(preview)
             .child(sidebar_header::toggle(state, layout, colors));
     }
     let footer = sidebar_footer(state, workspace, palette, colors);
@@ -1934,6 +1957,7 @@ fn workspace_view(
     frame
         .child(side)
         .child(detail(state, workspace, palette, detail_layout))
+        .children(preview)
 }
 
 fn sidebar_footer(
@@ -2382,6 +2406,7 @@ mod tests {
                 native_stop: false,
                 project_writes: true,
                 filesystem_read: false,
+                filesystem_write: false,
                 named_projects: false,
                 clone_writes: false,
                 terminal: false,
