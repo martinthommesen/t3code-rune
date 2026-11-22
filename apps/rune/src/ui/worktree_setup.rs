@@ -142,20 +142,19 @@ pub(super) fn poll(state: &mut State, tx: &mut Tx) -> bool {
     changed || closed
 }
 
-pub(super) fn view(
+pub(super) fn view<'a>(
     conversation: &Conversation,
-    messages: &[Message],
+    messages: impl Iterator<Item = &'a Message> + Clone,
     workspace: &Workspace,
     palette: Palette,
 ) -> Option<El> {
     let setup = conversation.worktree_setup.as_deref()?;
     let thread = workspace.thread(&conversation.id);
     let activity_started = thread.is_some_and(|thread| thread.has_started_run())
-        || messages.iter().any(|message| message.role == "assistant");
+        || messages.clone().any(|message| message.role == "assistant");
     let handed_off = activity_started && agent_started(setup);
     let running = setup.phase == Phase::Running;
     let follow_up = messages
-        .iter()
         .filter(|message| message.role == "user" && message.created_by.as_deref() != Some("agent"))
         .nth(1)
         .is_some();

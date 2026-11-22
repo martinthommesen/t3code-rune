@@ -32,7 +32,9 @@ use uuid::Uuid;
 pub(crate) use browse::FolderListing;
 pub(crate) use launch::Workspace as LaunchWorkspace;
 use projection::{Conversation, Shell};
-pub(crate) use projection::{Message, Project, Thread};
+pub(crate) use projection::{
+    ConversationEntry, Message, Project, Thread, TodoListEntry, TodoStepStatus,
+};
 pub(crate) use provider_metadata::{ProviderCatalog, ProviderMetadata};
 #[cfg(test)]
 pub(crate) use runtime_approval::ApprovalChoice;
@@ -95,7 +97,7 @@ pub(crate) enum Event {
     Providers(ProviderCatalog),
     Thread {
         thread_id: String,
-        messages: Vec<Message>,
+        entries: Vec<ConversationEntry>,
     },
     ThreadActions {
         thread_id: String,
@@ -1905,7 +1907,7 @@ impl Session {
                         Ok(true) => {
                             events.send(Event::Thread {
                                 thread_id: thread.thread_id.clone(),
-                                messages: thread.conversation.messages(),
+                                entries: thread.conversation.entries(),
                             });
                             let approvals = thread.conversation.approvals.visible();
                             if approvals != thread.reported_approvals {

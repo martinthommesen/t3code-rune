@@ -8,8 +8,8 @@ use rune::{col, el, row, text, text_input};
 
 use crate::client_settings::ClientSettings;
 use crate::connection::{
-    Connection, Event, GitRef, LaunchWorkspace, Message, Project, ProviderCatalog, Thread,
-    ThreadAction, WorktreeSetup, worktree_setup::Phase as SetupPhase,
+    Connection, ConversationEntry, Event, GitRef, LaunchWorkspace, Message, Project,
+    ProviderCatalog, Thread, ThreadAction, WorktreeSetup, worktree_setup::Phase as SetupPhase,
 };
 
 mod approval;
@@ -42,7 +42,7 @@ struct Shell {
 
 enum Transcript {
     Loading,
-    Loaded(Vec<Message>),
+    Loaded(Vec<ConversationEntry>),
     Failed(String),
 }
 
@@ -50,6 +50,8 @@ struct Conversation {
     id: String,
     transcript: Transcript,
     expanded_messages: HashSet<String>,
+    expanded_todo_lists: HashSet<String>,
+    expanded_work_runs: HashSet<String>,
     approvals: approval::Approvals,
     stop_available: bool,
     queue_worktree_available: bool,
@@ -435,6 +437,8 @@ impl State {
                     id: thread,
                     transcript: Transcript::Loading,
                     expanded_messages: HashSet::new(),
+                    expanded_todo_lists: HashSet::new(),
+                    expanded_work_runs: HashSet::new(),
                     approvals: approval::Approvals::default(),
                     stop_available: false,
                     queue_worktree_available: false,
@@ -831,15 +835,12 @@ impl State {
                 }
             }
             Event::FolderBrowsed { browse_id, result } => self.folder_browsed(browse_id, result),
-            Event::Thread {
-                thread_id,
-                messages,
-            } => {
+            Event::Thread { thread_id, entries } => {
                 if let Some(conversation) = self.conversation_mut(&thread_id) {
                     if matches!(conversation.transcript, Transcript::Loading) {
                         tx.scroll_to_bottom(format!("transcript-{thread_id}"));
                     }
-                    conversation.transcript = Transcript::Loaded(messages);
+                    conversation.transcript = Transcript::Loaded(entries);
                 }
             }
             Event::ThreadApprovals {
@@ -1619,14 +1620,14 @@ fn detail(
                     )),
             )
         }
-        Transcript::Loaded(messages) => {
-            let transcript = if messages.is_empty()
+        Transcript::Loaded(entries) => {
+            let transcript = if entries.is_empty()
                 && conversation.approvals.is_empty()
                 && conversation.worktree_setup.is_none()
             {
                 placeholder("No messages yet", "", palette)
             } else {
-                conversation::transcript(conversation, messages, layout, colors, workspace)
+                conversation::transcript(conversation, entries, layout, colors, workspace)
             };
             let pane = pane.child(transcript);
             let read_only_reason = if thread.is_some_and(|thread| thread.archived) {
@@ -1883,7 +1884,7 @@ mod tests {
             runtime,
             Event::Thread {
                 thread_id: "thread".into(),
-                messages: vec![],
+                entries: vec![],
             },
         );
     }
@@ -1916,7 +1917,7 @@ mod tests {
             &mut runtime,
             Event::Thread {
                 thread_id: "thread".into(),
-                messages: vec![],
+                entries: vec![],
             },
         );
         assert!(runtime.find("prompt").is_some());
@@ -1972,7 +1973,7 @@ mod tests {
             &mut runtime,
             Event::Thread {
                 thread_id: "other-thread".into(),
-                messages: vec![],
+                entries: vec![],
             },
         );
         assert!(runtime.find("prompt").is_some());
@@ -1996,7 +1997,7 @@ mod tests {
             &mut runtime,
             Event::Thread {
                 thread_id: "thread".into(),
-                messages: vec![
+                entries: [
                     Message {
                         id: "agent-prompt".into(),
                         role: "user".into(),
@@ -2015,7 +2016,9 @@ mod tests {
                         text: response.into(),
                         created_by: Some("agent".into()),
                     },
-                ],
+                ]
+                .map(ConversationEntry::Message)
+                .into(),
             },
         );
         assert!(runtime.find("message-text-ordinary-prompt").is_some());
@@ -2035,6 +2038,44 @@ mod tests {
             clipboard.text().as_deref().map(String::as_str),
             Some(response)
         );
+    }
+
+    #[test]
+    fn todo_disclosure_stays_open_as_captured_steps_complete() {
+        use serde_json::json;
+
+        let mut runtime =
+            Runtime::new(State::default(), view, (1120.0, 740.0), Env::new(true, 1.0));
+        open_thread(&mut runtime, "local");
+        let update = |first, second, third| Event::Thread {
+            thread_id: "thread".into(),
+            entries: vec![ConversationEntry::TodoList(
+                serde_json::from_value(json!({
+                    "id": "captured-list",
+                    "steps": [
+                        {"id":"step-1", "text":"Inspect package.json", "status":first},
+                        {"id":"step-2", "text":"Inspect tsconfig.json", "status":second},
+                        {"id":"step-3", "text":"Report completion", "status":third},
+                    ],
+                }))
+                .unwrap(),
+            )],
+        };
+        publish(&mut runtime, update("running", "pending", "pending"));
+        let summary = "todo-list-summary-captured-list";
+        let first_step = "todo-list-step-captured-list-step-1";
+        assert_eq!(
+            prompt_text(&runtime, summary),
+            "Tasks 0/3 · Inspect package.json"
+        );
+        assert!(runtime.find(first_step).is_none());
+        click(&mut runtime, "toggle-todo-list-captured-list");
+        assert_eq!(prompt_text(&runtime, first_step), "◉ Inspect package.json");
+        publish(&mut runtime, update("completed", "completed", "completed"));
+        assert_eq!(prompt_text(&runtime, summary), "Tasks 3/3");
+        assert_eq!(prompt_text(&runtime, first_step), "✓ Inspect package.json");
+        click(&mut runtime, "toggle-todo-list-captured-list");
+        assert!(runtime.find(first_step).is_none());
     }
 
     #[test]
@@ -2128,7 +2169,7 @@ mod tests {
             &mut runtime,
             Event::Thread {
                 thread_id: "new".into(),
-                messages: vec![],
+                entries: vec![],
             },
         );
         assert!(runtime.find("prompt").is_some());

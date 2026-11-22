@@ -171,7 +171,7 @@ async fn pairs_reads_sends_launches_and_recovers_without_replaying_mutations() {
     );
     connection.open_thread("thread".into());
     assert!(
-        matches!(next_event(&connection, &mut wake_rx).await, Event::Thread { thread_id, messages } if thread_id == "thread" && messages[0].text == "Existing response")
+        matches!(next_event(&connection, &mut wake_rx).await, Event::Thread { thread_id, entries } if thread_id == "thread" && entries[0].message().is_some_and(|message| message.text == "Existing response"))
     );
     assert!(matches!(next_event(&connection, &mut wake_rx).await,
         Event::ThreadQuestions { thread_id, questions, can_respond: false }
@@ -217,7 +217,7 @@ async fn pairs_reads_sends_launches_and_recovers_without_replaying_mutations() {
         Event::Shell { .. }
     ));
     assert!(
-        matches!(next_event(&connection, &mut wake_rx).await, Event::Thread { thread_id, messages } if thread_id == "thread" && messages[0].text == "Restored response")
+        matches!(next_event(&connection, &mut wake_rx).await, Event::Thread { thread_id, entries } if thread_id == "thread" && entries[0].message().is_some_and(|message| message.text == "Restored response"))
     );
     assert!(matches!(next_event(&connection, &mut wake_rx).await,
         Event::ThreadQuestions { thread_id, questions, can_respond: false }

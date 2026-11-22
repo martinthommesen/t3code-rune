@@ -7,7 +7,10 @@ use super::approval;
 use super::navigation_history::Destination;
 use super::sidebar::project_badge;
 use super::worktree_setup;
-use super::{Conversation, Message, Palette, Project, ProjectView, State, Thread, Workspace};
+use super::{
+    Conversation, ConversationEntry, Message, Palette, Project, ProjectView, State, Thread,
+    Workspace,
+};
 
 const TOPBAR_TEXT: TextStyle = TextStyle::new(14.0, 500.0).lh(20.0);
 const SUMMARY_TEXT: TextStyle = TextStyle::new(14.0, 400.0).lh(20.0);
@@ -39,6 +42,8 @@ static COPY: Icon = glyph!(
     "copy",
     r#"<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>"#
 );
+
+mod todo_list;
 
 #[derive(Clone, Copy)]
 pub(super) struct Layout {
@@ -238,29 +243,31 @@ pub(super) fn header(
 
 pub(super) fn transcript(
     conversation: &Conversation,
-    messages: &[Message],
+    entries: &[ConversationEntry],
     layout: Layout,
     colors: Colors,
     workspace: &Workspace,
 ) -> El {
     let bubble_width = layout.max_bubble_width();
-    let split = messages
+    let split = entries
         .iter()
-        .position(|message| message.role == "user")
-        .map_or(messages.len(), |first_user| first_user + 1);
-    let (before, after) = messages.split_at(split);
-    let message_row = |message: &Message| {
-        if message.role == "user" {
-            user_message(
-                conversation,
-                message,
-                bubble_width,
-                layout.viewport[0],
-                colors,
-            )
-        } else {
-            response(message, colors)
-        }
+        .position(|entry| {
+            entry
+                .message()
+                .is_some_and(|message| message.role == "user")
+        })
+        .map_or(entries.len(), |first_user| first_user + 1);
+    let (before, after) = entries.split_at(split);
+    let entry_row = |entry: &ConversationEntry| match entry {
+        ConversationEntry::Message(message) if message.role == "user" => Some(user_message(
+            conversation,
+            message,
+            bubble_width,
+            layout.viewport[0],
+            colors,
+        )),
+        ConversationEntry::Message(message) => Some(response(message, colors)),
+        ConversationEntry::TodoList(list) => todo_list::view(conversation, list, colors),
     };
     col()
         .key(format!("transcript-{}", conversation.id))
@@ -279,14 +286,14 @@ pub(super) fn transcript(
                 .pt(24.0)
                 .pb(16.0)
                 .selection_group(true)
-                .children(before.iter().map(message_row))
+                .children(before.iter().filter_map(entry_row))
                 .children(worktree_setup::view(
                     conversation,
-                    messages,
+                    entries.iter().filter_map(ConversationEntry::message),
                     workspace,
                     colors.fallbacks,
                 ))
-                .children(after.iter().map(message_row))
+                .children(after.iter().filter_map(entry_row))
                 .children(approval::rows(
                     &conversation.id,
                     &conversation.approvals,

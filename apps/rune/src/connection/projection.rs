@@ -1,3 +1,5 @@
+mod transcript;
+
 use std::collections::{HashMap, HashSet};
 
 use serde::Deserialize;
@@ -7,6 +9,8 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use super::launch::ModelSelection;
 use super::runtime_approval::{ApprovalDetails, ApprovalProjection, RuntimeRequest};
 use super::runtime_question::{QuestionDetails, QuestionProjection};
+pub(crate) use transcript::{ConversationEntry, TodoListEntry, TodoStepStatus};
+use transcript::{TimelineRun, Transcript};
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub(crate) struct Project {
@@ -437,6 +441,8 @@ fn remove<T>(rows: &mut Vec<T>, matches: impl Fn(&T) -> bool) -> bool {
 #[derive(Deserialize)]
 struct ThreadProjection {
     messages: Vec<Message>,
+    #[serde(default)]
+    runs: Vec<TimelineRun>,
     #[serde(rename = "visibleTurnItems")]
     visible_turn_items: Option<Vec<TimelineRow>>,
     #[serde(default, rename = "runtimeRequests")]
@@ -470,9 +476,13 @@ impl ThreadProjection {
         (approvals, questions)
     }
 
-    fn visible_messages(self) -> Vec<Message> {
+    fn visible_entries(self) -> Vec<ConversationEntry> {
         let Some(rows) = self.visible_turn_items else {
-            return self.messages;
+            return self
+                .messages
+                .into_iter()
+                .map(ConversationEntry::Message)
+                .collect();
         };
         let mut messages = self
             .messages
@@ -484,15 +494,16 @@ impl ThreadProjection {
                 let (role, entry) = match row.item {
                     TimelineItem::UserMessage(entry) => ("user", entry),
                     TimelineItem::AssistantMessage(entry) => ("assistant", entry),
+                    TimelineItem::TodoList(list) => return Some(ConversationEntry::TodoList(list)),
                     _ => return None,
                 };
                 if let Some(mut message) = messages.remove(&entry.message_id) {
                     if let Some(text) = entry.text {
                         message.text = text;
                     }
-                    Some(message)
+                    Some(ConversationEntry::Message(message))
                 } else {
-                    entry.into_message(role)
+                    entry.into_message(role).map(ConversationEntry::Message)
                 }
             })
             .collect()
@@ -509,6 +520,7 @@ struct TimelineRow {
 enum TimelineItem {
     UserMessage(TimelineMessage),
     AssistantMessage(TimelineMessage),
+    TodoList(TodoListEntry),
     ApprovalRequest(ApprovalDetails),
     UserInputRequest(QuestionDetails),
     #[serde(other)]
@@ -550,6 +562,8 @@ enum ThreadEvent {
     MessageUpdated { payload: Message },
     #[serde(rename = "turn-item.updated")]
     ItemUpdated { payload: TimelineItem },
+    #[serde(rename = "run.updated")]
+    RunUpdated { payload: TimelineRun },
     #[serde(rename = "runtime-request.updated")]
     RuntimeRequestUpdated { payload: RuntimeRequest },
     #[serde(other)]
@@ -578,8 +592,7 @@ enum ThreadItem {
 #[derive(Default)]
 pub(crate) struct Conversation {
     sequence: u64,
-    messages: Vec<Message>,
-    message_index: HashMap<String, usize>,
+    transcript: Transcript,
     pub(super) approvals: ApprovalProjection,
     pub(super) questions: QuestionProjection,
 }
@@ -593,22 +606,25 @@ impl Conversation {
             } if snapshot_sequence >= self.sequence => {
                 self.sequence = snapshot_sequence;
                 (self.approvals, self.questions) = projection.take_runtime_requests();
-                self.messages.clear();
-                self.message_index.clear();
-                for message in projection.visible_messages() {
-                    self.upsert_message(message);
-                }
+                let runs = std::mem::take(&mut projection.runs);
+                self.transcript.replace(projection.visible_entries(), runs);
                 true
             }
             ThreadItem::Event { sequence, event } if sequence > self.sequence => {
                 self.sequence = sequence;
                 match event {
-                    ThreadEvent::MessageUpdated { payload } => self.upsert_message(payload),
+                    ThreadEvent::RunUpdated { payload } => self.transcript.update_run(payload),
+                    ThreadEvent::MessageUpdated { payload } => {
+                        self.transcript.upsert(ConversationEntry::Message(payload))
+                    }
                     ThreadEvent::ItemUpdated {
                         payload: TimelineItem::AssistantMessage(entry),
-                    } => entry
-                        .into_message("assistant")
-                        .is_some_and(|message| self.upsert_message(message)),
+                    } => entry.into_message("assistant").is_some_and(|message| {
+                        self.transcript.upsert(ConversationEntry::Message(message))
+                    }),
+                    ThreadEvent::ItemUpdated {
+                        payload: TimelineItem::TodoList(list),
+                    } => self.transcript.upsert(ConversationEntry::TodoList(list)),
                     ThreadEvent::ItemUpdated {
                         payload: TimelineItem::ApprovalRequest(details),
                     } => self.approvals.detail(details),
@@ -632,23 +648,18 @@ impl Conversation {
         Ok(changed)
     }
 
-    fn upsert_message(&mut self, message: Message) -> bool {
-        if let Some(&index) = self.message_index.get(&message.id) {
-            let existing = &mut self.messages[index];
-            if *existing == message {
-                return false;
-            }
-            *existing = message;
-        } else {
-            self.message_index
-                .insert(message.id.clone(), self.messages.len());
-            self.messages.push(message);
-        }
-        true
+    pub(crate) fn entries(&self) -> Vec<ConversationEntry> {
+        self.transcript.entries()
     }
 
+    #[cfg(test)]
     pub(crate) fn messages(&self) -> Vec<Message> {
-        self.messages.clone()
+        self.transcript
+            .entries()
+            .iter()
+            .filter_map(ConversationEntry::message)
+            .cloned()
+            .collect()
     }
 }
 
@@ -725,17 +736,61 @@ mod tests {
             },
         })).unwrap());
         assert_eq!(
-            conversation.messages[0].created_by.as_deref(),
+            conversation.messages()[0].created_by.as_deref(),
             Some("agent")
         );
-        assert_eq!(conversation.messages[1].text, "Working");
-        assert_eq!(conversation.messages.len(), 2);
+        assert_eq!(conversation.messages()[1].text, "Working");
+        assert_eq!(conversation.messages().len(), 2);
         assert!(conversation.apply(json!({
             "kind": "event", "sequence": 6,
             "event": {"type":"turn-item.updated", "payload":{"type":"assistant_message", "messageId":"reply", "text":"Done"}},
         })).unwrap());
-        assert_eq!(conversation.messages[1].text, "Done");
-        assert_eq!(conversation.messages.len(), 2);
+        assert_eq!(conversation.messages()[1].text, "Done");
+        assert_eq!(conversation.messages().len(), 2);
+    }
+
+    #[test]
+    fn task_list_updates_keep_the_original_position_between_visible_messages() {
+        let task = |status| {
+            json!({"type":"todo_list", "id":"task-list", "runId":"run", "steps":[
+                {"id":"step-1", "text":"Inspect package.json", "status":status},
+            ]})
+        };
+        let mut conversation = Conversation::default();
+        assert!(conversation.apply(json!({
+            "kind":"snapshot", "snapshotSequence":8,"projection":{
+                "messages": [], "visibleTurnItems": [
+                    {"item":{"type":"user_message", "messageId":"prompt", "text":"Start"}},
+                    {"item":task("running")},
+                    {"item":{"type":"assistant_message", "messageId":"reply", "text":"Done"}},
+                ],
+            },
+        })).unwrap());
+        assert!(conversation.apply(json!({
+            "kind":"event", "sequence":9,"event":{"type":"turn-item.updated", "payload":task("completed")},
+        })).unwrap());
+        let entries = conversation.entries();
+        let [
+            ConversationEntry::Message(first),
+            ConversationEntry::TodoList(list),
+            ConversationEntry::Message(last),
+        ] = entries.as_slice()
+        else {
+            panic!("expected the task list between the two messages");
+        };
+        assert_eq!(first.id, "prompt");
+        assert_eq!(list.steps[0].status, TodoStepStatus::Completed);
+        assert!(list.completed_work.is_none());
+        assert_eq!(last.id, "reply");
+        assert!(conversation.apply(json!({
+            "kind":"event", "sequence":10,"event":{"type":"run.updated", "payload":{
+                "id":"run", "status":"completed",
+                "startedAt":"2026-11-22T00:00:00.000Z", "completedAt":"2026-11-22T00:00:03.154Z",
+            }},
+        })).unwrap());
+        let entries = conversation.entries();
+        assert!(matches!(&entries[1], ConversationEntry::TodoList(list) if
+            list.completed_work.as_ref().is_some_and(|work| work.first_row && work.elapsed_ms == Some(3154))));
     }
 
     #[test]
