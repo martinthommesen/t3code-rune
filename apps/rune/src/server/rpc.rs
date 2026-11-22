@@ -225,6 +225,42 @@ pub(super) async fn serve(
                 }
             }
             ClientMessage::Request { id, tag, payload }
+                if tag == "projects.searchEntries" && local.is_some() =>
+            {
+                use super::workspace_search::Input;
+                match Input::decode(&payload) {
+                    Err(message) => Ok(defect(id, message)),
+                    Ok(_) if !permissions.filesystem_read => Ok(failure(
+                        id,
+                        json!({
+                            "_tag": "EnvironmentAuthorizationError",
+                            "requiredScope": "orchestration:read",
+                            "requiredPermission": "filesystem:read",
+                            "message": "The authenticated token is missing required scope: filesystem:read."
+                        }),
+                    )),
+                    Ok(_) if operation_requests.contains_key(&id) => Ok(failure(
+                        id,
+                        RpcError::InvalidRequest {
+                            message: "Request ID is already in use.",
+                        },
+                    )),
+                    Ok(input) => {
+                        let local = Arc::clone(local.as_ref().expect("local operations"));
+                        let request_id = id.clone();
+                        let task = operations.spawn(async move {
+                            let result = match local.workspace_search.search(input).await {
+                                Ok(value) => success(id.clone(), value),
+                                Err(error) => failure(id.clone(), error),
+                            };
+                            (id, result)
+                        });
+                        operation_requests.insert(request_id, task);
+                        continue;
+                    }
+                }
+            }
+            ClientMessage::Request { id, tag, payload }
                 if tag == "orchestration.subscribeShell" =>
             {
                 let store = store.clone();

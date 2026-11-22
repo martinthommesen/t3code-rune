@@ -30,6 +30,7 @@ pub(crate) use turn_worker::{CommandColor, CommandPen, TerminalOutput};
 mod vcs_checkout;
 mod vcs_refs;
 mod vcs_status;
+mod workspace_search;
 
 pub(crate) use settings::parse_settings_json;
 
@@ -87,6 +88,7 @@ type SharedEnvironment = Arc<Environment>;
 struct LocalOperations {
     projects: ProjectCommands,
     project_favicons: project_favicon::Service,
+    workspace_search: workspace_search::Indexes,
     named_projects_root: PathBuf,
     project_clones: ProjectClones,
     repository_identities: repository_identity::Identities,
@@ -195,6 +197,7 @@ impl LocalHost {
                     let local = LocalOperations {
                         projects,
                         project_favicons,
+                        workspace_search: workspace_search::Indexes::default(),
                         named_projects_root,
                         project_clones: project_clones.clone(),
                         repository_identities,

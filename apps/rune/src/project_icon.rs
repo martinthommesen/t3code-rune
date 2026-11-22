@@ -5,6 +5,11 @@ use icu_properties::{
 use unicode_normalization::UnicodeNormalization;
 use unicode_segmentation::UnicodeSegmentation;
 
+pub const FILE_EXTENSIONS: &[&str] = &[
+    "avif", "bmp", "gif", "ico", "heic", "heif", "jpeg", "jpg", "png", "svg", "tif", "tiff",
+    "webp", "icns",
+];
+
 pub fn monogram_characters(text: &str) -> bool {
     let categories = CodePointMapData::<GeneralCategory>::new();
     let is_letter_or_number = |character| {

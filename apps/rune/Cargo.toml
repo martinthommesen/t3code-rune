@@ -10,6 +10,7 @@ license = "MIT"
 axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
+fff-search = { git = "https://github.com/dmtrKovalenko/fff.git", rev = "95fd777c2529fc7b4d7572dabff64cc07268f2c5" }
 futures-util = { version = "0.3", features = ["sink"] }
 hostname = "0.4"
 icu_collator = "=2.3.0"

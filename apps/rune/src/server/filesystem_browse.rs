@@ -144,7 +144,7 @@ fn is_explicit_relative(path: &str) -> bool {
             .any(|prefix| path.starts_with(prefix))
 }
 
-fn resolve_target(partial: &str, project: Option<&str>) -> io::Result<PathBuf> {
+pub(super) fn resolve_target(partial: &str, project: Option<&str>) -> io::Result<PathBuf> {
     match project {
         Some(project) => {
             let base = absolute_path(expand_home(project)?)?;
