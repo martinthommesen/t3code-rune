@@ -1,6 +1,7 @@
 mod browse;
 mod command_output;
 mod draft_defaults;
+mod keybindings;
 mod launch;
 mod project_favicon;
 mod projection;
@@ -39,6 +40,7 @@ use uuid::Uuid;
 pub(crate) use browse::FolderListing;
 pub(crate) use command_output::{CommandInspection, CommandOutput};
 pub(crate) use draft_defaults::WorkspaceMode;
+pub(crate) use keybindings::Keybindings;
 pub(crate) use launch::Workspace as LaunchWorkspace;
 pub(crate) use project_favicon::{FaviconBytes, FaviconTarget};
 pub(crate) use projection::WorkspaceFailure;
@@ -88,6 +90,7 @@ pub(crate) enum ThreadAction {
 }
 
 pub(crate) enum Event {
+    Keybindings(Keybindings),
     Connected {
         environment_id: String,
         label: String,
@@ -2388,6 +2391,9 @@ impl Session {
                     }
                     if let Some(settings) = self.workspace_settings.apply(&values) {
                         events.send(Event::WorkspaceConfiguration(Some(settings)));
+                    }
+                    if let Some(bindings) = Keybindings::config_events(&values) {
+                        events.send(Event::Keybindings(bindings));
                     }
                     if let Some(providers) = provider_metadata::last_catalog(values) {
                         events.send(Event::Providers(providers));

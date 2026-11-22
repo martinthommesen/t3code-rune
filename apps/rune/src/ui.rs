@@ -8,7 +8,7 @@ use rune::{col, el, row, text, text_input};
 
 use crate::client_settings::ClientSettings;
 use crate::connection::{
-    Connection, ConversationEntry, Event, GitRef, LaunchWorkspace, Message, Project,
+    Connection, ConversationEntry, Event, GitRef, Keybindings, LaunchWorkspace, Message, Project,
     ProviderCatalog, QueueMutation, QueuedMessage, Thread, ThreadAction, WorkspaceMode,
     WorktreeSetup, worktree_setup::Phase as SetupPhase,
 };
@@ -250,6 +250,7 @@ struct State {
     connection: Option<Connection>,
     connection_error: Option<String>,
     workspace: Option<Workspace>,
+    keybindings: Option<Keybindings>,
     local_environment: bool,
     draft_environment: Option<String>,
     drafts: HashMap<String, Draft>,
@@ -286,6 +287,7 @@ impl Default for State {
             connection: None,
             connection_error: None,
             workspace: None,
+            keybindings: None,
             local_environment: false,
             draft_environment: None,
             drafts: HashMap::new(),
@@ -945,6 +947,7 @@ impl State {
 
     fn apply_event(&mut self, event: Event, tx: &mut Tx) {
         match event {
+            Event::Keybindings(bindings) => self.keybindings = Some(bindings),
             Event::Connected {
                 environment_id,
                 label,
@@ -965,6 +968,7 @@ impl State {
                 self.history = History::default();
                 self.pairing_code.clear();
                 if self.draft_environment.as_deref() != Some(&environment_id) {
+                    self.keybindings = None;
                     self.drafts.clear();
                     self.new_thread_drafts.clear();
                     self.questions.clear();
@@ -1712,8 +1716,7 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
             if modal_open || onboarding_open {
                 return false;
             }
-            if event.is_command('j')
-                && !event.mods.shift
+            if state.matches_terminal_toggle(event, tx)
                 && state
                     .workspace
                     .as_ref()

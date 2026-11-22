@@ -490,12 +490,42 @@ impl State {
         }
     }
 
+    pub(super) fn matches_terminal_toggle(&self, event: &KeyEvent, tx: &Tx) -> bool {
+        let binding = match &self.keybindings {
+            Some(binding) => binding,
+            None => crate::connection::Keybindings::stock(),
+        };
+        let terminal_focus = tx.focused() == Some(INPUT_KEY);
+        let selection = self
+            .workspace
+            .as_ref()
+            .and_then(|workspace| workspace.selection.as_ref());
+        let draft_route =
+            selection.is_some_and(|selection| matches!(selection.view, ProjectView::NewThread));
+        let composer_focus = selection
+            .and_then(|selection| match &selection.view {
+                ProjectView::NewThread => self.new_thread_drafts.get(&selection.id),
+                ProjectView::Conversation(conversation) => self.drafts.get(&conversation.id),
+                _ => None,
+            })
+            .is_some_and(|draft| draft.edit.focused);
+        binding.command(event, tx, |flag| match flag {
+            "terminalFocus" => terminal_focus,
+            "terminalOpen" => self.terminal.is_some(),
+            "draftThreadRoute" => draft_route,
+            "isDesktop" => true,
+            "composerFocus" => composer_focus,
+            "editableFocus" => terminal_focus || composer_focus,
+            _ => false,
+        }) == Some("terminal.toggle")
+    }
+
     fn terminal_key(&mut self, event: &KeyEvent, tx: &mut Tx) -> bool {
         if event.is_command('v') && (event.mods.shift || cfg!(target_os = "macos")) {
             tx.request_paste();
             return true;
         }
-        if event.is_command('j') && !event.mods.shift {
+        if self.matches_terminal_toggle(event, tx) {
             self.detach_terminal_pane();
             return true;
         }

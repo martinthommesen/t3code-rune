@@ -357,7 +357,9 @@ pub(super) fn close_dialog(label: &str, palette: Palette) -> El {
                         state.cancel_terminal_close(tx);
                         return true;
                     }
-                    event.is_command('j') || event.is_command('n') || event.is_command('w')
+                    state.matches_terminal_toggle(event, tx)
+                        || event.is_command('n')
+                        || event.is_command('w')
                 }),
         )
 }
