@@ -775,7 +775,7 @@ impl State {
         let input = if pane.screen.term.mode().contains(TermMode::BRACKETED_PASTE) {
             format!("\x1b[200~{text}\x1b[201~")
         } else {
-            text.to_owned()
+            text.replace('\n', "\r")
         };
         self.write_terminal_input_at(attachment, input, false);
     }
