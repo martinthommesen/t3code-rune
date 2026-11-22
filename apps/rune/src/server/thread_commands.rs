@@ -11,6 +11,7 @@ use time::OffsetDateTime;
 
 mod create;
 mod rename;
+mod unarchive;
 mod visit;
 pub(super) use create::CreateThread;
 pub(super) use create::{normalize_model_selection, trim as trim_js};
@@ -138,6 +139,7 @@ impl ThreadCommands {
         match payload["type"].as_str() {
             Some("thread.visit") => self.visit(payload),
             Some(rename::COMMAND) => self.rename(payload),
+            Some(unarchive::COMMAND) => self.unarchive(payload),
             _ => self.create(CreateThread::parse(payload)?),
         }
     }

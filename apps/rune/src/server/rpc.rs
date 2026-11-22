@@ -1466,7 +1466,7 @@ fn dispatch_thread(
     }
     if !matches!(
         command_type,
-        "thread.create" | "thread.visit" | "thread.metadata.update"
+        "thread.create" | "thread.visit" | "thread.metadata.update" | "thread.unarchive"
     ) {
         return failure(
             id,
@@ -1492,7 +1492,10 @@ fn dispatch_thread(
             success(id, json!({"sequence": result.sequence}))
         }
         Err(ThreadCommandError::InvalidRequest(message))
-            if command_type == "thread.metadata.update" =>
+            if matches!(
+                command_type.as_str(),
+                "thread.metadata.update" | "thread.unarchive"
+            ) =>
         {
             defect(id, message)
         }
