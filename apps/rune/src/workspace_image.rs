@@ -164,7 +164,7 @@ fn decode_webp(bytes: Vec<u8>) -> Option<Source> {
     limit_image(&mut decoder)?;
     decoder.set_background_color(Rgba([0, 0, 0, 0])).ok()?;
     let frame = decoder.into_frames().next()?.ok()?.into_buffer();
-    Some(animation(bytes, frame, false))
+    Some(animation(bytes, frame, true))
 }
 
 fn animation(bytes: Vec<u8>, frame: RgbaImage, restart_on_expand: bool) -> Source {
