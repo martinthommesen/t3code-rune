@@ -896,6 +896,7 @@ fn viewport(terminal: &Pane, active: bool, palette: Palette) -> El {
             state.activate_terminal_attachment(attachment, tx)
         })
         .focusable(active)
+        .no_focus_ring()
         .on_key(State::terminal_key)
         .on_wheel(move |state: &mut State, event, _| state.terminal_wheel(attachment, event))
         .on_layout(move |state: &mut State, rect| state.resize_terminal_pane(attachment, rect))

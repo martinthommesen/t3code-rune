@@ -78,11 +78,12 @@ pub(super) fn drawer(
                 .collect()
         },
     );
+    let divider = hex(if palette.dark { "#101010" } else { "#e9e9ec" }).unwrap_or(palette.line);
     let mut drawer = row()
         .key("terminal-drawer")
         .w_full()
         .h(height)
-        .border_sides([1.0, 0.0, 0.0, 0.0], palette.line)
+        .border_sides([1.0, 0.0, 0.0, 0.0], divider)
         .role("region")
         .label(
             if terminal.status == TerminalStatus::Running && terminal.has_running_subprocess {
@@ -185,6 +186,7 @@ fn pane_group(panes: &[&Pane], active: u64, direction: SplitDirection, palette: 
     }
     .key("terminal-split-panes")
     .grow(1.0)
+    .pt(1.0)
     .min_w(0.0)
     .min_h(0.0)
     .h_full();
