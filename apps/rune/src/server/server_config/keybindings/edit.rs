@@ -1,10 +1,13 @@
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use serde_json::{Value, json};
 use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::task::JoinHandle;
+
+mod watch;
 
 use crate::server::config_updates::Subscribers;
 
@@ -12,7 +15,7 @@ use super::{MAX_RULES, decode_fields, expression, shortcut, stock};
 
 #[derive(Default)]
 pub(in crate::server) struct Edits {
-    writing: Mutex<()>,
+    previous: Mutex<Option<Value>>,
     updates: Subscribers,
 }
 
@@ -125,12 +128,35 @@ impl Entry {
 }
 
 impl Edits {
+    pub(in crate::server) fn watch(self: &Arc<Self>, path: PathBuf) -> JoinHandle<()> {
+        watch::start(Arc::clone(self), path)
+    }
+
+    pub(in crate::server) fn initial(&self, path: &Path) -> Result<(Value, Value), Value> {
+        let mut previous = self.previous.lock().unwrap_or_else(PoisonError::into_inner);
+        let (bindings, issues) = super::resolved(path, true)?;
+        previous.get_or_insert_with(|| configuration(&bindings, &issues));
+        Ok((bindings, issues))
+    }
+
+    fn observe(&self, path: &Path) {
+        let mut previous = self.previous.lock().unwrap_or_else(PoisonError::into_inner);
+        let Ok((bindings, issues)) = super::resolved(path, false) else {
+            return;
+        };
+        let state = configuration(&bindings, &issues);
+        if previous.as_ref() != Some(&state) {
+            self.updates.publish(&state);
+            *previous = Some(state);
+        }
+    }
+
     pub(in crate::server) fn subscribe(&self) -> UnboundedReceiver<Arc<Value>> {
         self.updates.subscribe()
     }
 
     pub(in crate::server) fn update(&self, path: &Path, edit: Edit) -> Result<Value, Value> {
-        let _writing = self.writing.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut previous = self.previous.lock().unwrap_or_else(PoisonError::into_inner);
         let mut entries = writable_entries(path)?;
         let entries = match edit {
             Edit::Upsert { rule, replace } => upsert(path, entries, rule, replace)?,
@@ -149,10 +175,15 @@ impl Edits {
         crate::server::settings::write_document(path, &data)
             .map_err(|_| failure(path, "failed to write keybindings config", None))?;
         let (keybindings, issues) = super::resolved(path, false)?;
-        let result = json!({"keybindings": keybindings, "issues": issues});
+        let result = configuration(&keybindings, &issues);
+        *previous = Some(result.clone());
         self.updates.publish(&result);
         Ok(result)
     }
+}
+
+fn configuration(bindings: &Value, issues: &Value) -> Value {
+    json!({"keybindings": bindings, "issues": issues})
 }
 
 fn writable_entries(path: &Path) -> Result<Vec<Entry>, Value> {

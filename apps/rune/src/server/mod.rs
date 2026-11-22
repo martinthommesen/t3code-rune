@@ -198,6 +198,10 @@ impl LocalHost {
                         projection_changes.clone(),
                         repository_identities.clone(),
                     );
+                    let config = server_config::Host::new(cwd);
+                    let keybindings_watch = config
+                        .keybindings
+                        .watch(settings.path().with_file_name("keybindings.json"));
                     let local = LocalOperations {
                         projects,
                         project_favicons,
@@ -209,7 +213,7 @@ impl LocalHost {
                         turns,
                         turn_queue: turn_worker.sender(),
                         settings,
-                        config: server_config::Host::new(cwd),
+                        config,
                         projection_changes,
                         terminals,
                         vcs_status: vcs_status::Service::default(),
@@ -230,6 +234,8 @@ impl LocalHost {
                             }
                         }
                     }
+                    keybindings_watch.abort();
+                    let _ = keybindings_watch.await;
                     titles.abort();
                     let _ = titles.await;
                     project_clones.shutdown().await;

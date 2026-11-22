@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -24,7 +25,7 @@ const FLAGS: &[&str] = &[
 pub(super) struct Host {
     cwd: PathBuf,
     probe: Mutex<()>,
-    pub(super) keybindings: keybindings::edit::Edits,
+    pub(super) keybindings: Arc<keybindings::edit::Edits>,
 }
 
 impl Host {
@@ -32,7 +33,7 @@ impl Host {
         Self {
             cwd,
             probe: Mutex::new(()),
-            keybindings: keybindings::edit::Edits::default(),
+            keybindings: Arc::default(),
         }
     }
 }
@@ -58,11 +59,12 @@ pub(super) async fn snapshot(environment: &Environment) -> Result<Value, Value> 
         .expect("settings have a profile directory");
     let ((keybindings, issues), settings) = tokio::task::spawn_blocking({
         let keybindings_path = keybindings_path.clone();
+        let keybindings = Arc::clone(&local.config.keybindings);
         move || {
             let settings = settings
                 .read()
                 .map_err(|error| settings_failure(settings.path(), &error.to_string()))?;
-            Ok::<_, Value>((keybindings::initial(&keybindings_path)?, settings))
+            Ok::<_, Value>((keybindings.initial(&keybindings_path)?, settings))
         }
     })
     .await

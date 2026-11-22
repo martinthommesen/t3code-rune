@@ -52,10 +52,6 @@ fn stock() -> &'static Asset {
     })
 }
 
-pub(super) fn initial(path: &Path) -> Result<(Value, Value), Value> {
-    resolved(path, true)
-}
-
 fn resolved(path: &Path, sync_defaults: bool) -> Result<(Value, Value), Value> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
