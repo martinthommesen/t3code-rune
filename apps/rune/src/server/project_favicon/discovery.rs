@@ -6,7 +6,7 @@ use std::sync::LazyLock;
 use regex_lite::Regex;
 use serde_json::{Value, json};
 
-use super::project_file;
+use crate::server::project_file;
 
 const FAVICON_CANDIDATES: &[&str] = &[
     "favicon.svg",

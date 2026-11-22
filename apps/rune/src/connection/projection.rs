@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
+use super::WorkspaceMode;
 use super::launch::ModelSelection;
 use super::runtime_approval::{ApprovalDetails, ApprovalProjection, RuntimeRequest};
 use super::runtime_question::{QuestionDetails, QuestionProjection};
@@ -65,10 +66,15 @@ pub(super) struct ProjectRow {
     #[serde(flatten)]
     project: Project,
     pub(super) default_model_selection: Option<ModelSelection>,
+    pub(super) default_thread_env_mode: Option<WorkspaceMode>,
     repository_identity: Option<Value>,
 }
 
 impl ProjectRow {
+    pub(super) fn workspace_path(&self) -> &str {
+        &self.project.path
+    }
+
     pub(super) fn is_archived(&self) -> bool {
         self.project.archived_at.is_some()
     }
@@ -491,6 +497,13 @@ impl Shell {
                 .map(|row| row.thread.clone())
                 .collect(),
         )
+    }
+
+    pub(super) fn project_has_threads(&self, project_id: &str) -> bool {
+        self.threads
+            .iter()
+            .chain(&self.archive)
+            .any(|row| row.thread.project_id == project_id)
     }
 
     pub(super) fn project(&self, project_id: &str) -> Option<&ProjectRow> {

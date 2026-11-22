@@ -9,8 +9,8 @@ use rune::{col, el, row, text, text_input};
 use crate::client_settings::ClientSettings;
 use crate::connection::{
     Connection, ConversationEntry, Event, GitRef, LaunchWorkspace, Message, Project,
-    ProviderCatalog, QueueMutation, QueuedMessage, Thread, ThreadAction, WorktreeSetup,
-    worktree_setup::Phase as SetupPhase,
+    ProviderCatalog, QueueMutation, QueuedMessage, Thread, ThreadAction, WorkspaceMode,
+    WorktreeSetup, worktree_setup::Phase as SetupPhase,
 };
 
 mod approval;
@@ -219,19 +219,13 @@ struct Draft {
     pending: bool,
     failure: Option<String>,
     workspace_mode: WorkspaceMode,
+    workspace_edited: bool,
     base_ref: Option<String>,
     start_from_origin: bool,
     start_from_origin_default: Option<bool>,
     start_from_origin_changed: bool,
     refs: DraftRefs,
     worktree_launch: Option<worktree_setup::DraftLaunch>,
-}
-
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
-enum WorkspaceMode {
-    #[default]
-    Local,
-    Worktree,
 }
 
 #[derive(Default)]
@@ -535,6 +529,17 @@ impl State {
             }
         };
         if let Some(project_id) = new_draft {
+            if workspace.worktree_launch
+                && !workspace.reconnecting
+                && let Some(connection) = &self.connection
+                && let Some(draft) = self.new_thread_drafts.get_mut(&project_id)
+                && !draft.pending
+                && draft.edit.text.trim().is_empty()
+            {
+                draft.workspace_edited = false;
+                draft.start_from_origin_changed = false;
+                connection.load_draft_preferences(project_id.clone());
+            }
             self.load_draft_refs(&project_id, false);
         }
         self.observe_selected_draft_worktree();
@@ -605,6 +610,7 @@ impl State {
                 return;
             }
             draft.workspace_mode = mode;
+            draft.workspace_edited = true;
             draft.start_from_origin = mode == WorkspaceMode::Worktree
                 && workspace.remote_worktree_launch
                 && draft.start_from_origin_default.unwrap_or(true);
@@ -1275,14 +1281,24 @@ impl State {
             }
             Event::DraftWorkspaceDefault {
                 project_id,
+                mode,
                 start_from_origin,
             } => {
-                if let Some(draft) = self.new_thread_drafts.get_mut(&project_id) {
+                let remote = self
+                    .workspace
+                    .as_ref()
+                    .is_some_and(|workspace| workspace.remote_worktree_launch);
+                if let Some(draft) = self.new_thread_drafts.get_mut(&project_id)
+                    && !draft.pending
+                {
                     draft.start_from_origin_default = Some(start_from_origin);
-                    if draft.workspace_mode == WorkspaceMode::Worktree
-                        && !draft.start_from_origin_changed
-                    {
-                        draft.start_from_origin = start_from_origin;
+                    if !draft.workspace_edited && draft.refs.is_repo != Some(false) {
+                        draft.workspace_mode = mode;
+                    }
+                    if !draft.start_from_origin_changed {
+                        draft.start_from_origin = draft.workspace_mode == WorkspaceMode::Worktree
+                            && remote
+                            && start_from_origin;
                     }
                 }
             }

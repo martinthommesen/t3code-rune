@@ -1,5 +1,6 @@
 mod browse;
 mod command_output;
+mod draft_defaults;
 mod launch;
 mod project_favicon;
 mod projection;
@@ -36,6 +37,7 @@ use uuid::Uuid;
 
 pub(crate) use browse::FolderListing;
 pub(crate) use command_output::{CommandInspection, CommandOutput};
+pub(crate) use draft_defaults::WorkspaceMode;
 pub(crate) use launch::Workspace as LaunchWorkspace;
 pub(crate) use project_favicon::{FaviconBytes, FaviconTarget};
 pub(crate) use projection::WorkspaceFailure;
@@ -190,6 +192,7 @@ pub(crate) enum Event {
     },
     DraftWorkspaceDefault {
         project_id: String,
+        mode: WorkspaceMode,
         start_from_origin: bool,
     },
     WorktreeSetup {
@@ -275,6 +278,7 @@ enum Command {
     RetryWorkspacePreparation(WorkspaceRetry),
     RespondToRuntimeRequest(RuntimeResponse),
     LaunchThread(launch::Draft),
+    LoadDraftPreferences(String),
     ListGitRefs {
         project_id: String,
         cwd: String,
@@ -614,6 +618,12 @@ impl Connection {
             workspace,
         }));
         thread_id
+    }
+
+    pub(crate) fn load_draft_preferences(&self, project_id: String) {
+        let _ = self
+            .commands
+            .send(Command::LoadDraftPreferences(project_id));
     }
 
     pub(crate) fn list_git_refs(&self, project_id: String, cwd: String, refresh: bool) {
@@ -1150,6 +1160,10 @@ struct Session {
     pending_git_refs: HashMap<String, GitRefsRequest>,
     pending_git_checkouts: HashMap<String, String>,
     pending_workspace_defaults: HashMap<String, (String, Instant)>,
+    pending_project_file_defaults: HashMap<String, (String, draft_defaults::Preferences, Instant)>,
+    pending_named_project_defaults: HashMap<String, draft_defaults::Preferences>,
+    named_projects_root: Option<String>,
+    named_projects_root_loaded: bool,
     read_only: bool,
     launch_writes: bool,
     worktree_launch: bool,
@@ -1262,6 +1276,10 @@ impl Session {
             pending_git_refs: HashMap::new(),
             pending_git_checkouts: HashMap::new(),
             pending_workspace_defaults: HashMap::new(),
+            pending_project_file_defaults: HashMap::new(),
+            pending_named_project_defaults: HashMap::new(),
+            named_projects_root: None,
+            named_projects_root_loaded: false,
             read_only: environment.descriptor.capabilities.read_only,
             launch_writes: capabilities
                 .launch_writes
@@ -1875,24 +1893,21 @@ impl Session {
                     self.send_request(&id, method, payload).await?;
                 }
             }
+            Command::LoadDraftPreferences(project_id) => {
+                if self.worktree_launch && !self.workspace_default_pending(&project_id) {
+                    let id = self.allocate_id();
+                    self.pending_workspace_defaults
+                        .insert(id.clone(), (project_id, Instant::now()));
+                    self.send_request(&id, "server.getSettings", json!({}))
+                        .await?;
+                }
+            }
             Command::ListGitRefs {
                 project_id,
                 cwd,
                 refresh,
             } => {
                 if self.worktree_launch {
-                    if self.remote_worktree_launch
-                        && !self
-                            .pending_workspace_defaults
-                            .values()
-                            .any(|(pending, _)| pending == &project_id)
-                    {
-                        let id = self.allocate_id();
-                        self.pending_workspace_defaults
-                            .insert(id.clone(), (project_id.clone(), Instant::now()));
-                        self.send_request(&id, "server.getSettings", json!({}))
-                            .await?;
-                    }
                     self.load_git_ref_page(GitRefsRequest {
                         project_id,
                         cwd,
@@ -2191,6 +2206,82 @@ impl Session {
         Ok(())
     }
 
+    fn workspace_default_pending(&self, project_id: &str) -> bool {
+        self.pending_named_project_defaults.contains_key(project_id)
+            || self
+                .pending_workspace_defaults
+                .values()
+                .any(|(id, _)| id == project_id)
+            || self
+                .pending_project_file_defaults
+                .values()
+                .any(|(id, _, _)| id == project_id)
+    }
+
+    async fn workspace_settings_exit(
+        &mut self,
+        project_id: String,
+        exit: RpcExit,
+        events: &EventSender<impl Fn()>,
+    ) -> Result<(), SessionStop> {
+        let Some(project) = self.shell.project(&project_id) else {
+            return Ok(());
+        };
+        let settings = exit.into_result().unwrap_or(Value::Null);
+        let preferences = draft_defaults::Preferences::from_settings(
+            &settings,
+            &project_id,
+            project.default_thread_env_mode,
+        );
+        if preferences.needs_project_file() && self.filesystem_read {
+            let payload = json!({"cwd": project.workspace_path(), "relativePath": "t3.json", "allowMissing": true});
+            let id = self.allocate_id();
+            self.pending_project_file_defaults
+                .insert(id.clone(), (project_id, preferences, Instant::now()));
+            self.send_request(&id, "projects.readFile", payload).await?;
+        } else if !self.named_projects_root_loaded
+            && preferences.needs_named_projects_root(self.shell.project_has_threads(&project_id))
+        {
+            self.pending_named_project_defaults
+                .insert(project_id, preferences);
+            if self.providers_request_id.is_none() {
+                self.subscribe_provider_catalog().await?;
+            }
+        } else {
+            self.publish_draft_defaults(project_id, preferences, None, events);
+        }
+        Ok(())
+    }
+
+    fn finish_named_project_defaults(&mut self, events: &EventSender<impl Fn()>) {
+        self.named_projects_root_loaded = true;
+        for (project_id, preferences) in std::mem::take(&mut self.pending_named_project_defaults) {
+            self.publish_draft_defaults(project_id, preferences, None, events);
+        }
+    }
+
+    fn publish_draft_defaults(
+        &self,
+        project_id: String,
+        preferences: draft_defaults::Preferences,
+        file: Option<WorkspaceMode>,
+        events: &EventSender<impl Fn()>,
+    ) {
+        if let Some(project) = self.shell.project(&project_id) {
+            let mode = preferences.effective_mode(
+                project.workspace_path(),
+                self.named_projects_root.as_deref(),
+                self.shell.project_has_threads(&project_id),
+                file,
+            );
+            events.send(Event::DraftWorkspaceDefault {
+                project_id,
+                mode,
+                start_from_origin: preferences.start_from_origin,
+            });
+        }
+    }
+
     async fn receive(
         &mut self,
         frame: ServerFrame,
@@ -2255,6 +2346,11 @@ impl Session {
                             .and_then(Value::as_str)
                             .filter(|path| !path.is_empty())
                             .map(str::to_owned);
+                        self.named_projects_root = config
+                            .get("newProjectsRoot")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned);
+                        self.finish_named_project_defaults(events);
                         self.scratch_projects =
                             root.is_some() && self.project_writes && self.launch_writes;
                         events.send(Event::ScratchWorkspace {
@@ -2344,6 +2440,7 @@ impl Session {
                     if exit.into_result().is_err() {
                         events.send(Event::ProviderCatalogUnavailable);
                     }
+                    self.finish_named_project_defaults(events);
                     return Ok(());
                 }
                 if self.pending_workspace_retries.contains_key(&request_id) {
@@ -2405,16 +2502,20 @@ impl Session {
                     return Ok(());
                 }
                 if let Some((project_id, _)) = self.pending_workspace_defaults.remove(&request_id) {
-                    if let Ok(settings) = exit.into_result() {
-                        let start_from_origin = settings["projectSettingsOverrides"][&project_id]["newWorktreesStartFromOrigin"]
-                            .as_bool()
-                            .or_else(|| settings["newWorktreesStartFromOrigin"].as_bool())
-                            .unwrap_or(true);
-                        events.send(Event::DraftWorkspaceDefault {
-                            project_id,
-                            start_from_origin,
-                        });
-                    }
+                    self.workspace_settings_exit(project_id, exit, events)
+                        .await?;
+                    return Ok(());
+                }
+                if let Some((project_id, preferences, _)) =
+                    self.pending_project_file_defaults.remove(&request_id)
+                {
+                    let file = exit.into_result().ok().and_then(|value| {
+                        if value["exists"] == false || value["truncated"] == true {
+                            return None;
+                        }
+                        crate::server::project_file::workspace_mode(value["contents"].as_str()?)
+                    });
+                    self.publish_draft_defaults(project_id, preferences, file, events);
                     return Ok(());
                 }
                 if let Some(mut request) = self.pending_git_refs.remove(&request_id) {
@@ -2873,6 +2974,7 @@ async fn run_socket(
                     false
                 });
                 session.pending_workspace_defaults.retain(|_, (_, started)| started.elapsed() < REQUEST_TIMEOUT);
+                session.pending_project_file_defaults.retain(|_, (_, _, started)| started.elapsed() < REQUEST_TIMEOUT);
                 session.pending_setup_cancels.retain(|_, (thread_id, started)| {
                     if started.elapsed() < REQUEST_TIMEOUT { return true; }
                     events.send(Event::WorktreeSetupCancelSettled { thread_id: thread_id.clone(), result: Err("The environment did not confirm cancellation in time.".into()) });

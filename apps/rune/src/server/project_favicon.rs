@@ -1,7 +1,6 @@
 mod capability;
 mod discovery;
 mod http;
-mod project_file;
 
 use std::collections::VecDeque;
 use std::fs::{self, File};

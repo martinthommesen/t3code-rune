@@ -14,6 +14,7 @@ mod named_projects;
 mod project_clone;
 mod project_commands;
 mod project_favicon;
+pub(crate) mod project_file;
 mod repository_identity;
 mod rpc;
 mod scratch_project;
