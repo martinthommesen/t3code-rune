@@ -3,6 +3,7 @@
 mod client_settings;
 mod connection;
 mod server;
+mod snooze;
 mod ui;
 
 use clap::{Parser, Subcommand};

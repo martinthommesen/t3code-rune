@@ -1,5 +1,7 @@
 use serde_json::{Value, json};
 
+use crate::snooze;
+
 use super::providers::{ProviderInstance, driver_default};
 use super::{
     Fields, nonblank, project_overrides as overrides, project_scripts, secret_slug, slug, text,
@@ -66,6 +68,10 @@ pub(super) fn project(
     copy_literal(fields, raw, "defaultThreadEnvMode", THREAD_ENV_MODES);
     copy_branch_naming(fields, raw);
     copy_streaming_mode(fields, raw);
+    if let Some(value) = raw.get(snooze::KEY) {
+        let presets = snooze::decode(value, snooze::KEY).ok()?;
+        fields.insert(snooze::KEY.to_owned(), json!(presets));
+    }
     for key in [
         "worktreesDirectory",
         "addProjectBaseDirectory",

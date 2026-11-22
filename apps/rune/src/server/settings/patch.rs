@@ -2,6 +2,8 @@ use std::sync::OnceLock;
 
 use serde_json::{Value, json};
 
+use crate::snooze;
+
 use super::{Fields, project_overrides::ProjectPatch, text, worktree_location_history};
 
 const RUNTIME_MODES: &str =
@@ -57,6 +59,11 @@ impl Patch {
                     patch.unsupported = projects.unsupported.take();
                 }
                 patch.projects = Some(projects);
+                continue;
+            }
+            if key == snooze::KEY {
+                let presets = snooze::decode(value, r#"["patch"]["snoozePresets"]"#)?;
+                patch.fields.insert(key.to_owned(), json!(presets));
                 continue;
             }
             if let Some(expected) = invalid_value(key, value) {
